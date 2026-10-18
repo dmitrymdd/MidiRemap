@@ -48,7 +48,7 @@
 
 ```
 src/midiremap/
-  core/  notemap.py  notenames.py  profile.py  convert.py
+  core/  notemap.py  notenames.py  profile.py  convert.py  legacy_map.py (временный GM→SD3 NOTE_MAP)
   storage.py        # %APPDATA%\MidiRemap: карты .txt, профили .json, настройки
   ui/               # PySide6
   __main__.py

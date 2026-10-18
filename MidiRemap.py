@@ -29,7 +29,8 @@ enable_windows_dpi_awareness()
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-import mido
+from midiremap.core import convert_midi as core_convert_midi
+from midiremap.core.legacy_map import NOTE_MAP
 
 try:
     from tkinterdnd2 import DND_FILES, COPY, TkinterDnD
@@ -37,11 +38,6 @@ try:
 except ImportError:
     DND_FILES, COPY, TkinterDnD, DND_OK = 'DND_Files', 'copy', None, False
 
-NOTE_MAP = {
-    35:35, 36:36, 37:37, 38:38, 39:40, 40:40, 41:41, 42:42,
-    43:41, 44:10, 45:43, 46:12, 47:45, 48:47, 49:49, 50:48,
-    51:116, 52:52, 53:117, 55:55, 57:57, 59:116,
-}
 EXTS = {'.mid', '.midi'}
 BG, PANEL, PANEL2 = '#111318', '#191d25', '#222733'
 FG, MUTED, ACCENT, GREEN, RED, BORDER = '#f0f2f7', '#9ba4b5', '#7c8cff', '#59d6a2', '#ff737e', '#303643'
@@ -52,34 +48,7 @@ def is_midi(path):
 
 
 def convert_midi(src: Path, dst: Path):
-    midi = mido.MidiFile(str(src))
-    out = mido.MidiFile(type=midi.type, ticks_per_beat=midi.ticks_per_beat)
-    out.charset = midi.charset
-    stats = {'mapped': 0, 'removed': 0, 'other': 0}
-    for track in midi.tracks:
-        new_track = mido.MidiTrack()
-        out.tracks.append(new_track)
-        carry = 0
-        for msg in track:
-            carry += msg.time
-            if msg.type in ('note_on', 'note_off'):
-                target = NOTE_MAP.get(msg.note)
-                if target is None:
-                    stats['removed'] += 1
-                    continue
-                new_track.append(msg.copy(note=target, time=carry))
-                stats['mapped'] += 1
-            else:
-                new_track.append(msg.copy(time=carry))
-                stats['other'] += 1
-            carry = 0
-        if carry:
-            if new_track and new_track[-1].type == 'end_of_track':
-                new_track[-1].time += carry
-            else:
-                new_track.append(mido.MetaMessage('end_of_track', time=carry))
-    out.save(str(dst))
-    return stats
+    return core_convert_midi(src, dst, NOTE_MAP)
 
 
 def clipboard_files():
