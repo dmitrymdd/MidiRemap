@@ -1,19 +1,22 @@
-"""Характеризационные тесты текущего convert_midi из MidiRemap.py.
+"""Характеризационные тесты convert_midi со схемой NOTE_MAP (как в Tk-UI MidiRemap.py).
 
-Фиксируют ТЕКУЩЕЕ поведение как эталон перед рефакторингом (этап 1).
+Фиксируют поведение первой версии как эталон (этап 1); с этапа 4 convert_midi — обёртка над новым движком.
 Сравнивается содержимое (абсолютное время в тиках + сообщение), не байты файлов.
 """
-import sys
 from collections import Counter
 from pathlib import Path
 
 import mido
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from midiremap.core import convert_midi as core_convert_midi
+from midiremap.core.legacy_map import NOTE_MAP
 
-from MidiRemap import NOTE_MAP, convert_midi  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def convert_midi(src, dst):
+    return core_convert_midi(src, dst, NOTE_MAP)
 
 MIDI_DIR = ROOT / 'samples' / 'midi'
 NOTE_TYPES = ('note_on', 'note_off')
@@ -152,9 +155,8 @@ def test_synthetic_unmapped_notes_removed_without_time_shift(tmp_path):
 
 
 def test_known_behavior_all_channels_remapped_and_unmapped_removed(tmp_path):
-    """ИЗВЕСТНОЕ ТЕКУЩЕЕ ПОВЕДЕНИЕ, не эталон на будущее: изменится в этапе 4 (профили ремапа).
-
-    Ноты на ЛЮБОМ канале ремапятся; ноты, которых нет в NOTE_MAP, удаляются (а не остаются как есть).
+    """Поведение обёртки convert_midi (старый UI): ноты на ЛЮБОМ канале ремапятся;
+    ноты, которых нет в NOTE_MAP, удаляются. В новом движке по умолчанию — keep (см. test_convert_engine.py).
     """
     src_path = tmp_path / 'in.mid'
     build_midi(src_path, [

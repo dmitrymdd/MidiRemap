@@ -1,3 +1,9 @@
-from .convert import convert_midi
+from .convert import (
+    Analysis, ConversionReport, NoteResult, analyze, convert, convert_midi, effective_rule,
+)
+from .profile import ProfileFormatError, RemapProfile, Rule, legacy_profile
 
-__all__ = ["convert_midi"]
+__all__ = [
+    "Analysis", "ConversionReport", "NoteResult", "analyze", "convert", "convert_midi", "effective_rule",
+    "ProfileFormatError", "RemapProfile", "Rule", "legacy_profile",
+]
