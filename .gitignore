@@ -1,0 +1,24 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Сборка (.exe публикуем в GitHub Releases, не в репозитории) ---
+build/
+dist/
+
+# --- PyCharm ---
+.idea/
+
+# --- Логи и временные файлы ---
+*.log
+*_remapped.mid
+
+# --- Папка для файлов, которые Claude присылает в чат ---
+Claude outputs/
