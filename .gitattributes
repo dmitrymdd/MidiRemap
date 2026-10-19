@@ -1,0 +1,6 @@
+# Встроенные шаблоны карт — всегда LF: tests/test_templates.py сравнивает их с генератором побайтно.
+src/midiremap/templates/** text eol=lf
+
+# Примеры и фикстуры хранятся байт в байт: важны реальные варианты LF/CRLF из REAPER и других программ.
+samples/** -text
+tests/fixtures/** -text
