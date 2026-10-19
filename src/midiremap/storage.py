@@ -1,8 +1,9 @@
 """Хранилище пользовательских карт и профилей на диске (без Qt и без UI).
 
-Структура: <root>/maps/*.txt (REAPER MIDINoteNames), <root>/profiles/*.json (RemapProfile).
-ID записи — имя файла без расширения; отображаемое имя — внутри данных
-(у карт MIDINoteNames поля имени нет, поэтому имя карты = ID).
+Структура: <root>/maps/*.json (карты нот), <root>/profiles/*.json (RemapProfile).
+ID записи — имя файла без расширения; отображаемое имя — внутри данных.
+Старые карты <root>/maps/*.txt (REAPER MIDINoteNames) читаются как legacy (имя карты = ID);
+если есть .json с тем же ID, .txt скрыт. Запись — всегда .json; при перезаписи legacy .txt удаляется.
 """
 from __future__ import annotations
 
@@ -13,12 +14,13 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .core.notemap import NoteMap
-from .core.notenames import ParseIssue, export_notenames, load_notenames
+from .core.notemap import NoteMap, map_from_json, map_to_json
+from .core.notenames import ParseIssue, load_notenames
 from .core.profile import RemapProfile
 
 APP_DIR_NAME = "MidiRemap"
-MAP_EXT = ".txt"
+MAP_EXT = ".json"
+LEGACY_MAP_EXT = ".txt"
 PROFILE_EXT = ".json"
 MAX_ID_LEN = 100
 
@@ -50,6 +52,7 @@ class Entry:
     id: str
     name: str
     path: Path
+    legacy: bool = False  # карта в старом формате .txt (REAPER MIDINoteNames)
 
 
 @dataclass(frozen=True)
@@ -68,26 +71,56 @@ class Storage:
 
     def list_maps(self) -> tuple[list[Entry], list[StorageIssue]]:
         entries, issues = [], []
-        for path in _files(self.maps_dir, MAP_EXT):
+        json_files = _files(self.maps_dir, MAP_EXT)
+        json_ids = {p.stem for p in json_files}
+        for path in json_files:
+            try:
+                m = map_from_json(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError) as e:  # MapFormatError и UnicodeDecodeError — тоже ValueError
+                issues.append(StorageIssue(path, f"cannot read map: {e}"))
+                continue
+            entries.append(Entry(path.stem, m.name, path))
+        for path in _files(self.maps_dir, LEGACY_MAP_EXT):
+            if path.stem in json_ids:
+                continue
             try:
                 m, _ = load_notenames(path)
             except (OSError, ValueError) as e:
                 issues.append(StorageIssue(path, f"cannot read map: {e}"))
                 continue
-            entries.append(Entry(path.stem, m.name, path))
+            entries.append(Entry(path.stem, m.name, path, legacy=True))
+        entries.sort(key=lambda e: e.id.casefold())
         return entries, issues
 
     def load_map(self, map_id: str) -> tuple[NoteMap, list[ParseIssue]]:
-        return load_notenames(self._path(self.maps_dir, map_id, MAP_EXT))
+        """JSON, если есть; иначе legacy .txt (с замечаниями парсера). Нет ни того, ни другого — FileNotFoundError."""
+        path = self._path(self.maps_dir, map_id, MAP_EXT)
+        if path.is_file():
+            return map_from_json(path.read_text(encoding="utf-8-sig")), []
+        legacy = self._path(self.maps_dir, map_id, LEGACY_MAP_EXT)
+        if legacy.is_file():
+            return load_notenames(legacy)
+        raise FileNotFoundError(f"map not found: {map_id}")
 
     def save_map(self, m: NoteMap, map_id: str | None = None, overwrite: bool = False) -> str:
         map_id = sanitize_id(m.name) if map_id is None else _check_id(map_id)
         path = self.maps_dir / (map_id + MAP_EXT)
-        _atomic_write(path, export_notenames(m).encode("utf-8"), overwrite)
+        legacy = self.maps_dir / (map_id + LEGACY_MAP_EXT)
+        if legacy.exists() and not overwrite:
+            raise FileExistsError(f"file already exists: {legacy}")
+        _atomic_write(path, map_to_json(m).encode("utf-8"), overwrite)
+        if legacy.is_file():  # карта перенесена в JSON — старый .txt больше не нужен
+            legacy.unlink()
         return map_id
 
     def delete_map(self, map_id: str) -> None:
-        self._path(self.maps_dir, map_id, MAP_EXT).unlink()
+        """Удаляет карту (и .json, и legacy .txt с этим ID). Нет ни того, ни другого — FileNotFoundError."""
+        paths = [self._path(self.maps_dir, map_id, ext) for ext in (MAP_EXT, LEGACY_MAP_EXT)]
+        existing = [p for p in paths if p.is_file()]
+        if not existing:
+            raise FileNotFoundError(f"map not found: {map_id}")
+        for p in existing:
+            p.unlink()
 
     # --- профили ремапа (JSON) ---
 

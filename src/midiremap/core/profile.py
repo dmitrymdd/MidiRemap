@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .legacy_map import NOTE_MAP
-from .notemap import NoteMap
+from .notemap import NoteMap, check_note, map_body_from_dict, map_body_to_dict
 
 FORMAT_VERSION = 1
 
@@ -17,11 +17,6 @@ ACTIONS: tuple[str, ...] = ("map", "delete", "keep")
 
 class ProfileFormatError(ValueError):
     """Профиль не читается: не JSON, неизвестная версия формата, битые поля."""
-
-
-def check_note(n: Any, what: str = "note") -> None:
-    if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 127:
-        raise ValueError(f"{what}: note number must be an integer 0..127, got {n!r}")
 
 
 @dataclass(frozen=True)
@@ -143,42 +138,11 @@ class RemapProfile:
 
 
 def _map_to_dict(m: NoteMap | None) -> dict[str, Any] | None:
-    if m is None:
-        return None
-    return {
-        "name": m.name,
-        "names": {str(n): label for n, label in m.names.items()},
-        "order": None if m.order is None else list(m.order),
-        "extra_lines": list(m.extra_lines),
-    }
+    return None if m is None else map_body_to_dict(m)
 
 
 def _map_from_dict(data: Any, what: str) -> NoteMap | None:
-    if data is None:
-        return None
-    if not isinstance(data, dict):
-        raise ValueError(f"'{what}' must be an object or null")
-    name = data["name"]
-    raw_names = data.get("names", {})
-    order = data.get("order")
-    extra = data.get("extra_lines", [])
-    if not isinstance(name, str) or not isinstance(raw_names, dict):
-        raise ValueError(f"'{what}': invalid name/names fields")
-    names: dict[int, str] = {}
-    for key, label in raw_names.items():
-        if not (isinstance(key, str) and key.isdigit()):
-            raise ValueError(f"'{what}': note key must be a number, got {key!r}")
-        check_note(int(key), f"{what}.names")
-        if not isinstance(label, str):
-            raise ValueError(f"'{what}': name of note {key} must be a string")
-        names[int(key)] = label
-    # order — как в файле REAPER (там встречаются и номера вне карты), поэтому только проверка типа
-    if order is not None and not (isinstance(order, list)
-                                  and all(isinstance(n, int) and not isinstance(n, bool) for n in order)):
-        raise ValueError(f"'{what}': 'order' must be a list of integers or null")
-    if not (isinstance(extra, list) and all(isinstance(s, str) for s in extra)):
-        raise ValueError(f"'{what}': 'extra_lines' must be a list of strings")
-    return NoteMap(name=name, names=names, order=order, extra_lines=list(extra))
+    return None if data is None else map_body_from_dict(data, what)
 
 
 def legacy_profile() -> RemapProfile:

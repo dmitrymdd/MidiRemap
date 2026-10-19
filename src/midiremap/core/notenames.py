@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .notemap import NoteMap
+from .notemap import NoteMap, articulations
 
 HEADER = "# MIDI note/CC name map"
 
@@ -88,14 +88,39 @@ def load_notenames(path: str | Path) -> tuple[NoteMap, list[ParseIssue]]:
     return m, extra + issues
 
 
-def export_notenames(m: NoteMap) -> str:
+def primary_only_notes(m: NoteMap) -> tuple[set[int], list[str]]:
+    """Ноты для экспорта «одна нота на артикуляцию»: основная или единственная.
+
+    Возвращает (ноты для экспорта, имена пропущенных артикуляций — на нескольких нотах без единственной primary).
+    """
+    keep: set[int] = set()
+    skipped: list[str] = []
+    for notes in articulations(m).values():
+        flagged = [n for n in notes if n in m.primary]
+        if len(notes) == 1:
+            keep.add(notes[0])
+        elif len(flagged) == 1:
+            keep.add(flagged[0])
+        else:
+            skipped.append(m.names[notes[0]])
+    return keep, skipped
+
+
+def export_notenames(m: NoteMap, primary_only: bool = False) -> str:
+    """Текст MIDINoteNames. primary_only — одна нота на артикуляцию (что пропущено — см. primary_only_notes);
+    строки NO при этом остаются только для экспортированных нот."""
+    notes = set(m.names)
+    order = m.order
+    if primary_only:
+        notes, _ = primary_only_notes(m)
+        order = None if order is None else [n for n in order if n in notes]
     lines = [HEADER]
-    lines += [f"{n} {m.names[n]}" for n in sorted(m.names, reverse=True)]
+    lines += [f"{n} {m.names[n]}" for n in sorted(notes, reverse=True)]
     lines += m.extra_lines
-    if m.order is not None:
-        lines += [f"NO {n}" for n in m.order]
+    if order is not None:
+        lines += [f"NO {n}" for n in order]
     return "\r\n".join(lines) + "\r\n"
 
 
-def save_notenames(m: NoteMap, path: str | Path) -> None:
-    Path(path).write_bytes(export_notenames(m).encode("utf-8"))
+def save_notenames(m: NoteMap, path: str | Path, primary_only: bool = False) -> None:
+    Path(path).write_bytes(export_notenames(m, primary_only).encode("utf-8"))

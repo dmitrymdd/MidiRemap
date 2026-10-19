@@ -24,7 +24,9 @@
 1. **Карта нот (NoteMap)** — номер ноты (0–127) → имя. Описывает раскладку инструмента/программы.
    - Одно имя на нескольких нотах — НОРМА (в GP8: Ride (middle) на 51 и 126; в SD3 одна артикуляция доступна с нескольких нот).
      Ошибка — только дубликат номера.
-   - Заложить в модель (не обязательно в MVP): флаг «основная нота артикуляции» — нужен при конвертации В плагин.
+   - Флаг «основная нота артикуляции» (`NoteMap.primary`) — нужен при конвертации В плагин.
+     Не больше одной основной на артикуляцию (имена сравниваются через `normalize_name`); имени на одной ноте
+     флаг не нужен; primary — только на существующих нотах. Проверка — `validate_map()`, выбор — `primary_note()`.
 2. **Профиль ремапа (RemapProfile)** — исходная карта + целевая карта + явные правила
    `исх. нота → цел. нота | удалить | оставить`. Многие-в-одну — ключевой сценарий (артикуляции VST).
    Карты в профиле — ВСТРОЕННЫЕ КОПИИ (профиль самодостаточен), обе необязательны.
@@ -58,17 +60,23 @@
 - Язык для пользователя — английский: тексты UI, сообщения ядра (предупреждения, ошибки), README.
   Комментарии и docstring в коде — по-русски, общение с Дмитрием — по-русски.
 - Пакет `core/` НЕ импортирует Qt. Ядро должно работать из CLI и тестов.
+- Карты хранятся в JSON; REAPER MIDINoteNames `.txt` — только импорт/экспорт.
+- `meta` при копировании карты (в т.ч. из шаблона и в профиль): `source` сохраняется; правка имён, добавление или
+  удаление нот → `status` = "unverified"; изменение только флагов primary статус не меняет.
+- Названия нот по высоте: 60 = C3 (соглашение Toontrack, SD3 показывает 36 как C1) — `core/pitch.py`, `OCTAVE_OFFSET`.
 - Плагин — в будущем; переиспользуются данные (формат профиля JSON) и тестовые примеры, не Python-код.
 - Сборка: PyInstaller (папкой, не onefile), `.exe` — только в GitHub Releases.
 
-## Планируемая структура
+## Структура
 
 ```
 src/midiremap/
-  core/  notemap.py  notenames.py  profile.py  convert.py  legacy_map.py (временный GM→SD3 NOTE_MAP)
-  storage.py        # %APPDATA%\MidiRemap (вне Windows ~/.midiremap): maps/*.txt, profiles/*.json; настройки — позже
+  core/  notemap.py  notenames.py  profile.py  convert.py  pitch.py  legacy_map.py (GM→SD3 NOTE_MAP первой версии)
+  storage.py        # %APPDATA%\MidiRemap (вне Windows ~/.midiremap): maps/*.json, profiles/*.json; настройки — позже
+  templates/maps/   # встроенные шаблоны карт (данные пакета, только чтение)
   ui/               # PySide6
   __main__.py
+tools/build_map_templates.py  # генерирует templates/maps/*.json из samples/maps/*.txt
 tests/
 samples/
 ```
@@ -86,11 +94,27 @@ samples/
 - `usermap 55 kickR 36 -1` — гипотеза: входная нота, ID артикуляции SD3, её стандартная нота, (CC-зона?).
 - `Trafo`/`StoredTrafo` — кривые и пороги velocity; `HatsSplash`, `HatsPedalMode` — хай-хэт.
 
+**Карта нот** (JSON, UTF-8): `{"format": 1, "kind": "notemap", "name", "names": {"36": "..."}, "primary": [..],
+"order": null | [..], "extra_lines": [..], "meta": {"source": str|null, "status": "verified"|"unverified",
+"notes": str|null}}`. Экспорт в REAPER: `export_notenames(map, primary_only=False)`; при `primary_only=True` —
+одна нота на артикуляцию (основная или единственная), артикуляции с дублями без основной пропускаются
+(список — `primary_only_notes()`), строки `NO` — только для экспортированных нот.
+
 **Профиль ремапа** (JSON, UTF-8): `"format": 1`, `name`, `source_map`/`target_map` (null или
-`{name, names: {"36": "Kick"}, order, extra_lines}`), `rules` — список по возрастанию src:
+`{name, names: {"36": "Kick"}, primary, order, extra_lines, meta}`; `primary` и `meta` (как в JSON карты)
+необязательны — старые профили читаются; `"format"` остаётся 1), `rules` — список по возрастанию src:
 `{"src": 36, "action": "map", "dst": 36}` / `{"src": 60, "action": "delete"}` / `"keep"`.
-Хранилище: ID = имя файла без расширения (санитизация под Windows), отображаемое имя — внутри данных
-(у карт .txt поля имени нет — имя = ID). Без `overwrite=True` не перезаписывает; запись атомарная.
+
+**Хранилище**: ID = имя файла без расширения (санитизация под Windows), отображаемое имя — внутри данных.
+Без `overwrite=True` не перезаписывает; запись атомарная. Карты — `maps/*.json`; старые `maps/*.txt` читаются
+как legacy (`Entry.legacy`, имя = ID), `.json` с тем же ID скрывает `.txt`. Запись карты — всегда `.json`;
+legacy `.txt` с тем же ID занимает ID (нужен `overwrite=True`) и после записи удаляется; `delete_map` удаляет оба.
+
+**Встроенные шаблоны карт**: `src/midiremap/templates/maps/*.json`, генерируются `tools/build_map_templates.py`
+из `samples/maps/*.txt` (метаданные — в скрипте, только по фактам ниже; флагов primary нет — нет данных).
+`tests/test_templates.py` проверяет совпадение. Загрузка — `midiremap.templates.list_map_templates()` /
+`load_map_template(id)`. SD3 и EZD3 — verified; General MIDI и Guitar Pro 8 — unverified (источник не зафиксирован;
+у GP8 открытые вопросы по 83/120). Для сборки нужен `collect_data_files("midiremap.templates")` — пометка в spec.
 
 ## Открытые вопросы / TODO
 
@@ -122,7 +146,9 @@ samples/
 4. RemapProfile, JSON-хранилище, отчёт о конвертации — готово
 5. Пробная сборка PySide6 → .exe — готово
 6. Главный экран на PySide6, удалить Tk — готово
-7. Менеджер/редактор карт ← следующий
+7. Менеджер/редактор карт
+   7a. Модель карты (primary, meta), JSON-хранилище карт, встроенные шаблоны, названия нот — готово
+   7b. UI менеджера/редактора карт ← следующий
 8. Редактор профилей с подсказками
 9. Полировка, релиз v0.1.0
 

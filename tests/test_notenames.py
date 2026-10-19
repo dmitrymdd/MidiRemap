@@ -106,3 +106,32 @@ def test_cp1251_fallback_and_save_as_utf8(tmp_path):
 
 def test_normalize_name():
     assert normalize_name('  Ride   (Middle) ') == normalize_name('ride (middle)')
+
+
+# --- экспорт «одна нота на артикуляцию» ---
+
+def _kit():
+    from midiremap.core.notemap import NoteMap
+    return NoteMap('kit', {36: 'Kick', 35: 'Kick', 38: 'Snare', 51: 'Ride', 126: 'ride', 42: 'HH', 22: 'HH'},
+                   order=[38, 36, 35, 51, 126, 42, 22, 200], extra_lines=['# keep me'], primary={36, 126})
+
+
+def test_primary_only_notes():
+    from midiremap.core.notenames import primary_only_notes
+    keep, skipped = primary_only_notes(_kit())
+    assert keep == {36, 38, 126} and skipped == ['HH']
+
+
+def test_export_primary_only_keeps_no_lines_consistent():
+    m = _kit()
+    assert export_notenames(m, primary_only=True) == (
+        '# MIDI note/CC name map\r\n126 ride\r\n38 Snare\r\n36 Kick\r\n# keep me\r\n'
+        'NO 38\r\nNO 36\r\nNO 126\r\n')
+    assert export_notenames(m) == export_notenames(m, primary_only=False)
+    assert '42 HH' in export_notenames(m)
+
+
+def test_export_primary_only_without_order():
+    from midiremap.core.notemap import NoteMap
+    m = NoteMap('x', {36: 'Kick', 38: 'Snare'})
+    assert export_notenames(m, primary_only=True) == export_notenames(m)

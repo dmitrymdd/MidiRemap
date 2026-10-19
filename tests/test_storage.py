@@ -33,14 +33,62 @@ def test_profile_save_load_list_delete(st):
 
 
 def test_map_save_load_list_delete(st):
-    m = NoteMap('Моя карта', {36: 'Бочка', 38: 'Малый'}, order=[38, 36])
+    m = NoteMap('Моя карта', {36: 'Бочка', 38: 'Малый', 51: 'Ride', 59: 'Ride'}, order=[38, 36], primary={51})
     mid = st.save_map(m)
+    assert (st.maps_dir / 'Моя карта.json').is_file()
     loaded, issues = st.load_map(mid)
     assert issues == [] and loaded == m
     entries, _ = st.list_maps()
-    assert [(e.id, e.name) for e in entries] == [('Моя карта', 'Моя карта')]
+    assert [(e.id, e.name, e.legacy) for e in entries] == [('Моя карта', 'Моя карта', False)]
     st.delete_map(mid)
     assert st.list_maps() == ([], [])
+    with pytest.raises(FileNotFoundError):
+        st.delete_map(mid)
+    with pytest.raises(FileNotFoundError):
+        st.load_map(mid)
+
+
+def test_display_name_of_json_map_comes_from_data(st):
+    st.save_map(NoteMap('Shown name', {36: 'Kick'}), map_id='file-id')
+    entries, _ = st.list_maps()
+    assert [(e.id, e.name) for e in entries] == [('file-id', 'Shown name')]
+
+
+LEGACY_TXT = '# MIDI note/CC name map\r\n38 Snare\r\n36 Kick\r\n'
+
+
+def test_legacy_txt_map_listed_and_loaded(st):
+    st.maps_dir.mkdir(parents=True)
+    (st.maps_dir / 'Old.txt').write_bytes(LEGACY_TXT.encode('utf-8'))
+    st.save_map(NoteMap('New', {36: 'Kick'}))
+    entries, issues = st.list_maps()
+    assert issues == []
+    assert [(e.id, e.name, e.legacy) for e in entries] == [('New', 'New', False), ('Old', 'Old', True)]
+    m, issues = st.load_map('Old')
+    assert m.names == {36: 'Kick', 38: 'Snare'} and issues == []
+
+
+def test_saving_over_legacy_map_writes_json(st):
+    st.maps_dir.mkdir(parents=True)
+    (st.maps_dir / 'Old.txt').write_bytes(LEGACY_TXT.encode('utf-8'))
+    m, _ = st.load_map('Old')
+    with pytest.raises(FileExistsError):
+        st.save_map(m)
+    assert st.save_map(m, overwrite=True) == 'Old'
+    assert sorted(p.name for p in st.maps_dir.iterdir()) == ['Old.json']
+    entries, _ = st.list_maps()
+    assert [(e.id, e.legacy) for e in entries] == [('Old', False)]
+    assert st.load_map('Old')[0] == m
+
+
+def test_json_map_shadows_legacy_txt_with_same_id(st):
+    st.save_map(NoteMap('Same', {36: 'From JSON'}))
+    (st.maps_dir / 'Same.txt').write_bytes(LEGACY_TXT.encode('utf-8'))
+    entries, _ = st.list_maps()
+    assert [(e.id, e.legacy) for e in entries] == [('Same', False)]
+    assert st.load_map('Same')[0].names == {36: 'From JSON'}
+    st.delete_map('Same')
+    assert list(st.maps_dir.iterdir()) == []
 
 
 def test_explicit_id_and_display_name_inside_data(st):
@@ -109,5 +157,8 @@ def test_garbage_map_does_not_crash_listing(st):
     st.save_map(NoteMap('good', {36: 'Kick'}))
     (st.maps_dir / 'garbage.txt').write_bytes(b'\xff\xfe\x00\x81 garbage')  # парсер снисходителен: карта с ошибками
     (st.maps_dir / 'folder.txt').mkdir()  # не файл — пропускается молча
+    (st.maps_dir / 'broken.json').write_text('{not json', encoding='utf-8')
+    (st.maps_dir / 'profile.json').write_text('{"format": 1, "name": "p", "rules": []}', encoding='utf-8')
     entries, issues = st.list_maps()
-    assert [e.id for e in entries] == ['garbage', 'good'] and issues == []
+    assert [e.id for e in entries] == ['garbage', 'good']
+    assert sorted(i.path.name for i in issues) == ['broken.json', 'profile.json']

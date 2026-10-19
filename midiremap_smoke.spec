@@ -1,6 +1,11 @@
 # PyInstaller spec для пробной сборки PySide6 (этап 5). Сборка папкой (onedir).
 # Запуск: .venv\Scripts\pyinstaller midiremap_smoke.spec --noconfirm
 # Результат: dist\MidiRemapSmoke\MidiRemapSmoke.exe
+#
+# При переходе на настоящее приложение (этап 9) в Analysis нужно добавить данные пакета —
+# встроенные шаблоны карт src/midiremap/templates/maps/*.json:
+#   from PyInstaller.utils.hooks import collect_data_files
+#   datas=collect_data_files("midiremap.templates")
 
 a = Analysis(
     ["src/midiremap/ui/smoke.py"],
