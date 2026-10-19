@@ -1,6 +1,6 @@
-"""Главное окно MidiRemap на PySide6 (этап 6a): паритет с Tk-UI + выбор профиля и отчёт.
+"""Главное окно MidiRemap на PySide6: загрузка файла, выбор профиля, конвертация, отчёт, вывод результата.
 
-Запуск: python -m midiremap   (старый Tk-UI: python -m midiremap --tk)
+Запуск: python -m midiremap
 Логики конвертации здесь нет — только вызов midiremap.core.convert и показ отчёта.
 """
 from __future__ import annotations
