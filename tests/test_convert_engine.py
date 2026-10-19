@@ -10,7 +10,8 @@ from midiremap.core.legacy_map import NOTE_MAP
 from midiremap.core.notemap import NoteMap
 
 ROOT = Path(__file__).resolve().parent.parent
-SAMPLES = sorted((ROOT / 'samples' / 'midi').glob('*.mid'))
+# результаты работы программы (*_remapped.mid) могут лежать рядом — входами тестов они не являются
+SAMPLES = sorted(p for p in (ROOT / 'samples' / 'midi').glob('*.mid') if not p.stem.endswith('_remapped'))
 ON, OFF, CC = 'note_on', 'note_off', 'control_change'
 
 

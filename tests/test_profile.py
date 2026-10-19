@@ -60,6 +60,19 @@ def test_round_trip_with_maps_cyrillic_order_and_extra_lines():
     assert all(isinstance(k, int) for k in back.target_map.names)
 
 
+def test_template_map_meta_survives_profile_round_trip(tmp_path):
+    from midiremap.storage import Storage
+    from midiremap.templates import load_map_template
+    sd3 = load_map_template('Superior Drummer 3')
+    assert sd3.meta.status == 'verified' and sd3.meta.source
+    p = RemapProfile('GM → SD3', target_map=sd3, rules={35: Rule.map_to(36)})
+    assert json.loads(p.to_json())['target_map']['meta']['status'] == 'verified'
+    back = RemapProfile.from_json(p.to_json())
+    assert back.target_map.meta == sd3.meta and back == p
+    st = Storage(tmp_path / 'data')
+    assert st.load_profile(st.save_profile(p)).target_map.meta == sd3.meta
+
+
 def test_legacy_profile_round_trip():
     p = legacy_profile()
     assert RemapProfile.from_json(p.to_json()) == p
