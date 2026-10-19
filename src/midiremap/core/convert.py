@@ -174,26 +174,26 @@ def _warnings(profile: RemapProfile, scan: Analysis, notes: dict[int, NoteResult
     if scan.multi_location:
         tracks = ", ".join(str(t + 1) for t in scan.note_tracks)
         channels = ", ".join(str(c + 1) for c in scan.note_channels)
-        warnings.append(f"Ноты есть в нескольких дорожках/каналах (дорожки: {tracks}; каналы: {channels}) — "
-                        "все ремапятся по одному профилю.")
+        warnings.append(f"Notes found in several tracks/channels (tracks: {tracks}; channels: {channels}); "
+                        "all of them are remapped with the same profile.")
     tm, sm = profile.target_map, profile.source_map
     if tm is None:
-        warnings.append("В профиле нет целевой карты: проверки занятости целевых нот пропущены.")
+        warnings.append("The profile has no target map, so target notes were not checked.")
         return warnings
     for n, r in notes.items():
         if r.action == 'keep' and n not in tm.names:
-            warnings.append(f"Нота {n} остаётся на месте, но в целевой карте нет ноты {n} — "
-                            "скорее всего, она не прозвучит.")
+            warnings.append(f"Note {n} is kept as is, but the target map has no note {n}. "
+                            "It will probably not sound.")
         elif r.action == 'keep':
             tgt_name = tm.names[n]
             src_name = sm.names.get(n) if sm is not None else None
             if src_name is None:
-                warnings.append(f"Нота {n} остаётся на месте, но её исходное имя неизвестно, "
-                                f"а в целевой карте это «{tgt_name}».")
+                warnings.append(f"Note {n} is kept as is. Its source name is unknown, "
+                                f"and in the target map it is \"{tgt_name}\".")
             elif normalize_name(src_name) != normalize_name(tgt_name):
-                warnings.append(f"Нота {n} «{src_name}» остаётся на месте, но в целевой карте это «{tgt_name}».")
+                warnings.append(f"Note {n} \"{src_name}\" is kept as is, but in the target map it is \"{tgt_name}\".")
         elif r.action == 'map' and r.dst not in tm.names:
-            warnings.append(f"Нота {n} → {r.dst}: в целевой карте нет ноты {r.dst}.")
+            warnings.append(f"Note {n} → {r.dst}: the target map has no note {r.dst}.")
     return warnings
 
 
@@ -206,13 +206,13 @@ def convert(src: str | Path, dst: str | Path, profile: RemapProfile,
     merge_window_ticks — допуск слияния многие-в-одну; пока поддерживается только 0 (точный тик).
     """
     if merge_window_ticks < 0:
-        raise ValueError("merge_window_ticks не может быть отрицательным")
+        raise ValueError("merge_window_ticks cannot be negative")
     if merge_window_ticks > 0:
         raise ValueError("merge_window_ticks > 0: not supported yet")
     for n, rule in (overrides or {}).items():
         check_note(n, "overrides")
         if not isinstance(rule, Rule):
-            raise TypeError(f"override для ноты {n} должен быть Rule, получено {type(rule).__name__}")
+            raise TypeError(f"override for note {n} must be a Rule, got {type(rule).__name__}")
 
     midi = mido.MidiFile(str(src))
     scan = _scan(midi)

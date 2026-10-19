@@ -213,7 +213,7 @@ def warnings_for(tmp_path, notes, p, overrides=None):
 
 def test_missing_target_map_single_warning(tmp_path):
     w = warnings_for(tmp_path, [36, 38, 60], profile({36: Rule.map_to(99)}))
-    assert len(w) == 1 and 'нет целевой карты' in w[0]
+    assert len(w) == 1 and 'no target map' in w[0]
 
 
 def test_keep_onto_differently_named_note_warns(tmp_path):
@@ -226,9 +226,9 @@ def test_keep_onto_differently_named_note_warns(tmp_path):
 def test_keep_with_unknown_source_name_warns(tmp_path):
     tgt = nmap('SD3', n38='Snare')
     w = warnings_for(tmp_path, [38], profile(target=tgt))  # нет исходной карты, keep по умолчанию
-    assert len(w) == 1 and 'неизвестно' in w[0]
+    assert len(w) == 1 and 'unknown' in w[0]
     w = warnings_for(tmp_path, [38], profile(source=nmap('GM', n36='Kick'), target=tgt))
-    assert len(w) == 1 and 'неизвестно' in w[0]
+    assert len(w) == 1 and 'unknown' in w[0]
 
 
 def test_keep_onto_note_absent_from_target_warns(tmp_path):
@@ -237,8 +237,8 @@ def test_keep_onto_note_absent_from_target_warns(tmp_path):
     # 29 — keep по умолчанию, 60 — явный keep; 38 есть в обеих картах с тем же именем
     w = warnings_for(tmp_path, [29, 38, 60], profile({60: Rule.keep()}, src, tgt))
     assert w == [
-        'Нота 29 остаётся на месте, но в целевой карте нет ноты 29 — скорее всего, она не прозвучит.',
-        'Нота 60 остаётся на месте, но в целевой карте нет ноты 60 — скорее всего, она не прозвучит.',
+        'Note 29 is kept as is, but the target map has no note 29. It will probably not sound.',
+        'Note 60 is kept as is, but the target map has no note 60. It will probably not sound.',
     ]
 
 
@@ -258,13 +258,13 @@ def test_multi_track_warning(tmp_path):
     p = profile(target=nmap('T', n36='Kick', n38='Snare'), source=nmap('S', n36='Kick', n38='Snare'))
     assert analyze(src, p).note_tracks == [0, 1]
     report = convert(src, tmp_path / 'out.mid', p)
-    assert len(report.warnings) == 1 and 'дорожк' in report.warnings[0]
+    assert len(report.warnings) == 1 and 'tracks' in report.warnings[0]
     assert len(mido.MidiFile(str(tmp_path / 'out.mid')).tracks) == 2
 
 
 def test_multi_channel_warning(tmp_path):
     p = profile(target=nmap('T', n36='Kick'), source=nmap('S', n36='Kick'))
     report, _ = run(tmp_path, [(0, on(36, ch=0)), (10, on(36, ch=9))], p)
-    assert len(report.warnings) == 1 and 'каналы: 1, 10' in report.warnings[0]
+    assert len(report.warnings) == 1 and 'channels: 1, 10' in report.warnings[0]
     report, _ = run(tmp_path, [(0, on(36, ch=9)), (10, on(36, ch=9))], p)
     assert report.warnings == []

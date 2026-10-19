@@ -67,7 +67,7 @@ def test_legacy_profile_round_trip():
 
 @pytest.mark.parametrize('version', [2, 0, '1', None, True])
 def test_unknown_format_version(version):
-    with pytest.raises(ProfileFormatError, match='верси'):
+    with pytest.raises(ProfileFormatError, match='version'):
         RemapProfile.from_json(json.dumps({'format': version, 'name': 'x', 'rules': []}))
 
 

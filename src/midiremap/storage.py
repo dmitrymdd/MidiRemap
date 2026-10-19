@@ -72,7 +72,7 @@ class Storage:
             try:
                 m, _ = load_notenames(path)
             except (OSError, ValueError) as e:
-                issues.append(StorageIssue(path, f"карта не читается: {e}"))
+                issues.append(StorageIssue(path, f"cannot read map: {e}"))
                 continue
             entries.append(Entry(path.stem, m.name, path))
         return entries, issues
@@ -97,7 +97,7 @@ class Storage:
             try:
                 p = RemapProfile.from_json(path.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError) as e:  # ProfileFormatError и UnicodeDecodeError — тоже ValueError
-                issues.append(StorageIssue(path, f"профиль не читается: {e}"))
+                issues.append(StorageIssue(path, f"cannot read profile: {e}"))
                 continue
             entries.append(Entry(path.stem, p.name, path))
         return entries, issues
@@ -123,7 +123,7 @@ class Storage:
 def _check_id(entry_id: str) -> str:
     """ID должен уже быть безопасным именем файла (в т.ч. без ../ и разделителей пути)."""
     if sanitize_id(entry_id) != entry_id:
-        raise ValueError(f"недопустимый ID записи: {entry_id!r}")
+        raise ValueError(f"invalid entry ID: {entry_id!r}")
     return entry_id
 
 
@@ -137,7 +137,7 @@ def _files(folder: Path, ext: str) -> list[Path]:
 def _atomic_write(path: Path, data: bytes, overwrite: bool) -> None:
     """Запись через временный файл + os.replace: при сбое старый файл остаётся целым."""
     if path.exists() and not overwrite:
-        raise FileExistsError(f"файл уже существует: {path}")
+        raise FileExistsError(f"file already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
     try:

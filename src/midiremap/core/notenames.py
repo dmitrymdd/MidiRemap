@@ -49,29 +49,29 @@ def parse_notenames(text: str, name: str) -> tuple[NoteMap, list[ParseIssue]]:
         if note:
             n, label = int(note.group(1)), note.group(2).strip()
             if not 0 <= n <= 127:
-                issues.append(ParseIssue(lineno, f"номер ноты {n} вне диапазона 0..127"))
+                issues.append(ParseIssue(lineno, f"note number {n} is out of range 0..127"))
                 m.extra_lines.append(line)
                 continue
             if n in m.names:
                 # Допущение: при дубликате номера побеждает ПОСЛЕДНЯЯ строка.
-                issues.append(ParseIssue(lineno, f"дубликат номера ноты {n}: используется последнее значение"))
+                issues.append(ParseIssue(lineno, f"duplicate note number {n}: the last name is used"))
             m.names[n] = label
             continue
 
         if _BARE_NUM_RE.match(line.strip()):
-            issues.append(ParseIssue(lineno, "нота без имени пропущена"))
+            issues.append(ParseIssue(lineno, "note without a name skipped"))
             continue
 
-        issues.append(ParseIssue(lineno, f"нераспознанная строка сохранена как есть: {line!r}"))
+        issues.append(ParseIssue(lineno, f"unrecognized line kept as is: {line!r}"))
         m.extra_lines.append(line)
 
     if order:
         m.order = [n for _, n in order]
         for lineno, n in order:
             if not 0 <= n <= 127:
-                issues.append(ParseIssue(lineno, f"NO {n}: номер вне диапазона 0..127"))
+                issues.append(ParseIssue(lineno, f"NO {n}: number is out of range 0..127"))
             elif n not in m.names:
-                issues.append(ParseIssue(lineno, f"NO {n}: такой ноты нет в карте"))
+                issues.append(ParseIssue(lineno, f"NO {n}: no such note in the map"))
     return m, issues
 
 
@@ -83,7 +83,7 @@ def load_notenames(path: str | Path) -> tuple[NoteMap, list[ParseIssue]]:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         text = data.decode("cp1251", errors="replace")
-        extra.append(ParseIssue(0, "файл не в UTF-8: прочитан как cp1251"))
+        extra.append(ParseIssue(0, "file is not UTF-8: read as cp1251"))
     m, issues = parse_notenames(text, path.stem)
     return m, extra + issues
 

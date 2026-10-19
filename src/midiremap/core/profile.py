@@ -19,9 +19,9 @@ class ProfileFormatError(ValueError):
     """Профиль не читается: не JSON, неизвестная версия формата, битые поля."""
 
 
-def check_note(n: Any, what: str = "нота") -> None:
+def check_note(n: Any, what: str = "note") -> None:
     if isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 127:
-        raise ValueError(f"{what}: номер ноты должен быть целым 0..127, получено {n!r}")
+        raise ValueError(f"{what}: note number must be an integer 0..127, got {n!r}")
 
 
 @dataclass(frozen=True)
@@ -32,11 +32,11 @@ class Rule:
 
     def __post_init__(self) -> None:
         if self.action not in ACTIONS:
-            raise ValueError(f"неизвестное действие {self.action!r}, ожидается одно из {ACTIONS}")
+            raise ValueError(f"unknown action {self.action!r}, expected one of {ACTIONS}")
         if self.action == "map":
             check_note(self.dst, "dst")
         elif self.dst is not None:
-            raise ValueError(f"dst задаётся только для действия 'map', не для {self.action!r}")
+            raise ValueError(f"dst is only allowed for the 'map' action, not for {self.action!r}")
 
     @classmethod
     def map_to(cls, dst: int) -> Rule:
@@ -74,7 +74,7 @@ class RemapProfile:
         for src, rule in self.rules.items():
             check_note(src, "src")
             if not isinstance(rule, Rule):
-                raise TypeError(f"правило для ноты {src} должно быть Rule, получено {type(rule).__name__}")
+                raise TypeError(f"rule for note {src} must be a Rule, got {type(rule).__name__}")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -99,28 +99,28 @@ class RemapProfile:
     @classmethod
     def from_dict(cls, data: Any) -> RemapProfile:
         if not isinstance(data, dict):
-            raise ProfileFormatError("профиль должен быть JSON-объектом")
+            raise ProfileFormatError("a profile must be a JSON object")
         if "format" not in data:
-            raise ProfileFormatError("нет поля 'format' — это не профиль MidiRemap")
+            raise ProfileFormatError("no 'format' field: this is not a MidiRemap profile")
         version = data["format"]
         if version != FORMAT_VERSION or isinstance(version, bool):
             raise ProfileFormatError(
-                f"неизвестная версия формата профиля: {version!r} (поддерживается {FORMAT_VERSION})")
+                f"unsupported profile format version: {version!r} (supported: {FORMAT_VERSION})")
         try:
             name = data["name"]
             if not isinstance(name, str):
-                raise ValueError("'name' должно быть строкой")
+                raise ValueError("'name' must be a string")
             raw_rules = data.get("rules", [])
             if not isinstance(raw_rules, list):
-                raise ValueError("'rules' должно быть списком")
+                raise ValueError("'rules' must be a list")
             rules: dict[int, Rule] = {}
             for item in raw_rules:
                 if not isinstance(item, dict):
-                    raise ValueError(f"правило должно быть объектом: {item!r}")
+                    raise ValueError(f"a rule must be an object: {item!r}")
                 src = item["src"]
                 check_note(src, "src")
                 if src in rules:
-                    raise ValueError(f"два правила для исходной ноты {src}")
+                    raise ValueError(f"two rules for source note {src}")
                 rules[src] = Rule(item["action"], item.get("dst"))
             return cls(
                 name=name,
@@ -129,16 +129,16 @@ class RemapProfile:
                 rules=rules,
             )
         except KeyError as e:
-            raise ProfileFormatError(f"в профиле нет обязательного поля {e.args[0]!r}") from e
+            raise ProfileFormatError(f"required field {e.args[0]!r} is missing") from e
         except (ValueError, TypeError) as e:
-            raise ProfileFormatError(f"ошибка в профиле: {e}") from e
+            raise ProfileFormatError(f"invalid profile: {e}") from e
 
     @classmethod
     def from_json(cls, text: str) -> RemapProfile:
         try:
             data = json.loads(text)
         except json.JSONDecodeError as e:
-            raise ProfileFormatError(f"файл профиля — не корректный JSON: {e}") from e
+            raise ProfileFormatError(f"profile file is not valid JSON: {e}") from e
         return cls.from_dict(data)
 
 
@@ -157,27 +157,27 @@ def _map_from_dict(data: Any, what: str) -> NoteMap | None:
     if data is None:
         return None
     if not isinstance(data, dict):
-        raise ValueError(f"'{what}' должно быть объектом или null")
+        raise ValueError(f"'{what}' must be an object or null")
     name = data["name"]
     raw_names = data.get("names", {})
     order = data.get("order")
     extra = data.get("extra_lines", [])
     if not isinstance(name, str) or not isinstance(raw_names, dict):
-        raise ValueError(f"'{what}': неверные поля name/names")
+        raise ValueError(f"'{what}': invalid name/names fields")
     names: dict[int, str] = {}
     for key, label in raw_names.items():
         if not (isinstance(key, str) and key.isdigit()):
-            raise ValueError(f"'{what}': ключ ноты должен быть числом, получено {key!r}")
+            raise ValueError(f"'{what}': note key must be a number, got {key!r}")
         check_note(int(key), f"{what}.names")
         if not isinstance(label, str):
-            raise ValueError(f"'{what}': имя ноты {key} должно быть строкой")
+            raise ValueError(f"'{what}': name of note {key} must be a string")
         names[int(key)] = label
     # order — как в файле REAPER (там встречаются и номера вне карты), поэтому только проверка типа
     if order is not None and not (isinstance(order, list)
                                   and all(isinstance(n, int) and not isinstance(n, bool) for n in order)):
-        raise ValueError(f"'{what}': 'order' должно быть списком целых или null")
+        raise ValueError(f"'{what}': 'order' must be a list of integers or null")
     if not (isinstance(extra, list) and all(isinstance(s, str) for s in extra)):
-        raise ValueError(f"'{what}': 'extra_lines' должно быть списком строк")
+        raise ValueError(f"'{what}': 'extra_lines' must be a list of strings")
     return NoteMap(name=name, names=names, order=order, extra_lines=list(extra))
 
 
