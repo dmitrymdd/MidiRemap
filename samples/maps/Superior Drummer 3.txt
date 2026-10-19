@@ -1,0 +1,123 @@
+# MIDI note/CC name map
+127 Snare: Forward brushTrig
+126 Snare: Backward brushTrig
+125 Snare: Mid Center
+124 Hi-Hat: Open Bell 4
+123 Hi-Hat: Open Bell 3
+122 Hi-Hat: Open Bell 2
+121 Hi-Hat: Open Bell 1
+120 Hi-Hat: Open Bell 0
+119 Hi-Hat: Closed Bell
+118 Ride: Mute Hit
+117 Ride: Bell Tip
+116 Ride: Bow Shank
+115 Ride: Crash
+114 Ride: Bell Shank
+113 Ride: Bow Tip
+112 Cymbal 5: Bell Tip
+111 Cymbal 5: Bow Shank
+110 Cymbal 5: Crash
+109 Cymbal 5: Bell Shank
+108 Cymbal 5: Bow Tip
+107 Cymbal 5: Mute Hit
+106 Cymbal 4: Mute Hit
+105 Cymbal 4: Bell Tip
+104 Cymbal 4: Bow Shank
+103 Cymbal 4: Crash
+102 Cymbal 4: Bell Shank
+101 Cymbal 4: Bow Tip
+100 Cymbal 3: Bell Tip
+99 Cymbal 3: Bow Shank
+98 Cymbal 3: Crash
+97 Cymbal 3: Bell Shank
+96 Cymbal 3: Bow Tip
+95 Cymbal 3: Mute Hit
+94 Cymbal 2: Mute Hit
+93 Cymbal 2: Bell Tip
+92 Cymbal 2: Bow Shank
+91 Cymbal 2: Crash
+90 Cymbal 2: Bell Shank
+89 Cymbal 2: Bow Tip
+88 Cymbal 1: Bell Tip
+87 Cymbal 1: Bow Shank
+86 Cymbal 1: Crash
+85 Cymbal 1: Bell Shank
+84 Cymbal 1: Bow Tip
+83 Cymbal 1: Mute Hit
+82 Racktom 1: Rimshot
+81 Racktom 1: Rim Only
+80 Racktom 2: Rimshot
+79 Racktom 2: Rim Only
+78 Racktom 3: Rimshot
+77 Racktom 3: Rim Only
+76 Snare: Sidestick
+75 Floortom 1: Rimshot
+74 Floortom 1: Rim Only
+73 Floortom 2: Rimshot
+72 Floortom 2: Rim Only
+71 Snare: Rim Only
+70 Snare: Thump
+69 Snare: Flams
+68 Snare: Mute
+67 Snare: Forward Swirl
+66 Snare: Backward Swirl
+65 Hi-Hat: Seq Hits
+64 Hi-Hat: Open Edge 0
+63 Hi-Hat: Tight Tip
+62 Hi-Hat: Tight Edge
+61 Hi-Hat: Closed Tip
+60 Hi-Hat: Open Edge 4
+59 Ride: Crash
+58 Cymbal 4: Mute Hit
+57 Cymbal 4: Crash
+56 Cymbal 3: Mute Hit
+55 Cymbal 3: Crash
+54 Cymbal 5: Mute Hit
+53 Ride: Bell Shank
+52 Cymbal 5: Crash
+51 Ride: Bow Tip
+50 Cymbal 2: Mute Hit
+49 Cymbal 2: Crash
+48 Racktom 1: Center
+47 Racktom 2: Center
+46 Hi-Hat: Open Edge 2
+45 Racktom 3: Center
+44 Hi-Hat: Closed Pedal
+43 Floortom 1: Center
+42 Hi-Hat: Closed Tip
+41 Floortom 2: Center
+40 Snare: Rimshot
+39 Snare: Ruffs
+38 Snare: Center
+37 Snare: Sidestick
+36 Kick: Open
+35 Kick: Hit
+34 Kick: Open
+33 Snare: Edge
+32 Cymbal 5: Crash
+31 Cymbal 4: Crash
+30 Ride: Crash
+29 Cymbal 3: Crash
+28 Cymbal 2: Crash
+27 Cymbal 1: Crash
+26 Hi-Hat: Open Edge 3
+25 Hi-Hat: Open Edge 2
+24 Hi-Hat: Open Edge 1
+23 Hi-Hat: Open Pedal
+22 Hi-Hat: Closed Edge
+21 Hi-Hat: Closed Pedal
+20 Hi-Hat: Shaft Trigger
+19 Hi-Hat: Tip Trigger
+18 Hi-Hat: Edge Trigger
+17 Hi-Hat: Open Tip 5
+16 Hi-Hat: Open Tip 4
+15 Hi-Hat: Open Tip 3
+14 Hi-Hat: Open Tip 2
+13 Hi-Hat: Open Tip 1
+12 Hi-Hat: Open Tip 0
+11 Hi-Hat: Closed Tip
+10 Hi-Hat: Closed Pedal
+9 Hi-Hat: Bell Trigger
+8 Hi-Hat: Tip Trigger
+7 Hi-Hat: Edge Trigger
+6 Snare: Trigger
