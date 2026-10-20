@@ -39,8 +39,8 @@ def test_template_metadata():
     assert t['Superior Drummer 3'].meta.status == 'verified'
     assert t['EZdrummer 3'].meta.status == 'verified'
     assert 'not of the EZdrummer 3 plugin' in t['EZdrummer 3'].meta.notes
-    assert t['General MIDI'].meta.status == 'unverified'
-    assert t['Guitar Pro 8'].meta.status == 'unverified'
+    assert t['General MIDI'].meta.status == 'verified'
+    assert t['Guitar Pro 8'].meta.status == 'verified'
     assert len(t['Superior Drummer 3'].names) == len(t['EZdrummer 3'].names) == 122
 
 

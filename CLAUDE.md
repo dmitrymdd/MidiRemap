@@ -118,8 +118,8 @@ legacy `.txt` с тем же ID занимает ID (нужен `overwrite=True`
 **Встроенные шаблоны карт**: `src/midiremap/templates/maps/*.json`, генерируются `tools/build_map_templates.py`
 из `samples/maps/*.txt` (метаданные — в скрипте, только по фактам ниже; флагов primary нет — нет данных).
 `tests/test_templates.py` проверяет совпадение. Загрузка — `midiremap.templates.list_map_templates()` /
-`load_map_template(id)`. SD3 и EZD3 — verified; General MIDI и Guitar Pro 8 — unverified (источник не зафиксирован;
-у GP8 открытые вопросы по 83/120). Для сборки нужен `collect_data_files("midiremap.templates")` — пометка в spec.
+`load_map_template(id)`. Все четыре — verified (General MIDI и Guitar Pro 8 — по ручной проверке Дмитрия,
+источник в метаданных не указан). Для сборки нужен `collect_data_files("midiremap.templates")` — пометка в spec.
 
 ## Открытые вопросы / TODO
 
@@ -135,7 +135,6 @@ legacy `.txt` с тем же ID занимает ID (нужен `overwrite=True`
     → флаг «основная нота артикуляции» ОБЯЗАТЕЛЕН, а не опционален.
   - Карты «(clean)» — рабочие REAPER-карты пользователя (одна нота на артикуляцию, порядок через `NO`-строки),
     НЕ встроенные шаблоны. Имена тарелок там по ролям (crash 1/2/3, china) — это допущение для SD3.
-- GP8: проверить дубль ноты 83 (Tinkle/Jingle Bell) и обрезанное имя 120.
 - Сборка (этап 5): `midiremap_smoke.spec` → `dist\MidiRemapSmoke\` (без консоли) и `dist\MidiRemapSmoke-debug\`
   (с консолью; запуск с `QT_DEBUG_PLUGINS=1` показывает сообщения Qt). Python 3.14, PySide6-Essentials 6.12,
   PyInstaller 6.22; папка ~104 МБ. `missing module 'collections.abc'` в warn-файле — ложное срабатывание.

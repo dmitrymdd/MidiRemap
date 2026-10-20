@@ -22,10 +22,8 @@ OUT = ROOT / "src" / "midiremap" / "templates" / "maps"
 TEMPLATES: dict[str, tuple[str, MapMeta]] = {
     "Superior Drummer 3": ("Superior Drummer 3.txt", MapMeta(
         source='Superior Drummer 3 core library, default preset. Transcribed from the SD3 '
-               '"MIDI Mapping Keys" view (notes 6-127).',
+               '"MIDI Mapping Keys" view.',
         status="verified",
-        notes="Names of notes 126 and 127 are cut off in that view; "
-              "they were completed from the SD3 eDrums view.",
     )),
     "EZdrummer 3": ("EZdrummer 3.txt", MapMeta(
         source='EZdrummer 3 library loaded inside Superior Drummer 3, default preset. Transcribed from the SD3 '
@@ -33,11 +31,8 @@ TEMPLATES: dict[str, tuple[str, MapMeta]] = {
         status="verified",
         notes="This is the layout of the EZdrummer 3 library inside SD3, not of the EZdrummer 3 plugin itself.",
     )),
-    "General MIDI": ("General_MIDI_GM1.txt", MapMeta()),
-    "Guitar Pro 8": ("Guitar_Pro_8.txt", MapMeta(
-        notes="Open questions: note 83 has two names (Tinkle Bell / Jingle Bell); "
-              "the name of note 120 may be cut off.",
-    )),
+    "General MIDI": ("General_MIDI_GM1.txt", MapMeta(status="verified")),
+    "Guitar Pro 8": ("Guitar_Pro_8.txt", MapMeta(status="verified")),
 }
 
 

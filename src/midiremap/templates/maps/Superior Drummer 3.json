@@ -131,6 +131,7 @@
   "extra_lines": [],
   "meta": {
     "source": "Superior Drummer 3 core library, default preset. Transcribed from the SD3 \"MIDI Mapping Keys\" view.",
-    "status": "verified"
+    "status": "verified",
+    "notes": null
   }
 }
