@@ -1,4 +1,5 @@
-"""Главное окно MidiRemap на PySide6: загрузка файла, выбор профиля, конвертация, отчёт, вывод результата.
+"""Главное окно MidiRemap на PySide6: вкладки Convert (загрузка файла, выбор профиля, конвертация, отчёт,
+вывод результата) и Maps (менеджер и редактор карт нот, ui/maps_page.py).
 
 Запуск: python -m midiremap
 Логики конвертации здесь нет — только вызов midiremap.core.convert и показ отчёта.
@@ -12,15 +13,18 @@ from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QDrag, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ..core import ConversionReport, RemapProfile, convert, legacy_profile
 from ..storage import Storage
-from .theme import stylesheet
+from .maps_page import MapsPage
+from .theme import repolish as _repolish, stylesheet
 
 MIDI_EXTS = {".mid", ".midi"}
 LEGACY_ID = None  # в комбобоксе legacy_profile() хранится с data=None, профили из хранилища — с их ID
+
+PAGE_CONVERT, PAGE_MAPS = 0, 1
 
 ACTION_LABELS = {"map": "remapped", "delete": "deleted", "keep": "kept as is"}
 
@@ -68,13 +72,6 @@ def format_report(report: ConversionReport) -> str:
             origin = "" if r.origin == "profile" else f"  [{r.origin}]"
             lines.append(f"  {r.src:>3} {target:<8} ×{r.count}{origin}")
     return "\n".join(lines)
-
-
-def _repolish(w: QWidget, prop: str, value: str) -> None:
-    """Сменить динамическое свойство и применить стили, зависящие от него."""
-    w.setProperty(prop, value)
-    w.style().unpolish(w)
-    w.style().polish(w)
 
 
 class FileCard(QFrame):
@@ -197,12 +194,36 @@ class MainWindow(QMainWindow):
         titles.setSpacing(0)
         titles.addWidget(title)
         titles.addWidget(subtitle)
+        self.nav_convert = QPushButton("Convert")
+        self.nav_maps = QPushButton("Maps")
+        for i, b in enumerate((self.nav_convert, self.nav_maps)):
+            b.setObjectName("navTab")
+            b.setCheckable(True)
+            b.setAutoExclusive(True)
+            b.clicked.connect(lambda _=False, page=i: self.show_page(page))
+        self.nav_convert.setChecked(True)
         head = QHBoxLayout()
         head.addWidget(logo)
         head.addSpacing(10)
         head.addLayout(titles, stretch=1)
+        head.addWidget(self.nav_convert, alignment=Qt.AlignmentFlag.AlignBottom)
+        head.addWidget(self.nav_maps, alignment=Qt.AlignmentFlag.AlignBottom)
         root.addLayout(head)
-        root.addSpacing(10)
+
+        self.pages = QStackedWidget()
+        root.addWidget(self.pages, stretch=1)
+        convert_page = QWidget()
+        self.pages.addWidget(convert_page)
+        self.maps_page = MapsPage(self.storage)
+        self.maps_page.dirty_changed.connect(self._on_maps_dirty)
+        self.pages.addWidget(self.maps_page)
+        self._build_convert_page(convert_page)
+        self.setCentralWidget(central)
+
+    def _build_convert_page(self, page: QWidget) -> None:
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 10, 0, 0)
+        root.setSpacing(8)
 
         self.drop = DropZone(self.choose_file)
         arrow = QLabel("↓")
@@ -270,7 +291,6 @@ class MainWindow(QMainWindow):
         hint = QLabel("Enter: convert    Ctrl+V: paste file    Ctrl+C: copy output file    Esc: clear")
         hint.setObjectName("hint")
         root.addWidget(hint)
-        self.setCentralWidget(central)
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -279,12 +299,35 @@ class MainWindow(QMainWindow):
         return label
 
     def _bind_shortcuts(self) -> None:
-        for keys, slot in ((QKeySequence.StandardKey.Paste, self.paste_file),
-                           (QKeySequence.StandardKey.Copy, self.copy_output),
-                           (Qt.Key.Key_Return, self.convert),
-                           (Qt.Key.Key_Enter, self.convert),
-                           (Qt.Key.Key_Escape, self.clear)):
+        # горячие клавиши экрана Convert; на вкладке Maps выключены (там Enter/Ctrl+C нужны таблице)
+        self._convert_shortcuts = [
             QShortcut(QKeySequence(keys), self, activated=slot)
+            for keys, slot in ((QKeySequence.StandardKey.Paste, self.paste_file),
+                               (QKeySequence.StandardKey.Copy, self.copy_output),
+                               (Qt.Key.Key_Return, self.convert),
+                               (Qt.Key.Key_Enter, self.convert),
+                               (Qt.Key.Key_Escape, self.clear))]
+
+    # --- вкладки ---
+
+    def show_page(self, page: int) -> None:
+        """Переключение вкладок. Несохранённые правки карты при этом не теряются (редактор остаётся как был)."""
+        self.pages.setCurrentIndex(page)
+        (self.nav_convert if page == PAGE_CONVERT else self.nav_maps).setChecked(True)
+        for sc in self._convert_shortcuts:
+            sc.setEnabled(page == PAGE_CONVERT)
+
+    def _on_maps_dirty(self, dirty: bool) -> None:
+        self.nav_maps.setText("Maps  ●" if dirty else "Maps")
+        self.nav_maps.setToolTip("The map editor has unsaved changes" if dirty else "")
+
+    def closeEvent(self, event) -> None:
+        if self.maps_page.dirty:
+            self.show_page(PAGE_MAPS)
+            if not self.maps_page.maybe_leave():
+                event.ignore()
+                return
+        super().closeEvent(event)
 
     # --- профили ---
 
@@ -386,6 +429,7 @@ class MainWindow(QMainWindow):
         files = midi_paths_from_mime(event.mimeData())
         if files:
             event.acceptProposedAction()
+            self.show_page(PAGE_CONVERT)
             self._accept_files(files)
         else:
             self.set_status("Drop an existing .mid or .midi file.", "error")

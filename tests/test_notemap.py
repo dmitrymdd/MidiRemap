@@ -3,8 +3,8 @@ import json
 import pytest
 
 from midiremap.core.notemap import (
-    MapFormatError, MapMeta, NoteMap, articulations, map_from_json, map_to_dict, map_to_json,
-    primary_note, validate_map,
+    MapFormatError, MapMeta, NoteMap, articulations, duplicate_map, finalize_edit, map_from_json,
+    map_to_dict, map_to_json, primary_note, validate_map,
 )
 from midiremap.core.pitch import OCTAVE_OFFSET, pitch_name
 from midiremap.core.profile import RemapProfile, Rule
@@ -130,3 +130,72 @@ def test_pitch_offset_constant():
 def test_pitch_name_rejects_bad(bad):
     with pytest.raises(ValueError):
         pitch_name(bad)
+
+
+# --- копирование и правка ---
+
+def verified_kit():
+    m = kit(primary=[51])
+    m.order = [126, 59, 51, 38, 36, 35, 200]  # 200 — номер вне карты, как бывает в файлах REAPER
+    m.meta = MapMeta(source='SD3 window', status='verified', notes=None)
+    return m
+
+
+def test_duplicate_map_copies_meta():
+    m = verified_kit()
+    c = duplicate_map(m, 'copy')
+    assert c.name == 'copy' and c.meta == m.meta and c.names == m.names and c.primary == m.primary
+    c.names[1] = 'x'
+    c.primary.add(36)
+    assert 1 not in m.names and 36 not in m.primary  # глубокая копия
+
+
+def test_duplicate_template_appends_note():
+    m = verified_kit()
+    assert duplicate_map(m, 'c', from_template=True).meta.notes == 'Based on template kit'
+    m.meta.notes = 'Old note.'
+    c = duplicate_map(m, 'c', from_template=True)
+    assert c.meta.notes == 'Old note.\nBased on template kit'
+    assert c.meta.source == 'SD3 window' and c.meta.status == 'verified'
+
+
+def test_finalize_primary_only_edit_keeps_status():
+    base = verified_kit()
+    edited = duplicate_map(base, base.name)
+    edited.primary = {59, 35}
+    out = finalize_edit(base, edited)
+    assert out.meta.status == 'verified' and out.primary == {59, 35}
+
+
+@pytest.mark.parametrize('change', [
+    lambda m: m.names.__setitem__(38, 'Snare hit'),  # правка имени
+    lambda m: m.names.__setitem__(40, 'Rim'),  # добавление
+    lambda m: m.names.pop(38),  # удаление
+])
+def test_finalize_name_edit_makes_unverified(change):
+    base = verified_kit()
+    edited = duplicate_map(base, base.name)
+    change(edited)
+    out = finalize_edit(base, edited)
+    assert out.meta.status == 'unverified' and out.meta.source == 'SD3 window'
+    assert base.meta.status == 'verified' and edited.meta.status == 'verified'  # аргументы не меняются
+
+
+def test_finalize_drops_deleted_notes_from_order_and_primary():
+    base = verified_kit()
+    edited = duplicate_map(base, base.name)
+    del edited.names[51], edited.names[38]
+    edited.names[40] = 'Rim'  # новая нота в order не добавляется (порядок пока не редактируется)
+    out = finalize_edit(base, edited)
+    assert out.order == [126, 59, 36, 35, 200]
+    assert out.primary == set()
+    assert out.extra_lines == base.extra_lines
+
+
+def test_finalize_clears_primary_of_single_note_names():
+    base = kit(primary=[36, 51])
+    edited = duplicate_map(base, base.name)
+    edited.names[35] = 'Kick 2'  # Kick остался на одной ноте — флаг не нужен
+    out = finalize_edit(base, edited)
+    assert out.primary == {51}
+    assert validate_map(out) == [i for i in validate_map(out) if i.severity == 'warning']

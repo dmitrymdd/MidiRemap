@@ -13,6 +13,11 @@ TOKENS = {
     "on_accent": "#1E1E1E",
     "success": "#6CC28A",
     "error": "#E5636B",
+    "warning": "#D9A84E",
+    "warning_bg": "#3A3224",  # фон строк артикуляций с дублями без основной ноты
+    "error_bg": "#40282A",
+    "selection": "#4D3628",
+    "accent_muted": "#6B4632",  # отмеченный, но неактивный флажок
 }
 
 
@@ -38,6 +43,8 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QPushButton:disabled {{ color: {t['text_faint']}; }}
     QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; border: none; font-weight: 600; }}
     QPushButton#primary:hover {{ background: {t['accent_hover']}; }}
+    QPushButton#primary:disabled {{ background: {t['surface']}; color: {t['text_faint']};
+                                    border: 1px solid {t['border']}; font-weight: 400; }}
     QComboBox {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
                  padding: 5px 10px; }}
     QComboBox:hover {{ border-color: {t['accent']}; }}
@@ -54,4 +61,48 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QLabel#status {{ color: {t['text_muted']}; }}
     QLabel#status[state="ok"] {{ color: {t['success']}; }}
     QLabel#status[state="error"] {{ color: {t['error']}; }}
+
+    QPushButton#navTab {{ background: transparent; border: none; border-bottom: 2px solid transparent;
+                          border-radius: 0; padding: 6px 12px; color: {t['text_muted']}; font-weight: 600; }}
+    QPushButton#navTab:hover {{ color: {t['text']}; }}
+    QPushButton#navTab:checked {{ color: {t['accent']}; border-bottom-color: {t['accent']}; }}
+    QListWidget, QTableView {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
+                               outline: none; }}
+    QTableView {{ gridline-color: {t['border']}; selection-background-color: {t['selection']};
+                  selection-color: {t['text']}; }}
+    QHeaderView::section {{ background: {t['bg']}; color: {t['text_muted']}; border: none;
+                            border-bottom: 1px solid {t['border']}; padding: 4px 6px; font-size: 8pt;
+                            font-weight: 700; }}
+    QTableView QLineEdit {{ border-radius: 0; padding: 0 4px; }}
+    QLineEdit {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
+                 padding: 5px 8px; selection-background-color: {t['accent']};
+                 selection-color: {t['on_accent']}; }}
+    QLineEdit:focus {{ border-color: {t['accent']}; }}
+    QMenu {{ background: {t['surface']}; border: 1px solid {t['border']}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 18px; border-radius: 4px; }}
+    QMenu::item:selected {{ background: {t['accent']}; color: {t['on_accent']}; }}
+    QCheckBox::indicator, QTableView::indicator {{ width: 14px; height: 14px; border: 1px solid {t['text_faint']};
+                                                   border-radius: 3px; background: {t['bg']}; }}
+    QCheckBox::indicator:checked, QTableView::indicator:checked {{ background: {t['accent']};
+                                                                   border-color: {t['accent']}; }}
+    QCheckBox::indicator:hover, QTableView::indicator:hover {{ border-color: {t['accent']}; }}
+    QCheckBox::indicator:disabled, QTableView::indicator:disabled {{ border-color: {t['border']};
+                                                                     background: {t['surface']}; }}
+    QCheckBox::indicator:checked:disabled, QTableView::indicator:checked:disabled {{
+        background: {t['accent_muted']}; border-color: {t['accent_muted']}; }}
+    QLabel#mapTitle {{ font-size: 14pt; font-weight: 600; }}
+    QLabel#chip {{ border: 1px solid {t['border']}; border-radius: 9px; padding: 1px 8px; font-size: 8pt;
+                   font-weight: 700; color: {t['text_muted']}; }}
+    QLabel#chip[state="ok"] {{ color: {t['success']}; border-color: {t['success']}; }}
+    QLabel#chip[state="warn"] {{ color: {t['warning']}; border-color: {t['warning']}; }}
+    QLabel#dirty {{ color: {t['accent']}; font-weight: 600; }}
+    QLabel#issues {{ color: {t['warning']}; }}
+    QLabel#issues[state="error"] {{ color: {t['error']}; }}
     """
+
+
+def repolish(w, prop: str, value: str) -> None:
+    """Сменить динамическое свойство виджета и применить стили, зависящие от него."""
+    w.setProperty(prop, value)
+    w.style().unpolish(w)
+    w.style().polish(w)

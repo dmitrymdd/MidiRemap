@@ -1,6 +1,7 @@
 """Карта нот: модель, проверка, JSON-формат (без Qt и без UI)."""
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -92,6 +93,39 @@ def validate_map(m: NoteMap) -> list[MapIssue]:
             issues.append(MapIssue(f'"{label}" is on several notes ({", ".join(map(str, notes))}) '
                                    "and none is marked primary", notes, "warning"))
     return issues
+
+
+# --- копирование и редактирование ---
+
+def duplicate_map(m: NoteMap, name: str, from_template: bool = False) -> NoteMap:
+    """Копия карты под новым именем. meta копируется (source и status сохраняются);
+    для копии встроенного шаблона в meta.notes дописывается «Based on template <имя>»."""
+    c = copy.deepcopy(m)
+    c.name = name
+    if from_template:
+        line = f"Based on template {m.name}"
+        c.meta.notes = f"{c.meta.notes}\n{line}" if c.meta.notes else line
+    return c
+
+
+def finalize_edit(base: NoteMap, edited: NoteMap) -> NoteMap:
+    """Карта для сохранения после правки base -> edited (возвращается копия, аргументы не меняются).
+
+    - имена нот изменились (правка, добавление, удаление) -> meta.status = "unverified";
+      изменились только флаги primary — статус прежний;
+    - удалённые ноты убираются из order (прочие номера order — как в файле REAPER — не трогаем);
+    - primary остаётся только на существующих нотах артикуляций, занимающих несколько нот.
+    """
+    out = copy.deepcopy(edited)
+    if out.names != base.names:
+        out.meta.status = "unverified"
+    removed = set(base.names) - set(out.names)
+    if out.order is not None and removed:
+        out.order = [n for n in out.order if n not in removed]
+    groups = articulations(out)
+    out.primary = {n for n in out.primary
+                   if n in out.names and len(groups[normalize_name(out.names[n])]) > 1}
+    return out
 
 
 # --- JSON ---

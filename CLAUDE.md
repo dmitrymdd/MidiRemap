@@ -17,7 +17,8 @@
 Выход — тот же `.mid` с перенумерованными нотами.
 
 Первая версия была одним файлом `MidiRemap.py` (Tkinter + mido) со схемой GM → SD3 в `NOTE_MAP`; удалена на этапе 6.
-Сейчас: ядро `core/`, хранилище, главное окно PySide6 (`python -m midiremap`). Дальше — редакторы карт и профилей.
+Сейчас: ядро `core/`, хранилище, окно PySide6 (`python -m midiremap`) с вкладками Convert и Maps (менеджер/редактор карт).
+Дальше — редактор профилей.
 
 ## Ключевые сущности (не смешивать)
 
@@ -61,6 +62,10 @@
   Комментарии и docstring в коде — по-русски, общение с Дмитрием — по-русски.
 - Пакет `core/` НЕ импортирует Qt. Ядро должно работать из CLI и тестов.
 - Карты хранятся в JSON; REAPER MIDINoteNames `.txt` — только импорт/экспорт.
+- Редактор карт: правка — в рабочей копии, сохранение через `finalize_edit(base, edited)` (статус, `order`, чистка primary);
+  копия шаблона — `duplicate_map(..., from_template=True)`. Экспорт берёт карту как в редакторе (с несохранёнными
+  правками). Переключение вкладок Convert/Maps правки не теряет и не спрашивает; спрашивает смена карты,
+  New/Import/Duplicate/Rename и закрытие окна.
 - `meta` при копировании карты (в т.ч. из шаблона и в профиль): `source` сохраняется; правка имён, добавление или
   удаление нот → `status` = "unverified"; изменение только флагов primary статус не меняет.
 - Названия нот по высоте: 60 = C3 (соглашение Toontrack, SD3 показывает 36 как C1) — `core/pitch.py`, `OCTAVE_OFFSET`.
@@ -74,7 +79,7 @@ src/midiremap/
   core/  notemap.py  notenames.py  profile.py  convert.py  pitch.py  legacy_map.py (GM→SD3 NOTE_MAP первой версии)
   storage.py        # %APPDATA%\MidiRemap (вне Windows ~/.midiremap): maps/*.json, profiles/*.json; настройки — позже
   templates/maps/   # встроенные шаблоны карт (данные пакета, только чтение)
-  ui/               # PySide6
+  ui/               # PySide6: main_window.py (вкладки, экран Convert), maps_page.py (Maps), theme.py
   __main__.py
 tools/build_map_templates.py  # генерирует templates/maps/*.json из samples/maps/*.txt
 tests/
@@ -148,8 +153,8 @@ legacy `.txt` с тем же ID занимает ID (нужен `overwrite=True`
 6. Главный экран на PySide6, удалить Tk — готово
 7. Менеджер/редактор карт
    7a. Модель карты (primary, meta), JSON-хранилище карт, встроенные шаблоны, названия нот — готово
-   7b. UI менеджера/редактора карт ← следующий
-8. Редактор профилей с подсказками
+   7b. UI менеджера/редактора карт — готово
+8. Редактор профилей с подсказками ← следующий
 9. Полировка, релиз v0.1.0
 
 ## Правила работы

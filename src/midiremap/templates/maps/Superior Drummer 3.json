@@ -130,8 +130,7 @@
   "order": null,
   "extra_lines": [],
   "meta": {
-    "source": "Superior Drummer 3 core library, default preset. Transcribed from the SD3 \"MIDI Mapping Keys\" view (notes 6-127).",
-    "status": "verified",
-    "notes": "Names of notes 126 and 127 are cut off in that view; they were completed from the SD3 eDrums view."
+    "source": "Superior Drummer 3 core library, default preset. Transcribed from the SD3 \"MIDI Mapping Keys\" view.",
+    "status": "verified"
   }
 }
