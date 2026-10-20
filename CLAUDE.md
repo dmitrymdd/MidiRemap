@@ -39,6 +39,13 @@
 
 - Сопоставление нот делает пользователь. Программа только подсказывает точные и вероятные совпадения
   (нормализация регистра/пробелов); ложная подсказка хуже пустой. Основная ценность — встроенные шаблоны.
+  `core/suggest.py`: `suggest_rules(src_map, tgt_map)` → по `Suggestion(src, dst, kind, target_name)` на ноту,
+  kind = exact | probable | ambiguous (несколько нот без основной — выбирает пользователь) | none; никакого нечёткого
+  поиска. `apply_suggestions(profile, suggestions, kinds)` — новый профиль, добавляет map только нотам без правила.
+- Проверка профиля по картам — `validate_profile()` в `core/profile.py` → `ProfileIssue(code, note, message)`:
+  правило для ноты вне исходной карты, map на ноту вне целевой, keep на отсутствующий номер или другую артикуляцию
+  (`keep_issue()` — то же для keep по умолчанию), `NO_RULE` — нота без правила: вопрос пользователю, не ошибка.
+  map на неосновную ноту артикуляции — норма. `RemapProfile.validate()` и формат JSON не меняются.
 - Встроенные шаблоны карт — только по точным данным из самих программ/плагинов, с указанием источника
   и статуса «проверено». `SD3 WITH EZD soundbanks.txt` (старый кастом пользователя) — НЕ использовать.
 - Ноты исходника, которых нет в профиле: спросить пользователя (в редакторе профиля один раз; при конвертации —
@@ -76,7 +83,7 @@
 
 ```
 src/midiremap/
-  core/  notemap.py  notenames.py  profile.py  convert.py  pitch.py  legacy_map.py (GM→SD3 NOTE_MAP первой версии)
+  core/  notemap.py  notenames.py  profile.py  convert.py  pitch.py  suggest.py  legacy_map.py (GM→SD3 NOTE_MAP первой версии)
   storage.py        # %APPDATA%\MidiRemap (вне Windows ~/.midiremap): maps/*.json, profiles/*.json; настройки — позже
   templates/maps/   # встроенные шаблоны карт (данные пакета, только чтение)
   ui/               # PySide6: main_window.py (вкладки, экран Convert), maps_page.py (Maps), theme.py
@@ -153,7 +160,9 @@ legacy `.txt` с тем же ID занимает ID (нужен `overwrite=True`
 7. Менеджер/редактор карт
    7a. Модель карты (primary, meta), JSON-хранилище карт, встроенные шаблоны, названия нот — готово
    7b. UI менеджера/редактора карт — готово
-8. Редактор профилей с подсказками ← следующий
+8. Редактор профилей с подсказками
+   8a. Ядро: подсказки и проверки профиля — готово
+   8b. UI редактора профилей ← следующий
 9. Полировка, релиз v0.1.0
 
 ## Правила работы

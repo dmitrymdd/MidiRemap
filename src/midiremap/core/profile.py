@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .legacy_map import NOTE_MAP
-from .notemap import NoteMap, check_note, map_body_from_dict, map_body_to_dict
+from .notemap import NoteMap, check_note, map_body_from_dict, map_body_to_dict, normalize_name
 
 FORMAT_VERSION = 1
 
@@ -143,6 +143,67 @@ def _map_to_dict(m: NoteMap | None) -> dict[str, Any] | None:
 
 def _map_from_dict(data: Any, what: str) -> NoteMap | None:
     return None if data is None else map_body_from_dict(data, what)
+
+
+# --- проверка профиля по картам ---
+
+# Коды ProfileIssue. NO_RULE — не ошибка, а вопрос пользователю (по умолчанию нота остаётся на месте);
+# остальные — предупреждения.
+SRC_NOT_IN_SOURCE = "src_not_in_source_map"      # правило для ноты, которой нет в исходной карте
+DST_NOT_IN_TARGET = "dst_not_in_target_map"      # map на ноту, которой нет в целевой карте
+KEEP_NOT_IN_TARGET = "keep_not_in_target_map"    # keep, а этого номера нет в целевой карте
+KEEP_DIFFERENT = "keep_different_articulation"   # keep, а на этом номере в целевой карте другая артикуляция
+NO_RULE = "no_rule"                              # нота исходной карты без правила
+
+
+@dataclass
+class ProfileIssue:
+    code: str
+    note: int  # исходная нота, к которой относится замечание
+    message: str
+
+
+def keep_issue(source_map: NoteMap | None, target_map: NoteMap | None, note: int) -> ProfileIssue | None:
+    """Что не так, если оставить ноту на том же номере (явный keep или keep по умолчанию).
+
+    None — замечаний нет или проверить не по чему (нет целевой карты; для «другой артикуляции» нужны обе)."""
+    if target_map is None:
+        return None
+    if note not in target_map.names:
+        return ProfileIssue(KEEP_NOT_IN_TARGET, note, f"note {note} is kept, but the target map has no note {note}")
+    if source_map is not None and note in source_map.names:
+        src_name, dst_name = source_map.names[note], target_map.names[note]
+        if normalize_name(src_name) != normalize_name(dst_name):
+            return ProfileIssue(KEEP_DIFFERENT, note,
+                                f'note {note} is kept, but it is "{src_name}" in the source map '
+                                f'and "{dst_name}" in the target map')
+    return None
+
+
+def validate_profile(p: RemapProfile) -> list[ProfileIssue]:
+    """Замечания к правилам профиля относительно его карт, по возрастанию исходной ноты.
+
+    Каждая проверка — только если нужная карта есть; профиль без карт замечаний не получает.
+    map на неосновную ноту артикуляции с несколькими нотами — допустимо, не проверяется.
+    """
+    src_map, tgt_map = p.source_map, p.target_map
+    issues: list[ProfileIssue] = []
+    for src in sorted(p.rules):
+        rule = p.rules[src]
+        if src_map is not None and src not in src_map.names:
+            issues.append(ProfileIssue(SRC_NOT_IN_SOURCE, src, f"rule for note {src}, which is not in the source map"))
+        if rule.action == "map" and tgt_map is not None and rule.dst not in tgt_map.names:
+            issues.append(ProfileIssue(DST_NOT_IN_TARGET, src,
+                                       f"note {src} is mapped to {rule.dst}, which is not in the target map"))
+        elif rule.action == "keep":
+            issue = keep_issue(src_map, tgt_map, src)
+            if issue is not None:
+                issues.append(issue)
+    if src_map is not None:
+        issues.extend(ProfileIssue(NO_RULE, n, f'note {n} "{src_map.names[n]}" has no rule (kept by default)')
+                      for n in sorted(src_map.names) if n not in p.rules)
+    issues.sort(key=lambda i: i.note)  # сортировка устойчива: порядок проверок внутри ноты сохраняется
+    return issues
 
 
 def legacy_profile() -> RemapProfile:
