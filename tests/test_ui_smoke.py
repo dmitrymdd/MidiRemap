@@ -22,7 +22,11 @@ SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.m
 
 @pytest.fixture(scope="module")
 def app():
-    return QApplication.instance() or QApplication([])
+    app = QApplication.instance() or QApplication([])
+    yield app
+    # платформа offscreen падает (segfault) при выходе, если в буфере обмена остались данные
+    # (test_load_convert_and_copy кладёт туда файл); обычная платформа windows — нет
+    app.clipboard().clear()
 
 
 @pytest.fixture
