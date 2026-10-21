@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -45,6 +46,26 @@ def normalize_name(s: str) -> str:
     return " ".join(s.casefold().split())
 
 
+# Хвост «(артикуляция)» в конце имени: «Kick (hit)» -> «Kick».
+_TRAILING_PARENS = re.compile(r"^(.*?)\s*\([^()]*\)\s*$")
+
+
+def instrument_group(name: str) -> str | None:
+    """Инструмент из имени ноты — ТОЛЬКО для показа строк под заголовками (не для сопоставления и подсказок).
+
+    «Инструмент: артикуляция» -> текст до первого «:» (так названы все ноты шаблонов SD3 и EZD3);
+    «Инструмент (артикуляция)» -> текст до завершающей скобки (все ноты Guitar Pro 8);
+    иначе None (у имён General MIDI структуры нет — плоский список). Группы сравнивать через normalize_name.
+    """
+    head, colon, _ = name.partition(":")
+    if colon:
+        return head.strip() or None
+    m = _TRAILING_PARENS.match(name.strip())
+    if m:
+        return m.group(1).strip() or None
+    return None
+
+
 # --- артикуляции и основные ноты ---
 
 def articulations(m: NoteMap) -> dict[str, list[int]]:
@@ -75,23 +96,24 @@ class MapIssue:
 
 
 def validate_map(m: NoteMap) -> list[MapIssue]:
-    """Ошибки: primary на несуществующей ноте, больше одной primary на артикуляцию.
+    """В сообщениях primary называется «Write to» (термин UI).
+    Ошибки: primary на несуществующей ноте, больше одной primary на артикуляцию.
     Предупреждения: артикуляция на нескольких нотах без основной (при экспорте «по одной ноте» её не будет)."""
     issues: list[MapIssue] = []
     bad = sorted(n for n in m.primary if n not in m.names)
     if bad:
-        issues.append(MapIssue(f"primary notes not in the map: {', '.join(map(str, bad))}", bad))
+        issues.append(MapIssue(f"Write to notes not in the map: {', '.join(map(str, bad))}", bad))
     for notes in articulations(m).values():
         if len(notes) < 2:
             continue
         label = m.names[notes[0]]
         flagged = [n for n in notes if n in m.primary]
         if len(flagged) > 1:
-            issues.append(MapIssue(f'"{label}" has several primary notes: {", ".join(map(str, flagged))}',
+            issues.append(MapIssue(f'"{label}" has several Write to notes: {", ".join(map(str, flagged))}',
                                    flagged))
         elif not flagged:
             issues.append(MapIssue(f'"{label}" is on several notes ({", ".join(map(str, notes))}) '
-                                   "and none is marked primary", notes, "warning"))
+                                   "and none is marked Write to", notes, "warning"))
     return issues
 
 

@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .legacy_map import NOTE_MAP
-from .notemap import NoteMap, check_note, map_body_from_dict, map_body_to_dict, normalize_name
+from .notemap import (
+    NoteMap, check_note, instrument_group, map_body_from_dict, map_body_to_dict, normalize_name,
+)
 
 FORMAT_VERSION = 1
 
@@ -204,6 +206,53 @@ def validate_profile(p: RemapProfile) -> list[ProfileIssue]:
                       for n in sorted(src_map.names) if n not in p.rules)
     issues.sort(key=lambda i: i.note)  # сортировка устойчива: порядок проверок внутри ноты сохраняется
     return issues
+
+
+DIFFERENT_INSTRUMENT = "!"  # на этом номере в цели другой инструмент, нет ноты или у имени нет группы
+SAME_INSTRUMENT = "≈"       # тот же инструмент, другое имя — скорее всего тот же звук, но стоит проверить
+
+
+@dataclass(frozen=True)
+class KeepWarning:
+    """Неназначенная нота, которая при keep попадёт на другой звук или на отсутствующую ноту цели."""
+    note: int
+    marker: str              # DIFFERENT_INSTRUMENT / SAME_INSTRUMENT
+    source_name: str
+    target_name: str | None  # None — в целевой карте нет такой ноты
+
+
+def unassigned_keep_warnings(p: RemapProfile) -> list[KeepWarning]:
+    """Для диалога сохранения: ноты исходной карты без правила, у которых keep_issue() не пуст.
+
+    Маркер только упорядочивает и подписывает предупреждение (сначала «!», затем «≈», внутри — по номеру);
+    правил не создаёт и не меняет. Сравнение инструментов — instrument_group() через normalize_name."""
+    src, tgt = p.source_map, p.target_map
+    if src is None:
+        return []
+    out: list[KeepWarning] = []
+    for n in sorted(src.names):
+        if n in p.rules or keep_issue(src, tgt, n) is None:
+            continue
+        target_name = tgt.names.get(n) if tgt is not None else None
+        g_src = instrument_group(src.names[n])
+        g_tgt = instrument_group(target_name) if target_name is not None else None
+        same = g_src is not None and g_tgt is not None and normalize_name(g_src) == normalize_name(g_tgt)
+        out.append(KeepWarning(n, SAME_INSTRUMENT if same else DIFFERENT_INSTRUMENT, src.names[n], target_name))
+    out.sort(key=lambda w: (w.marker != DIFFERENT_INSTRUMENT, w.note))
+    return out
+
+
+def with_explicit_keeps(p: RemapProfile) -> RemapProfile:
+    """Новый профиль: каждой ноте исходной карты без правила — явный keep (входной профиль не меняется).
+
+    При сохранении профиля так фиксируется решение «оставить на месте», и конвертация спрашивает
+    только о нотах, которых нет в исходной карте. Без исходной карты — просто копия."""
+    out = copy.deepcopy(p)
+    if out.source_map is not None:
+        for n in out.source_map.names:
+            out.rules.setdefault(n, Rule.keep())
+    out.validate()
+    return out
 
 
 def legacy_profile() -> RemapProfile:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import html
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import (
-    NoteMap, articulations, duplicate_map, finalize_edit, normalize_name, validate_map,
+    NoteMap, articulations, duplicate_map, finalize_edit, instrument_group, normalize_name, validate_map,
 )
 from ..core.notenames import ParseIssue, load_notenames, primary_only_notes, save_notenames
 from ..core.pitch import pitch_name
@@ -33,12 +34,18 @@ SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 1
 HEADER_ROLE = Qt.ItemDataRole.UserRole + 2
 
 COL_NOTE, COL_PITCH, COL_NAME, COL_PRIMARY, COL_SHARED = range(5)
-COLUMNS = ("NOTE", "PITCH", "NAME", "PRIMARY", "SHARED")
+COLUMNS = ("NOTE", "PITCH", "NAME", "WRITE TO", "SAME NAME")
+WRITE_TO_TIP = ("When converting INTO this map and an articulation sits on several notes, "
+                "notes are written to this one.")
 COLUMN_TIPS = ("MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
                "Articulation name. Empty = the note is not in the map",
-               "Primary note of the articulation (used when converting TO this layout). "
-               "Available only when the name is on several notes",
-               "How many notes share this name")
+               WRITE_TO_TIP + " Available only when the name is on several notes",
+               "How many notes in this map have this name")
+
+EDIT_TIP = "Double-click or type to edit a name · Empty name: remove the note · Delete: clear selected names"
+
+# служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
+OTHER_GROUP, UNNAMED_GROUP = "\0other", "\0unnamed"
 
 
 @dataclass(frozen=True)
@@ -57,10 +64,82 @@ def edited_status(base: NoteMap, work: NoteMap) -> str:
     return "unverified" if work.names != base.names else base.meta.status
 
 
+@dataclass(frozen=True)
+class LayoutRow:
+    """Строка таблицы: заголовок группы инструмента (note is None) или нота."""
+    group: str | None  # ключ группы (normalize_name инструмента или служебный); None — плоский список
+    note: int | None = None
+    label: str = ""    # текст заголовка
+
+    @property
+    def is_header(self) -> bool:
+        return self.note is None
+
+
+def group_rows(names: dict[int, str], notes: list[int], unnamed_label: str = "Not in the map",
+               ) -> list[LayoutRow]:
+    """Строки с заголовками групп instrument_group() (только для показа).
+
+    Группы — по первой (меньшей) ноте, ноты внутри — в порядке notes. Если ни у одного имени нет группы
+    (General MIDI) — плоский список без заголовков. Именованные ноты без группы — в «Other»,
+    ноты без имени — в последней группе unnamed_label.
+    """
+    if not any(instrument_group(names[n]) for n in notes if n in names):
+        return [LayoutRow(None, n) for n in notes]
+    groups: dict[str, tuple[str, list[int]]] = {}
+    for n in notes:
+        if n in names:
+            g = instrument_group(names[n])
+            key, label = (normalize_name(g), g) if g else (OTHER_GROUP, "Other")
+        else:
+            key, label = UNNAMED_GROUP, unnamed_label
+        groups.setdefault(key, (label, []))[1].append(n)
+    order = sorted(groups, key=lambda k: (k == UNNAMED_GROUP, k == OTHER_GROUP, groups[k][1][0]))
+    rows: list[LayoutRow] = []
+    for key in order:
+        label, members = groups[key]
+        rows.append(LayoutRow(key, None, label))
+        rows.extend(LayoutRow(key, n) for n in members)
+    return rows
+
+
+def update_spans(table: QTableView, columns: int) -> None:
+    """Заголовки групп — на всю ширину таблицы (span пересчитывается после фильтрации и перестройки).
+    Модель таблицы — модель с row_at() или прокси над ней."""
+    table.clearSpans()
+    view = table.model()
+    proxy = view if isinstance(view, QSortFilterProxyModel) else None
+    model = proxy.sourceModel() if proxy is not None else view
+    for r in range(view.rowCount()):
+        src = proxy.mapToSource(proxy.index(r, 0)).row() if proxy is not None else r
+        if model.row_at(src).is_header:
+            table.setSpan(r, 0, 1, columns)
+
+
+def header_data(row: LayoutRow, col: int, role):
+    """Данные строки-заголовка группы (общие для таблиц карт и профилей)."""
+    if role == Qt.ItemDataRole.DisplayRole and col == 0:
+        return row.label.upper()
+    if role == Qt.ItemDataRole.FontRole:
+        f = QFont()
+        f.setBold(True)
+        f.setPointSizeF(8)
+        return f
+    if role == Qt.ItemDataRole.ForegroundRole:
+        return QColor(TOKENS["text_muted"])
+    if role == Qt.ItemDataRole.BackgroundRole:
+        return QColor(TOKENS["bg"])
+    return None
+
+
 # --- таблица нот ---
 
 class NoteTableModel(QAbstractTableModel):
-    """128 строк (ноты 0–127) над рабочей копией карты; правит её на месте."""
+    """Ноты 0–127 (с заголовками групп инструментов) над рабочей копией карты; правит её на месте.
+
+    Раскладка строк пересчитывается при смене карты, фильтра и после сохранения, но не при правке имени:
+    строка не уезжает из-под курсора.
+    """
 
     edited = Signal()
 
@@ -69,18 +148,53 @@ class NoteTableModel(QAbstractTableModel):
         self.map: NoteMap | None = None
         self.read_only = True
         self._groups: dict[str, list[int]] = {}
+        self.rows: list[LayoutRow] = []
+        self._note_rows: dict[int, int] = {}
+        self._members: dict[str | None, list[int]] = {}
 
     def set_map(self, m: NoteMap | None, read_only: bool) -> None:
         self.beginResetModel()
         self.map, self.read_only = m, read_only
         self._regroup()
+        self._layout()
         self.endResetModel()
+
+    def relayout(self) -> None:
+        self.beginResetModel()
+        self._regroup()
+        self._layout()
+        self.endResetModel()
+
+    def _layout(self) -> None:
+        self.rows = [] if self.map is None else group_rows(self.map.names, list(range(128)))
+        self._note_rows = {r.note: i for i, r in enumerate(self.rows) if not r.is_header}
+        self._members = {}
+        for i, r in enumerate(self.rows):
+            if not r.is_header:
+                self._members.setdefault(r.group, []).append(i)
+
+    def row_at(self, row: int) -> LayoutRow:
+        return self.rows[row]
+
+    def members(self, group: str | None) -> list[int]:
+        """Строки нот группы."""
+        return self._members.get(group, [])
+
+    def note_index(self, note: int, col: int) -> QModelIndex:
+        return self.index(self._note_rows[note], col)
+
+    def note_at(self, row: int) -> int | None:
+        return self.rows[row].note if 0 <= row < len(self.rows) else None
+
+    @property
+    def grouped(self) -> bool:
+        return any(r.is_header for r in self.rows)
 
     def refresh(self) -> None:
         """Карта изменилась снаружи (например, после сохранения) — перерисовать всё."""
         self._regroup()
-        if self.map is not None:
-            self.dataChanged.emit(self.index(0, 0), self.index(127, len(COLUMNS) - 1))
+        if self.rows:
+            self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, len(COLUMNS) - 1))
 
     def _regroup(self) -> None:
         self._groups = articulations(self.map) if self.map is not None else {}
@@ -91,7 +205,7 @@ class NoteTableModel(QAbstractTableModel):
         return self._groups.get(normalize_name(name), []) if name is not None else []
 
     def group_state(self, note: int) -> str:
-        """"" — норма; "warning" — имя на нескольких нотах без основной; "error" — основных больше одной."""
+        """"" — норма; "warning" — имя на нескольких нотах без Write to; "error" — Write to больше одной."""
         notes = self.group(note)
         if len(notes) < 2:
             return ""
@@ -99,7 +213,7 @@ class NoteTableModel(QAbstractTableModel):
         return "warning" if flagged == 0 else "error" if flagged > 1 else ""
 
     def rowCount(self, parent=QModelIndex()) -> int:
-        return 0 if parent.isValid() or self.map is None else 128
+        return 0 if parent.isValid() else len(self.rows)
 
     def columnCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(COLUMNS)
@@ -109,13 +223,18 @@ class NoteTableModel(QAbstractTableModel):
             if role == Qt.ItemDataRole.DisplayRole:
                 return COLUMNS[section]
             if role == Qt.ItemDataRole.ToolTipRole:
+                if section == COL_NAME and not self.read_only:
+                    return COLUMN_TIPS[section] + ".\n" + EDIT_TIP
                 return COLUMN_TIPS[section]
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or self.map is None:
             return None
-        n, col = index.row(), index.column()
+        row = self.rows[index.row()]
+        if row.is_header:
+            return header_data(row, index.column(), role)
+        n, col = row.note, index.column()
         name = self.map.names.get(n)
         notes = self.group(n)
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
@@ -143,16 +262,21 @@ class NoteTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ToolTipRole:
             state = self.group_state(n)
             if state == "warning":
-                return f'"{name}" is on {len(notes)} notes and none is marked primary'
+                return f'"{name}" is on {len(notes)} notes and none is marked Write to'
             if state == "error":
-                return f'"{name}" has several primary notes — keep only one'
+                return f'"{name}" has several Write to notes — keep only one'
+            if col == COL_PRIMARY and len(notes) > 1:
+                return WRITE_TO_TIP
         return None
 
     def flags(self, index):
         if not index.isValid() or self.map is None:
             return Qt.ItemFlag.NoItemFlags
+        row = self.rows[index.row()]
+        if row.is_header:
+            return Qt.ItemFlag.ItemIsEnabled
         f = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-        col, n = index.column(), index.row()
+        col, n = index.column(), row.note
         if col == COL_NAME and not self.read_only:
             f |= Qt.ItemFlag.ItemIsEditable
         if col == COL_PRIMARY and n in self.map.names:
@@ -165,7 +289,9 @@ class NoteTableModel(QAbstractTableModel):
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole) -> bool:
         if not index.isValid() or self.map is None or self.read_only:
             return False
-        n, col = index.row(), index.column()
+        n, col = self.rows[index.row()].note, index.column()
+        if n is None:
+            return False
         if col == COL_NAME and role == Qt.ItemDataRole.EditRole:
             return self.set_name(n, str(value or ""))
         if col == COL_PRIMARY and role == Qt.ItemDataRole.CheckStateRole:
@@ -189,7 +315,7 @@ class NoteTableModel(QAbstractTableModel):
         return True
 
     def set_primary(self, n: int, checked: bool) -> bool:
-        """Основная нота — не больше одной на артикуляцию: отметка снимает флаг с остальных нот имени."""
+        """Write to — не больше одной ноты на артикуляцию: отметка снимает флаг с остальных нот имени."""
         notes = self.group(n)
         if len(notes) < 2:
             return False
@@ -206,8 +332,34 @@ class NoteTableModel(QAbstractTableModel):
         self.edited.emit()
 
 
+class CheckDelegate(QStyledItemDelegate):
+    """Неактивный флажок (шаблон, имя на одной ноте) рисуется явно неактивным: серая рамка, серая галочка."""
+
+    def paint(self, p, option, index) -> None:
+        state = index.data(Qt.ItemDataRole.CheckStateRole)
+        if state is None or index.flags() & Qt.ItemFlag.ItemIsEnabled:
+            super().paint(p, option, index)
+            return
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        if option.state & QStyle.StateFlag.State_Selected:
+            p.fillRect(option.rect, QColor(TOKENS["selection"]))
+        elif bg is not None:
+            p.fillRect(option.rect, bg)
+        p.save()
+        box = QRect(0, 0, 14, 14)
+        box.moveCenter(option.rect.center())
+        p.setPen(QColor(TOKENS["border"]))
+        p.setBrush(QColor(TOKENS["surface"]))
+        p.drawRoundedRect(box, 3, 3)
+        if state in (Qt.CheckState.Checked, Qt.CheckState.Checked.value):
+            p.setPen(QColor(TOKENS["text_faint"]))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, "✓")
+        p.restore()
+
+
 class NoteFilter(QSortFilterProxyModel):
     """«Только ноты с именем» + поиск по имени, номеру ноты или названию высоты.
+    Заголовок группы виден, если видна хотя бы одна нота группы.
 
     Фильтр не пересчитывается при правке (dynamicSortFilter выключен): строка, у которой стёрли имя,
     не исчезает из-под курсора. Пересчёт — при смене фильтра или карты.
@@ -224,19 +376,31 @@ class NoteFilter(QSortFilterProxyModel):
         self.named_only, self.query = named_only, query
         self.endFilterChange()
 
+    def note_rows(self) -> list[int]:
+        """Видимые ноты (без заголовков), сверху вниз."""
+        model = self.sourceModel()
+        notes = [model.note_at(self.mapToSource(self.index(r, 0)).row()) for r in range(self.rowCount())]
+        return [n for n in notes if n is not None]
+
     def filterAcceptsRow(self, row, parent) -> bool:
-        m = self.sourceModel().map
-        if m is None:
+        model = self.sourceModel()
+        if model.map is None:
             return False
-        name = m.names.get(row)
+        r = model.row_at(row)
+        if r.is_header:
+            return any(self._accept_note(model.rows[i].note) for i in model.members(r.group))
+        return self._accept_note(r.note)
+
+    def _accept_note(self, n: int) -> bool:
+        name = self.sourceModel().map.names.get(n)
         if self.named_only and name is None:
             return False
         q = normalize_name(self.query)
         if not q:
             return True
         if q.isdigit():
-            return int(q) == row
-        return q == pitch_name(row).casefold() or (name is not None and q in normalize_name(name))
+            return int(q) == n
+        return q == pitch_name(n).casefold() or (name is not None and q in normalize_name(name))
 
 
 # --- список карт ---
@@ -300,6 +464,11 @@ def _tooltip(m: NoteMap, extra: str = "") -> str:
     return "\n".join(lines)
 
 
+def wrapped_tooltip(text: str) -> str:
+    """Подсказка с переносом строк: длинный обычный текст Qt показывает одной строкой и обрезает краем экрана."""
+    return "<qt>" + html.escape(text).replace("\n", "<br>") + "</qt>" if text else ""
+
+
 def format_parse_issues(issues: list[ParseIssue], limit: int = 30) -> str:
     lines = [(f"line {i.line}: " if i.line else "") + i.message for i in issues[:limit]]
     if len(issues) > limit:
@@ -352,7 +521,7 @@ class MapsPage(QWidget):
         self.export_btn = QPushButton("Export .txt")
         export_menu = QMenu(self.export_btn)
         export_menu.addAction("Full map…", lambda: self.export(primary_only=False))
-        export_menu.addAction("Primary notes only…", lambda: self.export(primary_only=True))
+        export_menu.addAction("Write to notes only…", lambda: self.export(primary_only=True))
         self.export_btn.setMenu(export_menu)
         self.new_btn.setToolTip("Create an empty map")
         self.import_btn.setToolTip("Import a REAPER MIDI note name map (.txt)")
@@ -384,8 +553,13 @@ class MapsPage(QWidget):
         self.kind_chip.setObjectName("chip")
         self.dirty_label = QLabel("● Unsaved changes")
         self.dirty_label.setObjectName("dirty")
+        self.edit_copy_btn = QPushButton("Duplicate to edit")
+        self.edit_copy_btn.setObjectName("primary")
+        self.edit_copy_btn.setToolTip("Built-in templates are read-only. Make your own copy to edit it")
+        self.edit_copy_btn.clicked.connect(self.duplicate)
         head = QHBoxLayout()
         head.addWidget(self.title, stretch=1)
+        head.addWidget(self.edit_copy_btn)
         head.addWidget(self.dirty_label)
         head.addWidget(self.kind_chip)
         head.addWidget(self.status_chip)
@@ -424,11 +598,15 @@ class MapsPage(QWidget):
                                    | QAbstractItemView.EditTrigger.AnyKeyPressed)
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
-        for col, width in ((COL_NOTE, 64), (COL_PITCH, 64), (COL_PRIMARY, 76), (COL_SHARED, 70)):
+        for col, width in ((COL_NOTE, 64), (COL_PITCH, 64), (COL_PRIMARY, 80), (COL_SHARED, 96)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(col, width)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.table.setItemDelegateForColumn(COL_PRIMARY, CheckDelegate(self.table))
         self.table.installEventFilter(self)
+        for sig in (self.proxy.modelReset, self.proxy.layoutChanged, self.proxy.rowsInserted,
+                    self.proxy.rowsRemoved):
+            sig.connect(lambda *_: update_spans(self.table, len(COLUMNS)))
         right.addWidget(self.table, stretch=1)
 
         self.issues_label = QLabel()
@@ -446,24 +624,17 @@ class MapsPage(QWidget):
         self.status.setWordWrap(True)
         bottom = QHBoxLayout()
         bottom.addWidget(self.status, stretch=1)
-        self.read_only_hint = QLabel("Built-in template — Duplicate to edit")
-        self.read_only_hint.setObjectName("muted")
-        bottom.addWidget(self.read_only_hint)
         bottom.addWidget(self.revert_btn)
         bottom.addWidget(self.save_btn)
         right.addLayout(bottom)
-        self.edit_hint = QLabel("Double-click or type to edit a name    Empty name: remove the note    "
-                                "Delete: clear selected names")
-        self.edit_hint.setObjectName("hint")
-        right.addWidget(self.edit_hint)
         root.addLayout(right, stretch=1)
 
     def eventFilter(self, obj, event) -> bool:
         # Delete в таблице (не в режиме правки ячейки) стирает имена выделенных нот
         if (obj is self.table and event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Delete
                 and self.table.state() != QAbstractItemView.State.EditingState and not self.model.read_only):
-            rows = sorted({self.proxy.mapToSource(i).row() for i in self.table.selectionModel().selectedRows()})
-            for n in rows:
+            rows = {self.proxy.mapToSource(i).row() for i in self.table.selectionModel().selectedRows()}
+            for n in sorted(n for n in map(self.model.note_at, rows) if n is not None):
                 self.model.set_name(n, "")
             return True
         return super().eventFilter(obj, event)
@@ -553,7 +724,8 @@ class MapsPage(QWidget):
         item = QListWidgetItem(title)
         item.setData(SUBTITLE_ROLE, subtitle)
         item.setData(REF_ROLE, ref)
-        item.setToolTip(tooltip)
+        # подзаголовок в списке обрезается по ширине — в подсказке текст целиком
+        item.setToolTip(wrapped_tooltip(tooltip or f"{title}\n{subtitle}"))
         if ref is None:
             item.setFlags(Qt.ItemFlag.NoItemFlags)
         self.list.addItem(item)
@@ -608,6 +780,7 @@ class MapsPage(QWidget):
         self._update_state()
 
     def _apply_filter(self) -> None:
+        self.model.relayout()  # переименованные ноты встают в свои группы
         self.proxy.set_filter(self.named_only.isChecked(), self.search.text())
 
     def maybe_leave(self) -> bool:
@@ -643,6 +816,8 @@ class MapsPage(QWidget):
         self.load_issues = []
         self.legacy = False
         self.model.refresh()
+        if self.model.rows != group_rows(self.work.names, list(range(128))):
+            self._apply_filter()  # группы изменились; иначе не сбрасываем прокрутку и выделение
         self.reload_list()
         self._update_state()
         self.set_status(f'Saved "{out.name}".', "ok")
@@ -667,11 +842,10 @@ class MapsPage(QWidget):
         read_only = has_map and ref.read_only
         self.save_btn.setEnabled(dirty)
         self.revert_btn.setEnabled(dirty)
-        # у шаблона сохранять нечего: вместо Save/Revert — подсказка
+        # у шаблона сохранять нечего: вместо Save/Revert — кнопка «Duplicate to edit»
         self.save_btn.setHidden(read_only)
         self.revert_btn.setHidden(read_only)
-        self.read_only_hint.setVisible(read_only)
-        self.edit_hint.setHidden(read_only)
+        self.edit_copy_btn.setVisible(read_only)
         self.duplicate_btn.setEnabled(has_map)
         self.export_btn.setEnabled(has_map)
         self.rename_btn.setEnabled(has_map and not ref.read_only)
@@ -712,8 +886,8 @@ class MapsPage(QWidget):
         if errors:
             parts.append("Errors: " + "; ".join(errors))
         if warnings:
-            parts.append(f"{len(warnings)} articulation(s) on several notes without a primary note "
-                         "(highlighted) — they are skipped in “primary notes only” export.")
+            parts.append(f"{len(warnings)} articulation(s) on several notes without a Write to note "
+                         "(highlighted) — they are skipped in “Write to notes only” export.")
         if self.load_issues:
             parts.append(f"{len(self.load_issues)} issue(s) when reading the .txt file "
                          "(see the tooltip).")
@@ -845,15 +1019,15 @@ class MapsPage(QWidget):
         if primary_only:
             keep, skipped = primary_only_notes(m)
             if not keep:
-                self.show_error("Nothing to export: no articulation has a single or primary note.")
+                self.show_error("Nothing to export: no articulation has a single or Write to note.")
                 return
             if skipped and not self.confirm(
-                    "Export primary notes only",
-                    f"{len(skipped)} articulation(s) are on several notes without a primary note "
+                    "Export Write to notes only",
+                    f"{len(skipped)} articulation(s) are on several notes without a Write to note "
                     "and will be skipped. Export anyway?",
                     "\n".join(skipped)):
                 return
-        suffix = " (primary)" if primary_only else ""
+        suffix = " (write to)" if primary_only else ""
         path = self.choose_save_file(sanitize_id(m.name + suffix) + ".txt")
         if not path:
             return

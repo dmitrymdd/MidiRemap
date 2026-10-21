@@ -32,9 +32,13 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
                    border-radius: 6px; }}
     QFrame#card, QFrame#drop {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; }}
     QFrame#drop {{ border: 2px dashed {t['border']}; }}
+    QFrame#drop[loaded="true"] {{ border-style: solid; }}
+    QFrame#drop:hover {{ background: {t['surface_hover']}; }}
     QFrame#drop[active="true"] {{ border-color: {t['accent']}; }}
     QFrame#card[state="ok"] {{ border-color: {t['success']}; }}
+    QFrame#card[state="ok"]:hover {{ background: {t['surface_hover']}; }}
     QFrame#card * , QFrame#drop * {{ background: transparent; border: none; }}
+    QFrame#card[state="off"] QLabel {{ color: {t['text_faint']}; }}
     QLabel#icon {{ color: {t['accent']}; font-size: 16pt; }}
     QLabel#cardName {{ font-weight: 600; }}
     QPushButton {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
@@ -66,7 +70,7 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
                           border-radius: 0; padding: 6px 12px; color: {t['text_muted']}; font-weight: 600; }}
     QPushButton#navTab:hover {{ color: {t['text']}; }}
     QPushButton#navTab:checked {{ color: {t['accent']}; border-bottom-color: {t['accent']}; }}
-    QListWidget, QTableView {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
+    QListWidget, QTableView, QTreeWidget {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
                                outline: none; }}
     QTableView {{ gridline-color: {t['border']}; selection-background-color: {t['selection']};
                   selection-color: {t['text']}; }}

@@ -135,6 +135,18 @@ class Storage:
             entries.append(Entry(path.stem, p.name, path))
         return entries, issues
 
+    def seed_profiles(self, defaults: list[RemapProfile]) -> bool:
+        """Первый запуск: папки профилей ещё нет — создать её и сохранить defaults как обычные профили.
+
+        Папка уже есть (в т.ч. пустая, если пользователь удалил всё) — ничего не делать: удалённое
+        не возвращается. True — профили засеяны."""
+        if self.profiles_dir.exists():
+            return False
+        self.profiles_dir.mkdir(parents=True)
+        for p in defaults:
+            self.save_profile(p)
+        return True
+
     def load_profile(self, profile_id: str) -> RemapProfile:
         path = self._path(self.profiles_dir, profile_id, PROFILE_EXT)
         return RemapProfile.from_json(path.read_text(encoding="utf-8-sig"))

@@ -37,22 +37,20 @@ def window(app, tmp_path):
     w.deleteLater()
 
 
-def test_window_constructs_with_legacy_default(window):
+def test_window_constructs_with_seeded_legacy_profile(window):
     assert window.windowTitle() == "MidiRemap"
     assert window.profile_combo.count() == 1
     assert window.profile_combo.currentText() == legacy_profile().name
-    assert window.profile_combo.currentData() is None
+    assert window.selected_profile().rules == legacy_profile().rules
 
 
 def test_profiles_from_storage_listed(app, tmp_path):
     storage = Storage(tmp_path / "store")
     storage.save_profile(RemapProfile(name="Мой профиль", rules={36: Rule.map_to(35)}))
     (storage.profiles_dir / "broken.json").write_text("{", encoding="utf-8")
-    w = MainWindow(storage)
-    assert [w.profile_combo.itemText(i) for i in range(w.profile_combo.count())] == [
-        legacy_profile().name, "Мой профиль"]
+    w = MainWindow(storage)  # папка профилей уже есть — legacy не засевается
+    assert [w.profile_combo.itemText(i) for i in range(w.profile_combo.count())] == ["Мой профиль"]
     assert "broken.json" in w.status.text()
-    w.profile_combo.setCurrentIndex(1)
     assert w.selected_profile().rules == {36: Rule.map_to(35)}
     w.close()
 

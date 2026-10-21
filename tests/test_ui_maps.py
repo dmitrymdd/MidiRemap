@@ -64,7 +64,7 @@ def test_manager_lists_templates_and_opens_read_only(window):
     page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
     assert page.current == MapRef(TEMPLATE, "Superior Drummer 3")
     assert page.model.read_only
-    idx = page.model.index(36, COL_NAME)
+    idx = page.model.note_index(36, COL_NAME)
     assert not page.model.flags(idx) & Qt.ItemFlag.ItemIsEditable
     assert not page.model.setData(idx, "X")
     assert not page.rename_btn.isEnabled() and not page.delete_btn.isEnabled()
@@ -72,10 +72,9 @@ def test_manager_lists_templates_and_opens_read_only(window):
     assert page.status_chip.text() == "VERIFIED"
     # у шаблона нет Save/Revert, вместо них подсказка; флажки primary неактивны
     assert page.save_btn.isHidden() and page.revert_btn.isHidden()
-    assert not page.read_only_hint.isHidden()
-    assert page.read_only_hint.text() == "Built-in template — Duplicate to edit"
+    assert not page.edit_copy_btn.isHidden() and page.edit_copy_btn.text() == "Duplicate to edit"
     shared = first_shared(page)
-    pflags = page.model.flags(page.model.index(shared, COL_PRIMARY))
+    pflags = page.model.flags(page.model.note_index(shared, COL_PRIMARY))
     assert not pflags & Qt.ItemFlag.ItemIsEnabled and not pflags & Qt.ItemFlag.ItemIsUserCheckable
 
 
@@ -85,13 +84,13 @@ def test_duplicate_edit_primary_save_reload(window, storage, app):
     page.answers["text"] = ["My EZD3"]
     page.duplicate()
     assert page.current == MapRef(USER, "My EZD3") and not page.model.read_only
-    assert not page.save_btn.isHidden() and not page.save_btn.isEnabled() and page.read_only_hint.isHidden()
+    assert not page.save_btn.isHidden() and not page.save_btn.isEnabled() and page.edit_copy_btn.isHidden()
     assert page.work.meta.notes.endswith("Based on template EZdrummer 3")
     assert page.work.meta.status == "verified"
 
     # только primary — статус прежний
     shared = first_shared(page)
-    pidx = page.model.index(shared, COL_PRIMARY)
+    pidx = page.model.note_index(shared, COL_PRIMARY)
     assert page.model.flags(pidx) & Qt.ItemFlag.ItemIsUserCheckable
     assert page.model.setData(pidx, Qt.CheckState.Checked.value, Qt.ItemDataRole.CheckStateRole)
     assert page.dirty and window.nav_maps.text().startswith("Maps") and "●" in window.nav_maps.text()
@@ -102,7 +101,7 @@ def test_duplicate_edit_primary_save_reload(window, storage, app):
     assert shared in saved.primary and saved.meta.status == "verified"
 
     # правка имени — unverified
-    assert page.model.setData(page.model.index(38, COL_NAME), "  Snare: Center X  ")
+    assert page.model.setData(page.model.note_index(38, COL_NAME), "  Snare: Center X  ")
     assert page.status_chip.text() == "UNVERIFIED"
     assert page.save()
     saved, _ = storage.load_map("My EZD3")
@@ -131,7 +130,7 @@ def test_primary_is_exclusive_and_only_for_shared_names(window):
     assert page.work.primary & set(m.group(shared)) == {others[0]}
     assert m.group_state(shared) == ""
     single = next(n for n in sorted(page.work.names) if len(m.group(n)) == 1)
-    assert not m.flags(m.index(single, COL_PRIMARY)) & Qt.ItemFlag.ItemIsEnabled
+    assert not m.flags(m.note_index(single, COL_PRIMARY)) & Qt.ItemFlag.ItemIsEnabled
     assert not m.set_primary(single, True)
     # переименование отмеченной ноты в другую артикуляцию снимает флаг
     m.set_name(others[0], "Something else")
@@ -145,24 +144,28 @@ def test_highlight_duplicates_without_primary(window, storage):
     page.select(MapRef(USER, "Kit"))
     m = page.model
     assert m.group_state(36) == "warning" and m.group_state(38) == ""
-    assert m.data(m.index(36, COL_NAME), Qt.ItemDataRole.BackgroundRole) is not None
-    assert m.data(m.index(38, COL_NAME), Qt.ItemDataRole.BackgroundRole) is None
-    assert "without a primary note" in page.issues_label.text()
+    assert m.data(m.note_index(36, COL_NAME), Qt.ItemDataRole.BackgroundRole) is not None
+    assert m.data(m.note_index(38, COL_NAME), Qt.ItemDataRole.BackgroundRole) is None
+    assert "without a Write to note" in page.issues_label.text()
 
 
 def test_filter_named_only_and_search(window):
     page = window.maps_page
     page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
     n_named = len(page.work.names)
-    assert page.proxy.rowCount() == n_named
+    assert len(page.proxy.note_rows()) == n_named
     page.named_only.setChecked(False)
-    assert page.proxy.rowCount() == 128
+    assert sorted(page.proxy.note_rows()) == list(range(128))
     page.search.setText("36")
-    assert page.proxy.rowCount() == 1
+    assert page.proxy.note_rows() == [36] and page.proxy.rowCount() == 2  # нота + заголовок её группы
     page.search.setText("c1")  # название высоты
-    assert page.proxy.mapToSource(page.proxy.index(0, 0)).row() == 36
+    assert page.proxy.note_rows() == [36]
     page.search.setText("kick")
-    assert 0 < page.proxy.rowCount() < n_named
+    assert 0 < len(page.proxy.note_rows()) < n_named
+    # пустые группы скрыты: видимые заголовки — только группы найденных нот
+    headers = [page.model.row_at(page.proxy.mapToSource(page.proxy.index(r, 0)).row())
+               for r in range(page.proxy.rowCount())]
+    assert [h.label for h in headers if h.is_header] == ["Kick"]
 
 
 def test_clearing_name_removes_note_and_prunes_order(window, storage):
@@ -173,7 +176,7 @@ def test_clearing_name_removes_note_and_prunes_order(window, storage):
     page.reload_list()
     page.select(MapRef(USER, "Ordered"))
     victim = next(n for n in m.order if n in m.names)
-    page.model.setData(page.model.index(victim, COL_NAME), "")
+    page.model.setData(page.model.note_index(victim, COL_NAME), "")
     assert victim not in page.work.names
     assert page.save()
     saved, _ = storage.load_map("Ordered")
@@ -308,3 +311,62 @@ def test_maps_tab_disables_convert_shortcuts(window):
     assert not any(sc.isEnabled() for sc in window._convert_shortcuts)
     window.show_page(0)
     assert all(sc.isEnabled() for sc in window._convert_shortcuts)
+
+
+def test_write_to_and_same_name_columns(window, storage):
+    from midiremap.ui.maps_page import COL_SHARED, COLUMNS
+    page = window.maps_page
+    m = page.model
+    assert COLUMNS[COL_PRIMARY] == "WRITE TO" and COLUMNS[COL_SHARED] == "SAME NAME"
+    assert m.headerData(COL_PRIMARY, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole).startswith(
+        "When converting INTO this map and an articulation sits on several notes")
+    assert m.headerData(COL_SHARED, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole) == \
+        "How many notes in this map have this name"
+    export_actions = [a.text() for a in page.export_btn.menu().actions()]
+    assert "Write to notes only…" in export_actions
+    assert not hasattr(page, "write_to_hint")  # пояснение — только в подсказке заголовка
+
+
+def test_rows_grouped_by_instrument(window):
+    from midiremap.core.notemap import instrument_group
+    page = window.maps_page
+    page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
+    m = page.model
+    headers = [r for r in m.rows if r.is_header]
+    assert m.grouped and "Kick" in [h.label for h in headers]
+    # каждая нота стоит под заголовком своей группы
+    current = None
+    for r in m.rows:
+        if r.is_header:
+            current = r.label
+        elif r.note in page.work.names:
+            assert instrument_group(page.work.names[r.note]) == current
+    # строка-заголовок на всю ширину и не выделяется
+    h = page.proxy.index(0, 0)
+    assert page.table.columnSpan(0, 0) == 5
+    assert not page.proxy.flags(h) & Qt.ItemFlag.ItemIsSelectable
+    # General MIDI — плоский список
+    page.select(MapRef(TEMPLATE, "General MIDI"))
+    assert not page.model.grouped and len(page.model.rows) == 128
+
+
+def test_renamed_note_moves_to_its_group_after_save(window):
+    page = window.maps_page
+    page.select(MapRef(TEMPLATE, "EZdrummer 3"))
+    page.answers["text"] = ["Mine"]
+    page.duplicate()
+    m = page.model
+    m.set_name(38, "Cowbell: Hit")
+    assert m.row_at(m.note_index(38, 0).row()).group == "snare"  # строка не уезжает при правке
+    assert page.save()
+    assert m.rows[m.note_index(38, 0).row()].group == "cowbell"
+
+
+def test_template_write_to_checkboxes_look_disabled(window):
+    page = window.maps_page
+    page.select(MapRef(TEMPLATE, "EZdrummer 3"))
+    from midiremap.ui.maps_page import CheckDelegate
+    assert isinstance(page.table.itemDelegateForColumn(COL_PRIMARY), CheckDelegate)
+    idx = page.model.note_index(first_shared(page), COL_PRIMARY)
+    assert idx.data(Qt.ItemDataRole.CheckStateRole) is not None
+    assert not page.model.flags(idx) & Qt.ItemFlag.ItemIsEnabled
