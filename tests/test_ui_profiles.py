@@ -485,3 +485,96 @@ def test_hotkeys_in_tooltips_and_short_status(window, tmp_path):
     page.duplicate()
     assert "Double-click or type to edit a name" in tip()
     assert not hasattr(page, "edit_hint")
+
+
+# --- вид «кабелями» (8b2a) ---
+
+def map_rule_count(p):
+    return sum(r.action == "map" for r in p.rules.values())
+
+
+def test_cables_view_toggle_keeps_edits(window):
+    from midiremap.ui.cable_layout import DELETE
+    from midiremap.ui.profiles_page import CABLES_VIEW, TABLE_VIEW
+    page = window.profiles_page
+    new_profile(page)
+    page.accept_suggestions()
+    rules = dict(page.work.rules)
+    page.set_view(CABLES_VIEW)
+    assert page.view == CABLES_VIEW and page.cables.active
+    assert len(page.cables.cable_items) == map_rule_count(page.work) > 0
+    assert page.work.rules == rules and page.dirty
+    # правка при показанных кабелях: строка без кабеля остаётся на месте до пересортировки
+    n = next(n for n, r in sorted(page.work.rules.items()) if r.action == "map")
+    y = page.cables.current.source_row(n).y
+    page.delete_notes([n])
+    row = page.cables.current.source_row(n)
+    assert row.y == y and row.block is None and not row.connected
+    assert len(page.cables.cable_items) == map_rule_count(page.work)
+    page.set_view(TABLE_VIEW)
+    assert page.work.rules[n] == Rule.delete() and page.dirty and not page.cables.active
+    page.set_view(CABLES_VIEW)  # показ — пересортировка
+    assert page.cables.current.source_row(n) is None  # блок Delete свёрнут по умолчанию
+    assert page.cables.current.header(DELETE).count == 1
+
+
+def test_cables_view_toolbar(window):
+    from midiremap.ui.profiles_page import CABLES_VIEW, RESORT_TIP, TABLE_VIEW
+    page = window.profiles_page
+    new_profile(page)
+    assert page.resort_btn.isHidden() and page.assign_btn.isEnabled()
+    page.set_view(CABLES_VIEW)
+    assert not page.resort_btn.isHidden() and page.resort_btn.toolTip() == RESORT_TIP
+    assert not page.assign_btn.isEnabled()
+    assert page.cables_view_btn.isChecked() and not page.table_view_btn.isChecked()
+    page.table_view_btn.click()
+    assert page.view == TABLE_VIEW and page.assign_btn.isEnabled()
+
+
+def test_cables_resort_button_reflows(window):
+    from midiremap.ui.cable_layout import UNASSIGNED
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    new_profile(page)
+    page.accept_suggestions()
+    page.set_view(CABLES_VIEW)
+    n = next(n for n, r in sorted(page.work.rules.items()) if r.action == "map")
+    page.clear_rules([n])
+    assert page.cables.current.source_row(n).block is None
+    page.resort_btn.click()
+    assert page.cables.current.source_row(n).block == UNASSIGNED
+
+
+def test_cables_header_click_collapses(window, app):
+    from PySide6.QtCore import QPointF
+    from midiremap.ui.cable_layout import UNASSIGNED
+    from midiremap.ui.cable_view import PAD, ROW
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    window.resize(1200, 800)
+    window.show()
+    new_profile(page)
+    page.set_view(CABLES_VIEW)
+    head = page.cables.current.header(UNASSIGNED)
+    assert head.y == 0 and not head.collapsed
+    pos = page.cables.mapFromScene(QPointF(PAD + 30, PAD + ROW / 2))
+    QTest.mouseClick(page.cables.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    app.processEvents()
+    head = page.cables.current.header(UNASSIGNED)
+    assert head.collapsed and head.count == len(page.work.source_map.names)
+    assert page.cables.current.source_rows == []
+
+
+def test_cables_view_saves_with_same_dialog(window, storage):
+    from midiremap.ui.cable_layout import KEEP
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    pid = new_profile(page)
+    page.set_view(CABLES_VIEW)
+    page.accept_suggestions()
+    assert len(page.cables.cable_items) == map_rule_count(page.work)
+    page.answers["unassigned"] = set()
+    assert page.save() and page.answers["asked"][-1][0] == "unassigned"
+    saved = storage.load_profile(pid)
+    assert page.cables.profile is page.work and page.work.to_dict() == saved.to_dict()
+    assert page.cables.current.header(KEEP).count == sum(r == Rule.keep() for r in saved.rules.values())

@@ -3,8 +3,8 @@
 
 Логики профилей здесь нет — только вызовы midiremap.core (suggest_rules, apply_suggestions, validate_profile,
 unassigned_keep_warnings, with_explicit_keeps) и midiremap.storage. Диалоги вынесены в методы ask_*/pick_*/confirm/show_error,
-чтобы тесты могли их подменить. Таблица — основной вид этапа 8b1; визуальный редактор «кабелями» (8b2)
-будет работать над той же моделью.
+чтобы тесты могли их подменить. Два вида одной рабочей копии: таблица правил и «кабели» (cable_view.py,
+этап 8b2); переключение видов правок не теряет.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QGridLayout, QTableWidget, QTableWidgetItem, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QTableView, QTreeWidget,
-    QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QGridLayout, QTableWidget, QTableWidgetItem, QHBoxLayout,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
+    QStackedWidget, QTableView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..core.notemap import NoteMap, articulations, duplicate_map, instrument_group, normalize_name
@@ -30,6 +30,7 @@ from ..core.profile import (
 from ..core.suggest import Suggestion, apply_suggestions, suggest_rules
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
+from .cable_view import CableView
 from .maps_page import (
     HEADER_ROLE, REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, LayoutRow, MapListDelegate, MapRef, group_rows,
     header_data, update_spans, wrapped_tooltip,
@@ -37,6 +38,8 @@ from .maps_page import (
 from .theme import TOKENS, repolish
 
 SOURCE, TARGET = "source", "target"
+TABLE_VIEW, CABLES_VIEW = "table", "cables"
+RESORT_TIP = "Re-sort: put connected notes opposite their targets and regroup the rest"
 
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3  # имя профиля без пометки «•»
 
@@ -529,8 +532,26 @@ class ProfilesPage(QWidget):
         self.assign_btn.clicked.connect(self.assign_selected)
         self.summary = QLabel()
         self.summary.setObjectName("muted")
+        self.view_buttons = QButtonGroup(self)
         tools = QHBoxLayout()
+        tools.setSpacing(6)
+        for view, text, tip in ((TABLE_VIEW, "Table", "Rules as a table"),
+                                (CABLES_VIEW, "Cables", "Rules as cables from source notes to target articulations")):
+            btn = QPushButton(text)
+            btn.setObjectName("segment")
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.clicked.connect(lambda _=False, v=view: self.set_view(v))
+            self.view_buttons.addButton(btn)
+            tools.addWidget(btn)
+            setattr(self, f"{view}_view_btn", btn)
+        self.table_view_btn.setChecked(True)
+        self.resort_btn = QPushButton("⇅")
+        self.resort_btn.setToolTip(RESORT_TIP)
+        self.resort_btn.clicked.connect(lambda: self.cables.resort())
+        tools.addSpacing(10)
         tools.addWidget(self.summary, stretch=1)
+        tools.addWidget(self.resort_btn)
         tools.addWidget(self.assign_btn)
         tools.addWidget(self.accept_btn)
         right.addLayout(tools)
@@ -557,7 +578,11 @@ class ProfilesPage(QWidget):
         header.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_TARGET, QHeaderView.ResizeMode.Stretch)
         self.model.modelReset.connect(lambda: update_spans(self.table, len(COLUMNS)))
-        right.addWidget(self.table, stretch=1)
+        self.cables = CableView()
+        self.views = QStackedWidget()
+        self.views.addWidget(self.table)
+        self.views.addWidget(self.cables)
+        right.addWidget(self.views, stretch=1)
 
         self.issues_label = QLabel()
         self.issues_label.setObjectName("issues")
@@ -733,6 +758,7 @@ class ProfilesPage(QWidget):
         self.work = copy.deepcopy(p)
         self.model.deleted_collapsed = True
         self.model.set_profile(self.work)
+        self.cables.set_profile(self.work)
         self._update_state()
         self.set_status("")
         return True
@@ -740,6 +766,7 @@ class ProfilesPage(QWidget):
     def close_profile(self) -> None:
         self.current = self.base = self.work = None
         self.model.set_profile(None)
+        self.cables.set_profile(None)
         self._update_state()
 
     def maybe_leave(self) -> bool:
@@ -759,6 +786,7 @@ class ProfilesPage(QWidget):
             return
         self.work = copy.deepcopy(self.base)
         self.model.set_profile(self.work)
+        self.cables.set_profile(self.work, reset_collapsed=False)
         self._update_state()
 
     def unassigned(self) -> list[int]:
@@ -790,6 +818,7 @@ class ProfilesPage(QWidget):
         self.model.profile = self.work
         self.model.recompute()
         self.model.relayout()
+        self.cables.set_profile(self.work, reset_collapsed=False)
         self.reload_list()
         self._update_state()
         self.profiles_changed.emit()
@@ -802,6 +831,7 @@ class ProfilesPage(QWidget):
             self.model.relayout()
         else:
             self.model.refresh()
+        self.cables.refresh()
         self._update_state()
 
     def _update_state(self) -> None:
@@ -817,8 +847,11 @@ class ProfilesPage(QWidget):
         self.duplicate_btn.setEnabled(has)
         self.rename_btn.setEnabled(has)
         self.delete_btn.setEnabled(has)
-        for btn in (self.source_btn, self.target_btn, self.assign_btn):
+        for btn in (self.source_btn, self.target_btn, self.resort_btn):
             btn.setEnabled(has)
+        cables = self.view == CABLES_VIEW
+        self.assign_btn.setEnabled(has and not cables)  # в виде «кабелями» выделения пока нет (8b2b)
+        self.resort_btn.setVisible(cables)
         both = has and self.work.source_map is not None and self.work.target_map is not None
         self.accept_btn.setEnabled(both)
         self.accept_btn.setToolTip(ACCEPT_TIP if both else "Needs both a source and a target map")
@@ -849,6 +882,20 @@ class ProfilesPage(QWidget):
             self.issues_label.setText("")
             self.issues_label.setToolTip("")
         repolish(self.issues_label, "state", "")
+
+    # --- виды ---
+
+    @property
+    def view(self) -> str:
+        return CABLES_VIEW if self.views.currentWidget() is self.cables else TABLE_VIEW
+
+    def set_view(self, view: str) -> None:
+        """Таблица или «кабели» — оба вида над одной рабочей копией. Показ кабелей — пересортировка."""
+        cables = view == CABLES_VIEW
+        self.views.setCurrentWidget(self.cables if cables else self.table)
+        (self.cables_view_btn if cables else self.table_view_btn).setChecked(True)
+        self.cables.set_active(cables)
+        self._update_state()
 
     # --- карты профиля ---
 
@@ -890,6 +937,7 @@ class ProfilesPage(QWidget):
         else:
             self.work.target_map = m
         self._changed(relayout=True)
+        self.cables.resort()
         self.set_status(f"{what.capitalize()} map: {map_summary(m)}.")
         return True
 
