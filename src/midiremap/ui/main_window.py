@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
         self.report_view.setPlaceholderText("The conversion report will appear here.")
         root.addWidget(self.report_view, stretch=1)
 
-        self.status = QLabel("Ready. Supports .mid and .midi files.")
+        self.status = QLabel("Supports .mid and .midi files.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
