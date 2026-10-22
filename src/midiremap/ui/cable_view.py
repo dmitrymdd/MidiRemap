@@ -1,20 +1,23 @@
 """Вид профиля «кабелями» (этап 8b2): показ и правка перетаскиванием кабелей.
 
-Три колонки: пул (Unassigned / Keep / Delete) — отдельная QGraphicsView со своей прокруткой; подключённые ноты
+Три колонки: пул (Unassigned / Delete) — отдельная QGraphicsView со своей прокруткой; подключённые ноты
 и цель — вторая QGraphicsView (колонки 2 и 3 в одной сцене — одна общая прокрутка, кабели между ними внутри
 сцены). Между ними QSplitter. Поверх обоих — прозрачный для мыши слой CableOverlay: на нём рисуется кабель-превью
 от исходных строк к курсору через границу пула и сцены.
 
 Порядок, группы, алиасы, высоты строк и кабели считает cable_layout (без Qt); здесь — рисование, выделение,
 перетаскивание, правый клик и подсказки. Профиль — рабочая копия страницы Profiles: виджет его НЕ меняет, а
-сигналами просит страницу (connect_requested / disconnect_requested / strike_requested / write_to_requested) —
-правила меняет та же логика, что и в таблице.
+сигналами просит страницу (connect_requested / group_drop_requested / disconnect_requested / strike_requested /
+write_to_requested) — правила меняет ядро (core/profile.py) через страницу.
 
-Мышь: строки пула и колонки 2 выделяются (Ctrl/Shift — несколько) и перетаскиваются на строку цели; кабель-превью
+Мышь: строки пула и колонки 2 выделяются (Ctrl/Shift — несколько) и перетаскиваются на строку цели (назначение
+по совпадению номеров, см. assign_plan) или на заголовок группы цели (n → n для совпавших номеров); заголовок
+группы пула тоже можно перетащить — со всеми его нотами. Кабель-превью
 догоняет курсор с лёгкой пружиной (таймер ~60 кадров/с), у края любой колонки — автопрокрутка, Esc — отмена.
 Наведение на заголовок группы цели во время перетаскивания (~500 мс) показывает все её артикуляции.
 Правый клик: кабель (или подключённая строка) — снять кабель; строка или группа пула — зачеркнуть
 (правило delete) / вернуть (без правила). Бейдж «+N» строки цели — меню выбора Write to.
+Строка цели показывает номера, на которые идут кабели (TargetRow.lines); Write to — цветом акцента.
 
 Пересортировка: set_profile(), resort() (кнопка ↻), режим группы цели, включение вида (set_active).
 После правок — refresh(): порядок заморожен (см. cable_layout). Сворачивание в пуле и раскрытие алиасов
@@ -37,7 +40,7 @@ from ..core.notemap import primary_note
 from ..core.pitch import pitch_name
 from ..core.profile import NO_RULE, ProfileIssue, RemapProfile, validate_profile
 from .cable_layout import (
-    DEFAULT_COLLAPSED, DELETE, KEEP, MIXED, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header, OrderSnapshot,
+    DEFAULT_COLLAPSED, DELETE, KEEP, MIXED, TARGET_PREFIX, UNASSIGNED, CableLayout, Header, OrderSnapshot,
     SourceRow, TargetRow, build_layout,
 )
 from .theme import TOKENS
@@ -69,8 +72,8 @@ MAX_PREVIEW = 24                # кабелей-превью при перет�
 POOL, SOURCE, TARGET = "pool", "source", "target"  # роль строки: пул, колонка 2, цель
 
 STATE_TIPS = {
-    UNASSIGNED: "No rule yet: stays on its number unless you choose otherwise when saving",
-    KEEP: "Stays on its number",
+    UNASSIGNED: "No target yet: removed when saving unless you keep it",
+    KEEP: "Kept on the same number",
     DELETE: "Deleted from converted files",
     MIXED: "These notes have different rules",
 }
@@ -79,8 +82,11 @@ ROW_HINT = "Drag onto a target to map · Ctrl/Shift+click to select several · R
 CONNECTED_HINT = "Drag onto another target to remap · Right-click to remove the cable"
 ALIAS_HINT = "Click the arrow to show the notes one by one"
 MIXED_HINT = "Notes with different rules are always shown one by one"
-BADGE_HINT = "Click +{n} to choose the Write to note"
-GROUP_HINT = "Right-click to delete or restore the whole group"
+BADGE_HINT = "Click the badge to choose the Write to note"
+WRITE_TO_HINT = "Write to: {n} (orange number) — notes from other numbers are written here"
+GROUP_HINT = ("Drag onto a target group to connect notes with the same numbers\n"
+              "Right-click to delete or restore the whole group")
+TARGET_GROUP_HINT = "Drop notes here to connect those with the same numbers"
 
 
 def _font(base: QFont, *, bold=False, weight: QFont.Weight | None = None, size_delta=0.0, strike=False,
@@ -159,10 +165,13 @@ class _Row(QGraphicsItem):
 
     def __init__(self, rect: QRectF, role: str, model: SourceRow | TargetRow, number: str, pitch: str, name: str,
                  *, name_color="text", strike=False, italic=False, marker="", count=1, chevron: str | None = None,
-                 badge=False, port: str | None = None, warn=False, tooltip="") -> None:
+                 badge=False, port: str | None = None, warn=False, tooltip="",
+                 lines: list[tuple[int, str, str, bool]] | None = None) -> None:
         super().__init__()
         self.rect, self.role, self.model = rect, role, model
         self.number, self.pitch, self.name = number, pitch, name
+        # номера по строкам блока: (смещение, номер, высота, Write to); по умолчанию — один, на первой строке
+        self.lines = lines if lines is not None else [(0, number, pitch, False)]
         self.name_color, self.strike, self.italic, self.marker = name_color, strike, italic, marker
         self.count, self.chevron, self.badge = count, chevron, badge  # chevron: collapsed / expanded / fixed
         self.port, self.warn = port, warn
@@ -228,14 +237,16 @@ class _Row(QGraphicsItem):
         x = r.left() + 6
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         right_mid = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        p.setFont(_font(base, weight=QFont.Weight.Medium))
-        p.setPen(_color("text"))
-        p.drawText(QRectF(x, line.top(), NUM_W, line.height()), right_mid, self.number)
-        x += NUM_W + 8
-        p.setFont(_font(base, size_delta=-1.5))
-        p.setPen(_color("text_muted"))
-        p.drawText(QRectF(x, line.top(), PITCH_W, line.height()), left_mid, self.pitch)
-        x += PITCH_W
+        num_font, pitch_font = _font(base, weight=QFont.Weight.Medium), _font(base, size_delta=-1.5)
+        for off, number, pitch, write_to in self.lines:  # у строки цели — номер на уровне своего кабеля
+            top = line.top() + off * ROW
+            p.setFont(num_font)
+            p.setPen(_color("accent" if write_to else "text"))
+            p.drawText(QRectF(x, top, NUM_W, line.height()), right_mid, number)
+            p.setFont(pitch_font)
+            p.setPen(_color("text_muted"))
+            p.drawText(QRectF(x + NUM_W + 8, top, PITCH_W, line.height()), left_mid, pitch)
+        x += NUM_W + 8 + PITCH_W
         right = r.right() - (CHEVRON_W + 4 if self.chevron else 0)
         mark_w = BADGE_W if self.badge else MARK_W if self.marker else 0
         name_w = right - x - (mark_w or 8)
@@ -268,8 +279,12 @@ class _Row(QGraphicsItem):
             _draw_chevron(p, r.right() - CHEVRON_W + 2, line.center().y(), self.chevron == "collapsed",
                           "text_faint" if self.chevron == "fixed" else "text_muted")
         if self.port:
-            port_x = r.right() if self.port == "right" else r.left()
-            _draw_port(p, QPointF(port_x, r.center().y()), "accent_hover" if self.highlighted else "accent")
+            token = "accent_hover" if self.highlighted else "accent"
+            if self.port == "left":  # цель: точка на каждом номере, куда приходят кабели
+                for off, *_ in self.lines:
+                    _draw_port(p, QPointF(r.left(), self.rect.top() + (off + 0.5) * ROW), token)
+            else:
+                _draw_port(p, QPointF(r.right(), r.center().y()), token)
 
 
 class _HeaderItem(QGraphicsItem):
@@ -488,6 +503,7 @@ class _Press:
     notes: frozenset[int]
     pos: QPointF                 # в координатах viewport
     select_on_release: bool      # клик по уже выделенной строке без модификаторов: выделить только её при отпускании
+    header: str | None = None    # нажали на заголовок пула: клик — свернуть, перетаскивание — все его ноты
 
 
 @dataclass
@@ -498,6 +514,7 @@ class _Drag:
     pos: QPointF
     vel: QPointF
     hover: _Row | _HeaderItem | None = None
+    header: str | None = None    # тащат заголовок пула: кабель-превью — от него
 
     def step(self) -> None:
         """Шаг пружины с затуханием: конец кабеля догоняет курсор с лёгким запаздыванием."""
@@ -509,6 +526,7 @@ class CableEditor(QWidget):
     """Пул | подключённые и цель (QSplitter) + слой для кабелей-превью поверх обоих."""
 
     connect_requested = Signal(list, str)   # ноты, строка цели (slot): map — решает страница (Write to и т.п.)
+    group_drop_requested = Signal(list, list)  # ноты, ноты группы цели: n → n для совпавших номеров
     disconnect_requested = Signal(list)     # ноты: снять кабель (правило убрать)
     strike_requested = Signal(list)         # ноты: зачеркнуть (delete) или, если все зачёркнуты, вернуть
     write_to_requested = Signal(int)        # нота цели: сделать Write to и перенаправить правила
@@ -544,6 +562,7 @@ class CableEditor(QWidget):
         self.pool_items: dict[int, _Row] = {}                    # нота -> строка пула (у алиасов — общая)
         self.source_items: dict[int, _Row] = {}                  # нота -> строка колонки 2
         self.pool_rows: list[_Row] = []
+        self.pool_headers: dict[str, _HeaderItem] = {}           # заголовки пула по ключу
         self.scene_rows: list[_Row] = []
         self.target_items: dict[str, _Row] = {}                  # строки цели по slot
         self.hovered: _CableItem | None = None
@@ -630,7 +649,7 @@ class CableEditor(QWidget):
                 return self._anchor_of(view, item)
         return None
 
-    def _anchor_of(self, view: _ColumnView, item: _Row) -> QPointF:
+    def _anchor_of(self, view: _ColumnView, item: _Row | _HeaderItem) -> QPointF:
         """Правый край первой строки элемента; за краем видимой области — прижать к краю."""
         r = item.rect
         pt = view.mapFromScene(QPointF(r.right(), r.top() + ROW / 2))
@@ -681,6 +700,10 @@ class CableEditor(QWidget):
                 at = view.viewport().mapToGlobal(pos.toPoint())
                 QTimer.singleShot(0, lambda t=item.model: self._write_to_menu(t, at))
             return True
+        if isinstance(item, _HeaderItem) and view is self.pool:
+            # клик — свернуть (при отпускании), перетаскивание — все ноты заголовка
+            self._press = _Press(view, frozenset(item.header.notes), pos, False, item.header.key)
+            return True
         if isinstance(item, _Row):
             chevron = item.chevron_rect()
             if chevron is not None and chevron.contains(scene_pt):
@@ -725,8 +748,12 @@ class CableEditor(QWidget):
         press = self._press
         if press is not None and event.buttons() & Qt.MouseButton.LeftButton:
             if (pos - press.pos).manhattanLength() >= QApplication.startDragDistance():
-                notes = self.selection if press.notes <= self.selection else set(press.notes)
-                self.begin_drag(notes, QPointF(view.viewport().mapTo(self, pos.toPoint())))
+                at = QPointF(view.viewport().mapTo(self, pos.toPoint()))
+                if press.header is not None:
+                    self.begin_drag(set(press.notes), at, header=press.header)
+                else:
+                    notes = self.selection if press.notes <= self.selection else set(press.notes)
+                    self.begin_drag(notes, at)
             return True
         return False
 
@@ -738,6 +765,10 @@ class CableEditor(QWidget):
             return True
         press, self._press = self._press, None
         if press is not None:
+            if press.header is not None:
+                # перестройка пула удаляет заголовок — после обработки события
+                QTimer.singleShot(0, lambda key=press.header: self.toggle_pool(key))
+                return True
             if press.select_on_release:
                 self.set_selection(set(press.notes))
                 self._anchor = (press.view, press.notes)
@@ -764,13 +795,14 @@ class CableEditor(QWidget):
 
     # --- перетаскивание ---
 
-    def begin_drag(self, notes: set[int], at: QPointF) -> None:
-        """Начать перетаскивание кабеля от строк с этими нотами (at — курсор в координатах CableEditor)."""
+    def begin_drag(self, notes: set[int], at: QPointF, header: str | None = None) -> None:
+        """Начать перетаскивание кабеля от строк с этими нотами (at — курсор в координатах CableEditor).
+        header — тащат заголовок пула (кабель-превью — от него)."""
         if not notes:
             return
         self._press = None
         self.hover_cable(None)
-        self._drag = _Drag(tuple(sorted(notes)), QPointF(at), QPointF(at), QPointF(0, 0))
+        self._drag = _Drag(tuple(sorted(notes)), QPointF(at), QPointF(at), QPointF(0, 0), header=header)
         for v in (self.pool, self.view):
             v.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
         self._frame.start()
@@ -800,10 +832,19 @@ class CableEditor(QWidget):
             self.set_selection(set())
             # вопрос о Write to (модальный) — после того, как превью исчезло
             QTimer.singleShot(0, lambda: self.connect_requested.emit(notes, slot))
+        elif drop and self._droppable(d.hover):
+            notes, targets = list(d.notes), list(d.hover.header.notes)
+            self.set_selection(set())
+            QTimer.singleShot(0, lambda: self.group_drop_requested.emit(notes, targets))
 
     def cancel_drag(self) -> None:
         self._press = None
         self.end_drag(drop=False)
+
+    @staticmethod
+    def _droppable(item) -> bool:
+        """Сюда можно отпустить кабель: строка цели или заголовок группы цели с нотами."""
+        return isinstance(item, _Row) or (isinstance(item, _HeaderItem) and bool(item.header.notes))
 
     def _drop_target_at(self, at: QPointF) -> _Row | _HeaderItem | None:
         """Строка цели или заголовок группы цели под точкой (координаты CableEditor)."""
@@ -853,10 +894,13 @@ class CableEditor(QWidget):
         d.step()
         self._autoscroll(d.cursor)
         self._update_hover()
-        self.overlay.show_preview(self._drag_anchors(d.notes), d.pos, isinstance(d.hover, _Row))
+        self.overlay.show_preview(self._drag_anchors(d), d.pos, self._droppable(d.hover))
 
-    def _drag_anchors(self, notes: tuple[int, ...]) -> list[QPointF]:
-        wanted = set(notes)
+    def _drag_anchors(self, d: _Drag) -> list[QPointF]:
+        if d.header is not None:
+            item = self.pool_headers.get(d.header)
+            return [self._anchor_of(self.pool, item)] if item is not None else []
+        wanted = set(d.notes)
         out: list[QPointF] = []
         for view, rows in ((self.pool, self.pool_rows), (self.view, self.scene_rows)):
             for item in rows:
@@ -929,7 +973,7 @@ class CableEditor(QWidget):
 
     def _draw_pool(self) -> None:
         lay = self.current
-        self.pool_items, self.pool_rows = {}, []
+        self.pool_items, self.pool_rows, self.pool_headers = {}, [], {}
         if lay is None:
             return
         width = self.pool.begin(lay.pool.height, 200)
@@ -939,7 +983,9 @@ class CableEditor(QWidget):
             tip = "Click to expand" if h.collapsed else "Click to collapse"
             if h.level == 1:
                 tip += f"\n{GROUP_HINT}"
-            scene.addItem(_HeaderItem(QRectF(PAD, PAD + h.y * ROW, col, ROW), h, self.toggle_pool, tip))
+            item = _HeaderItem(QRectF(PAD, PAD + h.y * ROW, col, ROW), h, self.toggle_pool, tip)
+            self.pool_headers[h.key] = item
+            scene.addItem(item)
         for r in lay.pool.rows:
             indent = INDENT if r.child else 0
             item = self._source_item(QRectF(PAD + indent, PAD + r.y * ROW, col - indent, ROW), r, POOL)
@@ -984,6 +1030,8 @@ class CableEditor(QWidget):
                 tip = "Connected only. Click to show all articulations"
             if h.shown:
                 tip = f"{h.shown} of {h.count} connected\n{tip}"
+            if h.notes:
+                tip += f"\n{TARGET_GROUP_HINT}"
             scene.addItem(_HeaderItem(rect(rx, h.y), h, self.toggle_target, tip))
         connected_slots = {c.target.slot for c in sc.cables}
         for t in sc.target_rows:
@@ -1003,7 +1051,7 @@ class CableEditor(QWidget):
         x1, x2 = lx + col, rx
         for c in sc.cables:
             a = QPointF(x1, PAD + c.src_y * ROW + ROW / 2)
-            b = QPointF(x2, PAD + (c.target.y + c.target.height / 2) * ROW)
+            b = QPointF(x2, PAD + (c.dst_y + 0.5) * ROW)  # на свой номер в строке цели
             item = _CableItem(cable_path(a, b), c, self, rows_by_y[c.src_y], self.target_items[c.target.slot],
                               self._cable_tip(c.notes, c.dst))
             scene.addItem(item)
@@ -1041,14 +1089,15 @@ class CableEditor(QWidget):
             tip = f"Note {t.notes[0]} is not in the target map" if tgt is not None else "No target map"
             return _Row(r, TARGET, t, str(t.notes[0]), pitch_name(t.notes[0]), "—", name_color="text_faint",
                         italic=True, port=port, tooltip=tip)
-        note = t.write_to if t.write_to is not None else t.notes[0]
-        tip = ""
-        if len(t.notes) > 1:
-            wt = f"Write to: {t.write_to}" if t.write_to is not None else "Write to: not chosen"
-            tip = f"On notes {', '.join(map(str, t.notes))} · {wt}\n{BADGE_HINT.format(n=len(t.notes) - 1)}"
         many = len(t.notes) > 1
-        return _Row(r, TARGET, t, str(note), pitch_name(note), t.label, marker=f"+{len(t.notes) - 1}" if many else "",
-                    badge=many, port=port, tooltip=tip)
+        lines = [(off, str(n), pitch_name(n), many and n == t.write_to) for off, n in t.numbers]
+        tip = ""
+        if many:
+            wt = WRITE_TO_HINT.format(n=t.write_to) if t.write_to is not None else "Write to: not chosen"
+            tip = f"On notes {', '.join(map(str, t.notes))}\n{wt}\n{BADGE_HINT}"
+        _, number, pitch, _ = lines[0]
+        return _Row(r, TARGET, t, number, pitch, t.label, marker=(f"+{t.hidden}" if t.hidden else "…") if many else "",
+                    badge=many, port=port, tooltip=tip, lines=lines)
 
     def _cable_tip(self, notes: tuple[int, ...], dst: int) -> str:
         p = self.profile

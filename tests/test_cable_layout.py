@@ -85,14 +85,14 @@ def test_status_blocks_order_and_groups():
     rules = {36: Rule.keep(), 40: Rule.delete(), 42: Rule.map_to(42), 37: Rule.keep()}
     lay = build_layout(profile(rules), no_collapse())
     blocks = [h for h in lay.pool.headers if h.level == 0]
-    assert [(h.key, h.count) for h in blocks] == [(UNASSIGNED, 3), (KEEP, 2), (DELETE, 1)]
+    assert [(h.key, h.count) for h in blocks] == [(UNASSIGNED, 5), (DELETE, 1)]  # блока Keep нет (8b2c)
     by = rows_by_note(lay)
     assert by[38].block == UNASSIGNED and by[38].state == UNASSIGNED
-    assert by[36].block == KEEP and by[36].state == KEEP
+    assert by[36].block == UNASSIGNED and by[36].state == KEEP  # явный keep — в Unassigned, маркер «=»
     assert by[40].block == DELETE and by[40].state == DELETE
     # внутри блока — по группам исходной карты
     groups = [h.label for h in lay.pool.headers if h.key.startswith(UNASSIGNED + "/")]
-    assert groups == ["Snare", "Hat", "Crash"]
+    assert groups == ["Kick", "Snare", "Hat", "Crash"]
     # подключённые — не в пуле, а в сцене напротив цели
     assert by[42].block is None and by[42].connected and by[42].state == MAPPED
     assert 42 not in {r.note for r in lay.pool.rows}
@@ -130,20 +130,21 @@ def test_empty_profile():
 # --- сворачивание ---
 
 def test_collapsed_block_and_group_show_counts():
-    rules = {36: Rule.keep(), 37: Rule.keep(), 42: Rule.map_to(42)}
-    lay = build_layout(profile(rules), {KEEP, UNASSIGNED + "/snare"})
-    keep = lay.header(KEEP)
-    assert keep.collapsed and keep.count == 2
-    assert not any(r.block == KEEP for r in lay.pool.rows)
-    assert not any(h.key.startswith(KEEP + "/") for h in lay.pool.headers)
+    rules = {36: Rule.delete(), 37: Rule.delete(), 42: Rule.map_to(42)}
+    lay = build_layout(profile(rules), {DELETE, UNASSIGNED + "/snare"})
+    deleted = lay.header(DELETE)
+    assert deleted.collapsed and deleted.count == 2
+    assert not any(r.block == DELETE for r in lay.pool.rows)
+    assert not any(h.key.startswith(DELETE + "/") for h in lay.pool.headers)
     snare = lay.header(UNASSIGNED + "/snare")
     assert snare.collapsed and snare.count == 2
     assert {r.note for r in lay.pool.rows if r.block == UNASSIGNED} == {46, 49}
 
 
-def test_default_collapsed_keep_and_delete():
+def test_default_collapsed_delete_only():
     lay = build_layout(profile({36: Rule.keep(), 40: Rule.delete()}))
-    assert lay.header(KEEP).collapsed and lay.header(DELETE).collapsed and not lay.header(UNASSIGNED).collapsed
+    assert lay.header(DELETE).collapsed and not lay.header(UNASSIGNED).collapsed
+    assert lay.header(KEEP) is None
 
 
 # --- замороженный порядок ---
@@ -363,3 +364,43 @@ def test_connecting_alias_row_moves_all_notes_together():
     lay = build_layout(p, no_collapse(), first.order)
     assert [r.notes for r in lay.scene.source_rows] == [(38, 39, 40)]
     assert [r.notes for r in lay.pool.rows] == [(36,), (42,)]
+
+
+# --- номера на стороне цели, заголовки групп цели (8b2c) ---
+
+SNARES = NoteMap("Src", {38: "Snare: Center", 39: "Snare: Center", 40: "Snare: Rim", 53: "Snare: Flam",
+                         60: "Snare: Center"})
+MULTI = NoteMap("Tgt", {38: "Snare: Center", 53: "Snare: Center", 60: "Snare: Center", 61: "Snare: Center",
+                        42: "Hat: Closed"}, primary={60})
+
+
+def test_target_row_shows_used_numbers_each_cable_on_its_own():
+    rules = {53: Rule.map_to(53), 40: Rule.map_to(60), 38: Rule.map_to(38)}
+    lay = build_layout(profile(rules, src=SNARES, tgt=MULTI), no_collapse())
+    t = lay.target_row("a:snare: center")
+    by = rows_by_note(lay)
+    # номер — на уровне первой строки напротив, чей кабель идёт на него
+    assert t.lines == tuple(sorted((by[n].y - t.y, d) for n, d in ((38, 38), (40, 60), (53, 53))))
+    assert t.hidden == 1  # 61 не используется — за «+1»
+    for c in lay.scene.cables:
+        assert c.dst_y - t.y == dict((d, off) for off, d in t.lines)[c.dst]
+        assert c.dst_y == c.src_y  # каждая строка — напротив своего номера: «53 — 53»
+
+
+def test_target_numbers_shared_dst_and_fallback():
+    rules = {38: Rule.map_to(60), 40: Rule.map_to(60)}
+    lay = build_layout(profile(rules, src=SNARES, tgt=MULTI), no_collapse())
+    t = lay.target_row("a:snare: center")
+    assert t.lines == ((0, 60),) and t.hidden == 3
+    assert {c.dst_y for c in lay.scene.cables} == {t.y}  # оба кабеля — на 60 (первая строка)
+    # без кабелей — Write to (или первая нота) на первой строке
+    lay = build_layout(profile(src=SNARES, tgt=MULTI), no_collapse(), show_all=show_all(profile(tgt=MULTI)))
+    t = lay.target_row("a:snare: center")
+    assert t.lines == () and t.numbers == ((0, 60),) and t.hidden == 3
+
+
+def test_target_group_header_lists_its_notes():
+    lay = build_layout(profile({36: Rule.map_to(99)}), no_collapse())
+    assert lay.header(TARGET_PREFIX + "snare").notes == (38, 39)
+    assert lay.header(TARGET_PREFIX + "hat").notes == (42, 46)
+    assert lay.header(TARGET_PREFIX + "\0missing").notes == ()  # номера вне карты — не цель для drop

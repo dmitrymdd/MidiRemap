@@ -1,12 +1,15 @@
 """Раскладка вида профиля «кабелями» (этап 8b2): чистый Python, без Qt — покрывается pytest.
 
 Три колонки, две раскладки:
-- ПУЛ (PoolLayout, своя прокрутка): блоки состояний Unassigned / Keep / Delete, внутри — группы instrument_group
-  исходной карты;
+- ПУЛ (PoolLayout, своя прокрутка): блоки Unassigned и Delete, внутри — группы instrument_group исходной карты.
+  Блока Keep нет (8b2c): ноты с явным keep (старые профили) — в Unassigned, с маркером «=» (SourceRow.state = KEEP);
 - СЦЕНА (SceneLayout, общая прокрутка колонок 2 и 3, начинается сверху): подключённые исходные ноты (правило map)
   напротив своей цели и целевая карта — по строке на артикуляцию (имена сравниваются через normalize_name), под
   заголовками групп instrument_group. map на неосновную ноту артикуляции — кабель к той же строке. Высота строки
   цели = max(1, число строк напротив неё): связка 10-в-1 — одна высокая строка цели и десять строк напротив.
+  Строка цели показывает номера, на которые реально идут правила (TargetRow.lines): каждый номер — на уровне
+  первой строки напротив, чей кабель идёт на него, и кабель приходит на свой номер (53 — 53 читается сразу).
+  Неиспользуемые ноты артикуляции — за «+N» (TargetRow.hidden).
 
 Координаты — в строках (y, height) каждой раскладки отдельно; пиксели считает виджет (cable_view.py).
 
@@ -37,9 +40,9 @@ from ..core.profile import RemapProfile, Rule
 
 UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
 MIXED = "mixed"  # заголовок раскрытых алиасов, у нот которых разные правила
-BLOCKS = (UNASSIGNED, KEEP, DELETE)
-BLOCK_LABELS = {UNASSIGNED: "Unassigned", KEEP: "Keep", DELETE: "Delete"}
-DEFAULT_COLLAPSED = frozenset({KEEP, DELETE})
+BLOCKS = (UNASSIGNED, DELETE)  # KEEP — только состояние строки (маркер «=»), не блок
+BLOCK_LABELS = {UNASSIGNED: "Unassigned", DELETE: "Delete"}
+DEFAULT_COLLAPSED = frozenset({DELETE})
 
 TARGET_PREFIX = "target/"
 # служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
@@ -73,7 +76,7 @@ class Header:
     collapsed: bool   # пул — свёрнут; цель — часть артикуляций скрыта (режим «только подключённые»)
     level: int        # 0 — блок состояния или группа цели, 1 — группа внутри блока
     y: int
-    notes: tuple[int, ...] = ()  # пул: ноты блока или группы (правый клик по группе)
+    notes: tuple[int, ...] = ()  # пул: ноты блока или группы; цель: ноты артикуляций группы (drop на группу)
     shown: int | None = None     # цель: артикуляций, напротив которых есть строки
 
 
@@ -84,7 +87,7 @@ class SourceRow:
     name: str | None   # None — ноты нет в исходной карте
     state: str         # UNASSIGNED / KEEP / DELETE / MAPPED — по текущему правилу; MIXED — правила разные
     connected: bool    # есть кабель (map в цель, напротив которой стоит строка); у заголовка — хоть у одной ноты
-    block: str | None  # блок пула; None — строка в сцене напротив цели
+    block: str | None  # блок пула (UNASSIGNED / DELETE); None — строка в сцене напротив цели
     y: int
     alias: str | None = None  # ключ раскрытия «<место>|<имя>»: у строки из нескольких нот и у заголовка алиасов
     expanded: bool = False    # заголовок раскрытых алиасов: под ним — строки по нотам (child), кабеля у него нет
@@ -111,6 +114,19 @@ class TargetRow:
     in_map: bool
     y: int
     height: int
+    lines: tuple[tuple[int, int], ...] = ()  # (смещение строки внутри блока, номер): номера, на которые идут кабели
+
+    @property
+    def numbers(self) -> tuple[tuple[int, int], ...]:
+        """Номера для показа: использованные; если кабелей нет — Write to (или первая нота) на первой строке."""
+        if self.lines:
+            return self.lines
+        return ((0, self.write_to if self.write_to is not None else self.notes[0]),)
+
+    @property
+    def hidden(self) -> int:
+        """Нот артикуляции, не показанных номерами (бейдж «+N»)."""
+        return len(self.notes) - len(self.numbers)
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,7 @@ class Cable:
     dst: int
     src_y: int
     target: TargetRow
+    dst_y: int = 0  # строка номера dst в блоке цели (абсолютная)
 
     @property
     def src(self) -> int:
@@ -178,6 +195,11 @@ def note_state(rule: Rule | None) -> str:
     return {"keep": KEEP, "delete": DELETE, "map": MAPPED}[rule.action]
 
 
+def note_block(rule: Rule | None) -> str:
+    """Блок пула для ноты без подключения: Delete или Unassigned (в т.ч. явный keep)."""
+    return DELETE if rule is not None and rule.action == "delete" else UNASSIGNED
+
+
 def all_notes(p: RemapProfile) -> list[int]:
     """Строки слева: ноты исходной карты и ноты с правилами (без исходной карты — только правила)."""
     src = set(p.source_map.names) if p.source_map is not None else set()
@@ -223,7 +245,7 @@ def fresh_order(p: RemapProfile) -> OrderSnapshot:
         if rule is not None and rule.action == "map":
             slots.setdefault(slot_key(p.target_map, rule.dst), []).append(n)
         else:
-            blocks[note_state(rule)].append(n)
+            blocks[note_block(rule)].append(n)
     return OrderSnapshot({b: tuple(_grouped(v, names)) for b, v in blocks.items()},
                          {k: tuple(v) for k, v in slots.items()})
 
@@ -264,7 +286,7 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None) -> OrderSnapshot:
                         break
             slots.setdefault(key, []).append(n)
         elif n not in seen:
-            blocks[note_state(rule)].append(n)
+            blocks[note_block(rule)].append(n)
     return OrderSnapshot({b: tuple(v) for b, v in blocks.items()},
                          {k: tuple(v) for k, v in slots.items() if v})
 
@@ -388,15 +410,22 @@ def _scene_layout(p: RemapProfile, order: OrderSnapshot, show_all: set[str], exp
             occupied = [r for r in rows if order.slots.get(r.slot)]  # и строки без кабеля до пересортировки
             if key not in show_all:
                 visible = occupied
-            t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), 0, y, shown=len(occupied)))
+            notes = tuple(sorted(n for r in rows if r.in_map for n in r.notes))
+            t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), 0, y, notes,
+                                  shown=len(occupied)))
             y += 1
         for r in visible:
             units = _unit_rows(p, order.slots.get(r.slot, ()), y, None, r.slot, expanded)
-            placed = TargetRow(r.slot, r.label, r.notes, r.write_to, r.in_map, y, max(1, len(units)))
+            cabled = [row for row in units if row.connected and not row.expanded]
+            first: dict[int, int] = {}  # номер -> смещение первой строки, чей кабель идёт на него
+            for row in cabled:
+                first.setdefault(p.rules[row.note].dst, row.y - y)
+            lines = tuple(sorted((off, dst) for dst, off in first.items()))
+            placed = TargetRow(r.slot, r.label, r.notes, r.write_to, r.in_map, y, max(1, len(units)), lines)
             t_rows.append(placed)
-            for row in units:
-                s_rows.append(row)
-                if row.connected and not row.expanded:
-                    cables.append(Cable(row.notes, p.rules[row.note].dst, row.y, placed))
+            s_rows.extend(units)
+            for row in cabled:
+                dst = p.rules[row.note].dst
+                cables.append(Cable(row.notes, dst, row.y, placed, y + first[dst]))
             y += placed.height
     return SceneLayout(s_rows, t_heads, t_rows, cables, y)

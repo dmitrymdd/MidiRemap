@@ -1,4 +1,4 @@
-from midiremap.core.notemap import NoteMap, normalize_name
+from midiremap.core.notemap import NoteMap
 from midiremap.core.profile import (
     DST_NOT_IN_TARGET, KEEP_DIFFERENT, KEEP_NOT_IN_TARGET, NO_RULE, SRC_NOT_IN_SOURCE, ProfileIssue, RemapProfile,
     Rule, keep_issue, validate_profile,
@@ -116,55 +116,3 @@ def test_with_explicit_keeps():
     # без исходной карты — та же копия
     bare = RemapProfile('b', None, TGT, {1: Rule.keep()})
     assert with_explicit_keeps(bare).rules == {1: Rule.keep()}
-
-
-def _expected_markers(src, tgt):
-    """Независимый пересчёт маркеров: ноты, которые при keep попадут на другое имя или на отсутствующую ноту."""
-    from midiremap.core.notemap import instrument_group
-    same = different = 0
-    for n, name in src.names.items():
-        target = tgt.names.get(n)
-        if target is not None and normalize_name(target) == normalize_name(name):
-            continue
-        g1 = instrument_group(name)
-        g2 = instrument_group(target) if target is not None else None
-        if g1 and g2 and normalize_name(g1) == normalize_name(g2):
-            same += 1
-        else:
-            different += 1
-    return different, same
-
-
-def test_unassigned_keep_warnings_on_templates():
-    from midiremap.core.profile import DIFFERENT_INSTRUMENT, SAME_INSTRUMENT, unassigned_keep_warnings
-    sd3 = load_map_template('Superior Drummer 3')
-    for src_id in ('EZdrummer 3', 'Guitar Pro 8'):
-        src = load_map_template(src_id)
-        p = RemapProfile('p', src, sd3)
-        warnings = unassigned_keep_warnings(p)
-        diff, same = _expected_markers(src, sd3)
-        markers = [w.marker for w in warnings]
-        assert (markers.count(DIFFERENT_INSTRUMENT), markers.count(SAME_INSTRUMENT)) == (diff, same), src_id
-        assert diff > 0
-        # сначала «!», потом «≈», внутри — по номеру
-        assert markers == sorted(markers, key=lambda m: m != DIFFERENT_INSTRUMENT)
-        for m in (DIFFERENT_INSTRUMENT, SAME_INSTRUMENT):
-            notes = [w.note for w in warnings if w.marker == m]
-            assert notes == sorted(notes)
-        assert p.rules == {}  # только подписывает, правил не создаёт
-    # GP8 и SD3 — разные системы имён: «≈» требует равных групп
-    gp8 = load_map_template('Guitar Pro 8')
-    w = {x.note: x for x in unassigned_keep_warnings(RemapProfile('p', gp8, sd3))}
-    assert all(x.target_name is None for x in w.values() if x.note not in sd3.names)
-
-
-def test_unassigned_keep_warnings_skip_ruled_and_missing_maps():
-    from midiremap.core.profile import DIFFERENT_INSTRUMENT, SAME_INSTRUMENT, unassigned_keep_warnings
-    src = NoteMap('s', {36: 'Kick: Hit', 38: 'Snare: Center', 40: 'Tom', 41: 'Ride: Bell'})
-    tgt = NoteMap('t', {36: 'Kick: Open', 38: 'Snare: Center', 40: 'Tom'})
-    w = unassigned_keep_warnings(RemapProfile('p', src, tgt))
-    assert [(x.note, x.marker, x.target_name) for x in w] == [(41, DIFFERENT_INSTRUMENT, None),
-                                                              (36, SAME_INSTRUMENT, 'Kick: Open')]
-    assert [x.note for x in unassigned_keep_warnings(RemapProfile('p', src, tgt, {41: Rule.delete()}))] == [36]
-    assert unassigned_keep_warnings(RemapProfile('p', None, tgt)) == []
-    assert unassigned_keep_warnings(RemapProfile('p', src, None)) == []

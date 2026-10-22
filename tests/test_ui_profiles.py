@@ -13,7 +13,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from midiremap.core.notemap import articulations, normalize_name  # noqa: E402
-from midiremap.core.profile import Rule, keep_issue, legacy_profile  # noqa: E402
+from midiremap.core.profile import Rule, legacy_profile  # noqa: E402
 from midiremap.core.suggest import suggest_rules  # noqa: E402
 from midiremap.storage import Storage, sanitize_id  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
@@ -49,13 +49,14 @@ def stub_dialogs(page):
     page.pick_target = lambda notes: a["pick"]
     page.ask_note_number = lambda notes: a["number"]
 
-    def write_to(name, notes):
+    def write_to(name, notes, preselect=None):
         a["asked"].append(("write_to", name, tuple(notes)))
+        a["preselect"] = preselect
         return a["write_to"].pop(0) if a["write_to"] else None
     page.ask_write_to = write_to
 
-    def unassigned(total, warnings):
-        a["asked"].append(("unassigned", total, list(warnings)))
+    def unassigned(notes):  # ответ — какие ноты оставить на своих номерах
+        a["asked"].append(("unassigned", list(notes)))
         return a["unassigned"]
     page.ask_unassigned = unassigned
 
@@ -87,6 +88,11 @@ def multi_note_articulation(m):
 
 def single_note_articulation(m):
     return next((k, v[0]) for k, v in articulations(m).items() if len(v) == 1)
+
+
+def notes_off(p, notes, k):
+    """k нот исходной карты, чьих номеров нет среди notes (назначение не совпадёт по номеру)."""
+    return [n for n in sorted(p.source_map.names) if n not in notes][:k]
 
 
 # --- засев legacy-профиля и вкладка Convert ---
@@ -232,7 +238,7 @@ def test_write_to_asked_once_and_stored_in_profile_copy(window, storage):
     page = window.profiles_page
     new_profile(page, target=MapRef(USER, sanitize_id(sd3.name)))
     key, notes = multi_note_articulation(page.work.target_map)
-    a, b = sorted(page.work.source_map.names)[:2]
+    a, b = notes_off(page.work, notes, 2)
     page.answers["pick"] = Pick(articulation=key)
     page.answers["write_to"] = [notes[1]]
     page.select_notes([a])
@@ -256,7 +262,7 @@ def test_cancel_write_to_choice_keeps_rule(window):
     page = window.profiles_page
     new_profile(page)
     key, notes = multi_note_articulation(page.work.target_map)
-    n = sorted(page.work.source_map.names)[0]
+    (n,) = notes_off(page.work, notes, 1)
     page.select_notes([n])
     page.answers["pick"] = Pick(articulation=key)
     assert not page.assign_selected()
@@ -312,38 +318,41 @@ def test_save_dialog_paths(window, storage):
     pid = new_profile(page)
     page.accept_suggestions()
     w = page.work
+    old_keep = next(n for n in sorted(w.source_map.names) if n not in w.rules)
+    w.rules[old_keep] = Rule.keep()  # явный keep старого профиля — не спрашиваем
     unassigned = [n for n in sorted(w.source_map.names) if n not in w.rules]
-    problems = [n for n in unassigned if keep_issue(w.source_map, w.target_map, n) is not None]
-    assert problems
+    assert unassigned
 
     before = storage.load_profile(pid).to_dict()
     page.answers["unassigned"] = None  # Cancel
     assert not page.save()
     assert storage.load_profile(pid).to_dict() == before and page.dirty
-    assert page.answers["asked"][-1][:2] == ("unassigned", len(unassigned))
-    assert sorted(x.note for x in page.answers["asked"][-1][2]) == problems
+    assert page.answers["asked"][-1] == ("unassigned", unassigned)  # все ноты без правила, по номеру
+    assert all(n not in page.work.rules for n in unassigned)  # отмена ничего не меняет
 
-    checked = set(problems[:2])  # удаляются только отмеченные
-    page.answers["unassigned"] = checked
+    kept = set(unassigned[:2])  # отмеченные — keep, остальные — delete
+    page.answers["unassigned"] = kept
     assert page.save()
     saved = storage.load_profile(pid)
-    assert all(saved.rules[n] == Rule.delete() for n in checked)
-    assert all(saved.rules[n] == Rule.keep() for n in unassigned if n not in checked)
+    assert all(saved.rules[n] == Rule.keep() for n in kept)
+    assert all(saved.rules[n] == Rule.delete() for n in unassigned if n not in kept)
+    assert saved.rules[old_keep] == Rule.keep()
     assert set(saved.source_map.names) <= set(saved.rules) and not page.dirty
 
     # всё назначено — диалога нет
     page.answers["asked"].clear()
-    page.delete_notes([unassigned[0]])
+    page.clear_rules([unassigned[-1]])
+    page.work.rules[unassigned[-1]] = Rule.keep()
     assert page.save() and page.answers["asked"] == []
 
 
-def test_save_keep_all(window, storage):
+def test_save_default_removes_unassigned(window, storage):
     page = window.profiles_page
     pid = new_profile(page)
     page.answers["unassigned"] = set()
     assert page.save()
     saved = storage.load_profile(pid)
-    assert saved.rules == {n: Rule.keep() for n in saved.source_map.names}
+    assert saved.rules == {n: Rule.delete() for n in saved.source_map.names}
 
 
 def test_unsaved_edits_prompts(window, storage):
@@ -351,7 +360,7 @@ def test_unsaved_edits_prompts(window, storage):
     pid = new_profile(page, "A")
     page.save()
     page.answers["asked"].clear()
-    page.delete_notes([sorted(page.work.source_map.names)[0]])
+    page.clear_rules([sorted(page.work.source_map.names)[0]])
     assert page.dirty
 
     # переключение вкладок — без вопроса, правки на месте
@@ -375,7 +384,7 @@ def test_unsaved_edits_prompts(window, storage):
     assert not window.close()
     page.answers["save_changes"] = "discard"
     assert window.close()
-    assert storage.load_profile(pid).rules[sorted(page.base.source_map.names)[0]] == Rule.keep()
+    assert storage.load_profile(pid).rules[sorted(page.base.source_map.names)[0]] == Rule.delete()
 
 
 def test_profiles_tab_disables_convert_shortcuts(window):
@@ -398,36 +407,31 @@ def test_new_profile_without_maps_has_no_rows(window):
     assert page.model.rows == [] and not page.accept_btn.isEnabled()
 
 
-def test_unassigned_dialog_checkboxes_and_markers(window):
-    from midiremap.core.profile import DIFFERENT_INSTRUMENT, RemapProfile, unassigned_keep_warnings
+def test_unassigned_dialog_checkboxes(window):
+    from PySide6.QtWidgets import QDialogButtonBox, QLabel
+    from midiremap.core.profile import RemapProfile
     from midiremap.ui.profiles_page import UnassignedDialog
-    for src_id in ("EZdrummer 3", "Guitar Pro 8"):
-        p = RemapProfile("p", load_map_template(src_id), load_map_template("Superior Drummer 3"))
-        warnings = unassigned_keep_warnings(p)
-        dlg = UnassignedDialog(window, len(p.source_map.names), warnings, "Superior Drummer 3")
-        t = dlg.table
-        assert t.rowCount() == len(warnings)
-        assert [t.item(r, 1).text() for r in range(t.rowCount())] == [w.marker for w in warnings]
-        assert all(t.item(r, 1).toolTip() for r in range(t.rowCount()))
-        assert t.item(0, 1).text() == DIFFERENT_INSTRUMENT  # «!» сверху
-        # по умолчанию ничего не отмечено, «Delete checked» неактивна
-        assert dlg.checked() == set() and not dlg.delete_btn.isEnabled()
-        dlg.keep_all()
-        assert dlg.to_delete == set()
-        dlg.set_checked({warnings[0].note, warnings[-1].note})
-        assert dlg.delete_btn.isEnabled()
-        dlg.delete_checked()
-        assert dlg.to_delete == {warnings[0].note, warnings[-1].note}
-        dlg.deleteLater()
-
-
-def test_save_without_checks_deletes_nothing(window, storage):
-    page = window.profiles_page
-    pid = new_profile(page, source=MapRef(TEMPLATE, "Guitar Pro 8"))
-    page.answers["unassigned"] = set()
-    assert page.save()
-    saved = storage.load_profile(pid)
-    assert not any(r == Rule.delete() for r in saved.rules.values())
+    p = RemapProfile("p", load_map_template("Guitar Pro 8"), load_map_template("Superior Drummer 3"))
+    notes = sorted(p.source_map.names)
+    dlg = UnassignedDialog(window, p, list(reversed(notes)))
+    t = dlg.table
+    assert t.rowCount() == len(notes) and t.columnCount() == 4  # без столбца маркеров «!»/«≈»
+    assert [int(t.item(r, 1).text()) for r in range(t.rowCount())] == notes  # по номеру
+    assert t.item(0, 2).text() == p.source_map.names[notes[0]]
+    assert t.item(0, 3).text() == p.target_map.names.get(notes[0], "—")
+    assert t.item(0, 0).toolTip() == "Keep on the same number"
+    assert any(w.text() == f"{len(notes)} notes have no target and will be removed."
+               for w in dlg.findChildren(QLabel))
+    texts = {b.text().replace("&", "") for b in dlg.findChildren(QDialogButtonBox)[0].buttons()}
+    assert texts == {"Save", "Cancel"}
+    # по умолчанию ничего не отмечено: Save — удалить все
+    assert dlg.checked() == set()
+    dlg.save()
+    assert dlg.to_keep == set()
+    dlg.set_checked({notes[0], notes[-1]})
+    dlg.save()
+    assert dlg.to_keep == {notes[0], notes[-1]}
+    dlg.deleteLater()
 
 
 def test_dirty_profile_marked_in_list(window):
@@ -441,7 +445,7 @@ def test_dirty_profile_marked_in_list(window):
                     if page.list.item(i).data(REF_ROLE) == profile_id)
     assert item(pid).text() == "Mark"
     saved_subtitle = item(pid).data(SUBTITLE_ROLE)
-    page.delete_notes([sorted(page.work.source_map.names)[0]])
+    page.clear_rules([sorted(page.work.source_map.names)[0]])
     assert item(pid).text() == "• Mark" and item(LEGACY_ID).text() == legacy_profile().name
     assert item(pid).data(SUBTITLE_ROLE) == saved_subtitle  # подзаголовок — сохранённое состояние
     page.revert()
@@ -581,7 +585,7 @@ def test_cables_header_click_collapses(window, app):
 
 
 def test_cables_view_saves_with_same_dialog(window, storage):
-    from midiremap.ui.cable_layout import KEEP
+    from midiremap.ui.cable_layout import DELETE
     from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     pid = new_profile(page)
@@ -592,7 +596,7 @@ def test_cables_view_saves_with_same_dialog(window, storage):
     assert page.save() and page.answers["asked"][-1][0] == "unassigned"
     saved = storage.load_profile(pid)
     assert page.cables.profile is page.work and page.work.to_dict() == saved.to_dict()
-    assert page.cables.current.header(KEEP).count == sum(r == Rule.keep() for r in saved.rules.values())
+    assert page.cables.current.header(DELETE).count == sum(r == Rule.delete() for r in saved.rules.values())
 
 
 def test_cables_pool_is_separate_column(window):
@@ -763,7 +767,7 @@ def test_multi_select_drag_asks_write_to_once(window, app):
     page, ed = cables_page(window, accept=False)
     key, notes = multi_note_articulation(page.work.target_map)
     show_target_group(ed, "a:" + key)
-    rows = [i for i in ed.pool_rows if not i.model.expanded][:3]
+    rows = [i for i in ed.pool_rows if not i.model.expanded and not set(i.notes) & set(notes)][:3]
     no, shift, ctrl = (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier,
                        Qt.KeyboardModifier.ControlModifier)
     ed._press_row(ed.pool, rows[0], no, rows[0].rect.center())
@@ -868,13 +872,14 @@ def test_right_click_pool_row_and_group_toggle_strike(window, app):
     assert all(page.work.rules[n] == Rule.delete() for n in head.notes)
     ed.right_click(header_item(ed.pool, head.key))
     assert all(n not in page.work.rules for n in head.notes)
-    # Keep/Delete: delete ↔ без правила
+    # явный keep (старые профили) — в Unassigned с маркером «=»; правый клик — delete ↔ без правила
     for n in notes:
         page.work.rules[n] = Rule.keep()
     page.refresh_btn.click()
-    ed.toggle_pool(KEEP)
     keep_row = ed.pool_items[notes[0]]
-    assert keep_row.model.block == KEEP and keep_row.marker == "="
+    assert keep_row.model.block == UNASSIGNED and keep_row.marker == "="
+    assert "Kept on the same number" in keep_row.toolTip()
+    assert ed.current.header(KEEP) is None
     ed.right_click(keep_row)
     assert all(page.work.rules[n] == Rule.delete() for n in notes)
     ed.right_click(ed.pool_items[notes[0]])
@@ -885,7 +890,7 @@ def test_write_to_badge_repoints_rules(window, app, storage):
     page, ed = cables_page(window)
     key, notes = multi_note_articulation(page.work.target_map)
     slot = "a:" + key
-    srcs = [n for n in sorted(page.work.source_map.names) if n not in page.work.rules][:2]
+    srcs = [n for n in sorted(page.work.source_map.names) if n not in page.work.rules and n not in notes][:2]
     page.answers["write_to"] = [notes[0]]
     assert page.connect_to(srcs, slot)
     assert all(page.work.rules[n] == Rule.map_to(notes[0]) for n in srcs)
@@ -974,3 +979,139 @@ def test_assign_target_uses_cable_selection(window, app):
     page.answers["pick"] = Pick(note=dst)
     assert page.assign_selected()
     assert all(page.work.rules[n] == Rule.map_to(dst) for n in row.notes)
+
+
+# --- назначение по номерам, группа, номера цели, отмена (8b2c) ---
+
+def three_note_articulation(p):
+    """Артикуляция цели на трёх+ нотах, все номера которых есть в исходной карте."""
+    return next((k, v) for k, v in articulations(p.target_map).items()
+                if len(v) > 2 and all(n in p.source_map.names for n in v))
+
+
+def test_drop_same_numbers_need_no_question(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    assert page.connect_to(notes[:2], "a:" + key)
+    assert all(page.work.rules[n] == Rule.map_to(n) for n in notes[:2])
+    assert page.answers["asked"] == [] and not page.work.target_map.primary & set(notes)
+    # строка цели показывает оба номера — каждый кабель на своём
+    t = ed.current.target_row("a:" + key)
+    assert sorted(n for _, n in t.lines) == notes[:2] and t.hidden == len(notes) - 2
+    for c in ed.cable_items:
+        if c.cable.target.slot == "a:" + key:
+            assert c.cable.dst_y == c.cable.src_y
+    item = ed.target_items["a:" + key]
+    assert [line[1] for line in item.lines] == [str(n) for _, n in t.lines]
+    assert item.marker == f"+{len(notes) - 2}"
+
+
+def test_drop_single_match_becomes_write_to_silently(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    (other,) = notes_off(page.work, notes, 1)
+    assert page.connect_to([other, notes[1]], "a:" + key)
+    assert page.work.rules == {other: Rule.map_to(notes[1]), notes[1]: Rule.map_to(notes[1])}
+    assert page.work.target_map.primary & set(notes) == {notes[1]} and page.answers["asked"] == []
+    item = ed.target_items["a:" + key]
+    assert [(line[1], line[3]) for line in item.lines] == [(str(notes[1]), True)]  # Write to отмечен
+    assert f"Write to: {notes[1]}" in item.toolTip()
+
+
+def test_drop_several_matches_asks_once_with_preselect(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    (other,) = notes_off(page.work, notes, 1)
+    page.answers["write_to"] = [notes[2]]
+    assert page.connect_to([other, notes[0], notes[1]], "a:" + key)
+    assert [x[0] for x in page.answers["asked"]] == ["write_to"] and page.answers["preselect"] == notes[0]
+    assert page.work.rules == {notes[0]: Rule.map_to(notes[0]), notes[1]: Rule.map_to(notes[1]),
+                               other: Rule.map_to(notes[2])}
+    # смена Write to через «+N» переводит только правила на прежний Write to (n → n остаются)
+    assert page.set_write_to(notes[1])
+    assert page.work.rules == {notes[0]: Rule.map_to(notes[0]), notes[1]: Rule.map_to(notes[1]),
+                               other: Rule.map_to(notes[1])}
+
+
+def test_group_drop_on_target_header(window, app):
+    from midiremap.ui.cable_layout import TARGET_PREFIX
+    page, ed = cables_page(window, accept=False)
+    snare = ed.current.header(TARGET_PREFIX + "snare")
+    src = page.work.source_map
+    dropped = sorted(n for n in src.names if src.names[n].startswith("Snare")) + [36]
+    page.work.rules[dropped[0]] = Rule.map_to(36)  # уже подключена — не трогаем
+    item = header_item(ed.view, snare.key)
+    drop(app, ed, dropped, editor_point(ed, ed.view, item.rect.center()))
+    matched = [n for n in dropped[1:] if n in snare.notes]
+    assert matched and page.answers["asked"] == []
+    assert all(page.work.rules[n] == Rule.map_to(n) for n in matched)
+    assert page.work.rules[dropped[0]] == Rule.map_to(36) and 36 not in page.work.rules
+    assert page.status.text() == f"{len(matched)} of {len(dropped)} connected"
+
+
+def test_drag_pool_group_header(window, app):
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from midiremap.ui.cable_layout import TARGET_PREFIX, UNASSIGNED
+    page, ed = cables_page(window, accept=False)
+    head = ed.current.header(UNASSIGNED + "/snare")
+    pool_item = ed.pool_headers[head.key]
+    target = header_item(ed.view, TARGET_PREFIX + "snare")
+    vp = ed.pool.viewport()
+
+    def send(kind, pos, buttons):
+        QApplication.sendEvent(vp, QMouseEvent(kind, pos, QPointF(vp.mapToGlobal(pos.toPoint())),
+                                               Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier))
+    start = QPointF(ed.pool.mapFromScene(pool_item.rect.center()))
+    send(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    send(QEvent.Type.MouseMove, start + QPointF(30, 0), Qt.MouseButton.LeftButton)
+    assert ed.dragging and set(ed._drag.notes) == set(head.notes)
+    ed._tick()
+    assert len(ed.overlay.preview) == 1  # один кабель — от заголовка
+    at = QPointF(vp.mapFrom(ed, editor_point(ed, ed.view, target.rect.center()).toPoint()))
+    send(QEvent.Type.MouseMove, at, Qt.MouseButton.LeftButton)
+    ed._tick()
+    assert target.highlighted and ed.overlay.valid
+    send(QEvent.Type.MouseButtonRelease, at, Qt.MouseButton.NoButton)
+    app.processEvents()
+    snare_notes = ed.current.header(TARGET_PREFIX + "snare").notes
+    assert {n for n in head.notes if n in snare_notes} == {n for n, r in page.work.rules.items()
+                                                           if r == Rule.map_to(n)}
+    assert not ed.current.header(head.key) or not ed.current.header(head.key).collapsed  # не свернулся
+
+
+def test_undo_redo_stack(window, app, storage):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    n = notes_off(page.work, notes, 1)[0]
+    assert len(page._undo) == 2  # выбор исходной и целевой карты при создании — тоже шаги
+    page.connect_to(notes[:1], "a:" + key)           # 1: подключить
+    page.toggle_strike([n])                           # 2: зачеркнуть
+    page.answers["confirm"] = True
+    page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))  # 3: смена карты
+    assert page.work.target_map.name == "General MIDI"
+    assert page.undo() and page.work.target_map.name == "Superior Drummer 3"
+    assert page.undo() and n not in page.work.rules
+    assert page.redo() and page.work.rules[n] == Rule.delete()
+    assert page.undo() and page.undo() and page.work.rules == {} and len(page._undo) == 2
+    assert page.undo() and page.work.target_map is None  # до выбора целевой карты
+    assert page.redo() and page.redo() and page.work.rules == {notes[0]: Rule.map_to(notes[0])}
+    assert ed.profile is page.work and page.model.profile is page.work
+    # новое действие сбрасывает повтор
+    page.clear_rules(notes[:1])
+    assert not page.redo()
+    # горячие клавиши (в подсказках) — на странице
+    assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.cables_view_btn.toolTip()
+    ed.view.setFocus()
+    QTest.keyClick(ed.view, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert page.work.rules == {notes[0]: Rule.map_to(notes[0])}
+    QTest.keyClick(ed.view, Qt.Key.Key_Y, Qt.KeyboardModifier.ControlModifier)
+    assert page.work.rules == {}
+    # Save стек не очищает; открытие другого профиля — очищает
+    page.connect_to(notes[:1], "a:" + key)
+    page.answers["unassigned"] = set()
+    assert page.save() and page.undo()
+    assert page.work.rules == {notes[0]: Rule.map_to(notes[0])} and page.dirty
+    page.answers["save_changes"] = "discard"
+    page.select(LEGACY_ID)
+    assert not page.undo() and not page.redo()

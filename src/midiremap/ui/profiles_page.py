@@ -2,19 +2,24 @@
 и таблица правил «исходная нота → цель».
 
 Логики профилей здесь нет — только вызовы midiremap.core (suggest_rules, apply_suggestions, validate_profile,
-unassigned_keep_warnings, with_explicit_keeps) и midiremap.storage. Диалоги вынесены в методы ask_*/pick_*/confirm/show_error,
-чтобы тесты могли их подменить. Два вида одной рабочей копии: таблица правил и «кабели» (cable_view.py,
-этап 8b2); переключение видов правок не теряет.
+assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и midiremap.storage. Диалоги вынесены
+в методы ask_*/pick_*/confirm/show_error, чтобы тесты могли их подменить. Два вида одной рабочей копии: таблица
+правил и «кабели» (cable_view.py, этап 8b2); переключение видов правок не теряет.
+
+Отмена/повтор (Ctrl+Z / Ctrl+Y) — стек снимков рабочей копии (профили маленькие): каждое действие, изменившее
+профиль, кладёт снимок «до» (декоратор _undoable; вложенные вызовы — один шаг). Стек очищается при открытии
+другого профиля, Save его не очищает (шаг сохранения тоже отменяется).
 """
 from __future__ import annotations
 
 import copy
+import functools
 from dataclasses import dataclass
 
 from PySide6.QtCore import (
     QAbstractTableModel, QEvent, QItemSelection, QItemSelectionModel, QModelIndex, Qt, Signal,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QGridLayout, QTableWidget, QTableWidgetItem, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
@@ -24,8 +29,8 @@ from PySide6.QtWidgets import (
 from ..core.notemap import NoteMap, articulations, duplicate_map, instrument_group, normalize_name
 from ..core.pitch import pitch_name
 from ..core.profile import (
-    DIFFERENT_INSTRUMENT, NO_RULE, SAME_INSTRUMENT, KeepWarning, ProfileIssue, RemapProfile, Rule,
-    unassigned_keep_warnings, validate_profile, with_explicit_keeps, with_write_to,
+    NO_RULE, ProfileIssue, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
+    validate_profile, with_write_to,
 )
 from ..core.suggest import Suggestion, apply_suggestions, suggest_rules
 from ..storage import Storage, sanitize_id
@@ -43,10 +48,25 @@ REFRESH_TIP = "Refresh layout"
 
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3  # имя профиля без пометки «•»
 
-MARKER_TIPS = {
-    DIFFERENT_INSTRUMENT: "Different instrument at this number in the target map, or no such note there",
-    SAME_INSTRUMENT: "Same instrument, different name — probably the same sound, but check",
-}
+UNDO_LIMIT = 200
+UNDO_KEYS, REDO_KEYS = ("Ctrl+Z",), ("Ctrl+Y", "Ctrl+Shift+Z")
+UNDO_TIP = "Undo (Ctrl+Z) · Redo (Ctrl+Y)"
+
+
+def _undoable(fn):
+    """Действие страницы над рабочей копией — один шаг отмены (если профиль изменился)."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if self.work is None or self._in_edit:
+            return fn(self, *args, **kwargs)
+        before = copy.deepcopy(self.work)
+        self._in_edit = True
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            self._in_edit = False
+            self._record(before)
+    return wrapper
 
 COL_NOTE, COL_PITCH, COL_SOURCE, COL_TARGET, COL_STATUS = range(5)
 COLUMNS = ("NOTE", "PITCH", "SOURCE NAME", "TARGET", "STATUS")
@@ -363,80 +383,68 @@ class TargetPicker(QDialog):
 
 
 class UnassignedDialog(QDialog):
-    """Диалог сохранения: неназначенные ноты, которые при keep попадут на другой звук или на отсутствующую ноту.
-    Флажки (по умолчанию сняты) — какие из них удалить; остальные неназначенные ноты останутся на своих номерах."""
+    """Диалог сохранения: ноты исходной карты без правила будут удалены. Флажок (по умолчанию снят) —
+    оставить ноту на том же номере (явный keep)."""
 
-    def __init__(self, parent, total: int, warnings: list[KeepWarning], target: str) -> None:
+    def __init__(self, parent, profile: RemapProfile, notes: list[int]) -> None:
         super().__init__(parent)
         self.setWindowTitle("Save profile")
         self.resize(640, 480)
-        self.to_delete: set[int] = set()
-        self.warnings = warnings
-        text = QLabel(f"{total} note(s) will stay on their numbers. {len(warnings)} of them land on a "
-                      f"different sound or a missing note in {target}.")
+        self.notes = sorted(notes)
+        self.to_keep: set[int] = set()
+        src, tgt = profile.source_map, profile.target_map
+        n = len(self.notes)
+        text = QLabel(f"{n} note{'' if n == 1 else 's'} {'has' if n == 1 else 'have'} no target "
+                      "and will be removed.")
         text.setWordWrap(True)
-        self.table = QTableWidget(len(warnings), 4)
-        self.table.setHorizontalHeaderLabels(["", "", "NOTE", "SOURCE NAME → TARGET AT THIS NUMBER"])
+        self.table = QTableWidget(n, 4)
+        self.table.setHorizontalHeaderLabels(["", "NOTE", "SOURCE NAME", "TARGET AT THIS NUMBER"])
         self.table.verticalHeader().hide()
         self.table.setShowGrid(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.table.horizontalHeaderItem(0).setToolTip("Checked notes are deleted from converted files")
-        for row, w in enumerate(warnings):
+        self.table.horizontalHeaderItem(0).setToolTip("Checked notes keep their numbers instead of being removed")
+        for row, note in enumerate(self.notes):
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             check.setCheckState(Qt.CheckState.Unchecked)
-            check.setToolTip("Delete this note")
-            marker = QTableWidgetItem(w.marker)
-            marker.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            marker.setToolTip(MARKER_TIPS[w.marker])
-            marker.setForeground(QColor(TOKENS["error" if w.marker == DIFFERENT_INSTRUMENT else "warning"]))
-            note = QTableWidgetItem(str(w.note))
-            note.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            names = QTableWidgetItem(f"{w.source_name}  →  {w.target_name or 'no note'}")
-            for col, item in enumerate((check, marker, note, names)):
+            check.setToolTip("Keep on the same number")
+            num = QTableWidgetItem(str(note))
+            num.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            name = QTableWidgetItem(src.names.get(note, "") if src is not None else "")
+            at = tgt.names.get(note) if tgt is not None else None
+            target = QTableWidgetItem(at or "—")
+            if at is None:
+                target.setForeground(QColor(TOKENS["text_faint"]))
+            for col, item in enumerate((check, num, name, target)):
                 self.table.setItem(row, col, item)
         header = self.table.horizontalHeader()
-        for col, width in ((0, 32), (1, 28), (2, 52)):
+        for col, width in ((0, 32), (1, 52)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(col, width)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.table.itemChanged.connect(self._update_buttons)
 
-        buttons = QDialogButtonBox()
-        self.delete_btn = buttons.addButton("Delete checked and save", QDialogButtonBox.ButtonRole.DestructiveRole)
-        self.keep_btn = buttons.addButton("Keep all and save", QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
-        self.delete_btn.clicked.connect(self.delete_checked)
-        self.keep_btn.clicked.connect(self.keep_all)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
-        self.keep_btn.setDefault(True)
+        self.save_btn = buttons.button(QDialogButtonBox.StandardButton.Save)
+        self.save_btn.setDefault(True)
         box = QVBoxLayout(self)
         box.addWidget(text)
         box.addWidget(self.table, stretch=1)
         box.addWidget(buttons)
-        self.table.setVisible(bool(warnings))
-        self.delete_btn.setVisible(bool(warnings))
-        self._update_buttons()
 
     def checked(self) -> set[int]:
-        return {w.note for row, w in enumerate(self.warnings)
+        return {n for row, n in enumerate(self.notes)
                 if self.table.item(row, 0).checkState() == Qt.CheckState.Checked}
 
     def set_checked(self, notes: set[int]) -> None:
-        for row, w in enumerate(self.warnings):
-            self.table.item(row, 0).setCheckState(
-                Qt.CheckState.Checked if w.note in notes else Qt.CheckState.Unchecked)
+        for row, n in enumerate(self.notes):
+            self.table.item(row, 0).setCheckState(Qt.CheckState.Checked if n in notes else Qt.CheckState.Unchecked)
 
-    def _update_buttons(self, *_) -> None:
-        self.delete_btn.setEnabled(bool(self.checked()))
-
-    def delete_checked(self) -> None:
-        self.to_delete = self.checked()
-        self.accept()
-
-    def keep_all(self) -> None:
-        self.to_delete = set()
+    def save(self) -> None:
+        self.to_keep = self.checked()
         self.accept()
 
 
@@ -456,6 +464,9 @@ class ProfilesPage(QWidget):
         self.work: RemapProfile | None = None  # рабочая копия, её правит таблица
         self._ids: list[str] = []
         self._dirty = False
+        self._undo: list[RemapProfile] = []  # снимки рабочей копии «до» действия
+        self._redo: list[RemapProfile] = []
+        self._in_edit = False
         self._build_ui()
         self.reload_list()
         self._update_state()
@@ -535,8 +546,9 @@ class ProfilesPage(QWidget):
         self.view_buttons = QButtonGroup(self)
         tools = QHBoxLayout()
         tools.setSpacing(6)
-        for view, text, tip in ((TABLE_VIEW, "Table", "Rules as a table"),
-                                (CABLES_VIEW, "Cables", "Rules as cables from source notes to target articulations")):
+        for view, text, tip in ((TABLE_VIEW, "Table", f"Rules as a table\n{UNDO_TIP}"),
+                                (CABLES_VIEW, "Cables",
+                                 f"Rules as cables from source notes to target articulations\n{UNDO_TIP}")):
             btn = QPushButton(text)
             btn.setObjectName("segment")
             btn.setCheckable(True)
@@ -581,6 +593,7 @@ class ProfilesPage(QWidget):
         self.model.modelReset.connect(lambda: update_spans(self.table, len(COLUMNS)))
         self.cables = CableEditor()
         self.cables.connect_requested.connect(self.connect_to)
+        self.cables.group_drop_requested.connect(self.group_drop)
         self.cables.disconnect_requested.connect(self.clear_rules)
         self.cables.strike_requested.connect(self.toggle_strike)
         self.cables.write_to_requested.connect(self.set_write_to)
@@ -595,6 +608,7 @@ class ProfilesPage(QWidget):
         right.addWidget(self.issues_label)
 
         self.revert_btn = QPushButton("Revert")
+        self.revert_btn.setToolTip(f"Discard unsaved changes\n{UNDO_TIP}")
         self.revert_btn.clicked.connect(self.revert)
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
@@ -608,6 +622,11 @@ class ProfilesPage(QWidget):
         bottom.addWidget(self.save_btn)
         right.addLayout(bottom)
         root.addLayout(right, stretch=1)
+
+        context = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        for keys, slot in ((UNDO_KEYS, self.undo), (REDO_KEYS, self.redo)):
+            for k in keys:
+                QShortcut(QKeySequence(k), self, activated=slot, context=context)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.table and event.type() == QEvent.Type.KeyPress and self.work is not None:
@@ -654,23 +673,27 @@ class ProfilesPage(QWidget):
                                         default, 0, 127)
         return value if ok else None
 
-    def ask_write_to(self, name: str, notes: list[int]) -> int | None:
-        """Артикуляция на нескольких нотах без Write to: на какую ноту писать (ответ запомнится в профиле)."""
+    def ask_write_to(self, name: str, notes: list[int], preselect: int | None = None) -> int | None:
+        """Артикуляция на нескольких нотах без Write to: на какую ноту писать (ответ запомнится в профиле).
+        preselect — нота, выбранная в списке заранее (первая совпавшая по номеру)."""
         items = [f"{n} · {pitch_name(n)}" for n in notes]
         dlg = QInputDialog(self)
         dlg.setWindowTitle("Write to")
         dlg.setLabelText(f'"{name}" is on several notes. Write converted notes to:')
         dlg.setComboBoxItems(items)
         dlg.setComboBoxEditable(False)
+        if preselect in notes:
+            dlg.setTextValue(items[notes.index(preselect)])
         dlg.setToolTip("The choice is saved in this profile's copy of the target map, not in the map itself")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return None
         return notes[items.index(dlg.textValue())]
 
-    def ask_unassigned(self, total: int, warnings: list[KeepWarning]) -> set[int] | None:
-        """Перед сохранением: какие из проблемных нот удалить. None — отмена; пустое множество — оставить всё."""
-        dlg = UnassignedDialog(self, total, warnings, map_summary(self.work.target_map))
-        return dlg.to_delete if dlg.exec() == QDialog.DialogCode.Accepted else None
+    def ask_unassigned(self, notes: list[int]) -> set[int] | None:
+        """Перед сохранением: ноты без правила будут удалены — какие оставить на своих номерах.
+        None — отмена; пустое множество — удалить все."""
+        dlg = UnassignedDialog(self, self.work, notes)
+        return dlg.to_keep if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     def show_error(self, text: str) -> None:
         QMessageBox.warning(self, "MidiRemap", text)
@@ -761,6 +784,8 @@ class ProfilesPage(QWidget):
             return False
         self.current, self.base = profile_id, p
         self.work = copy.deepcopy(p)
+        self._undo.clear()
+        self._redo.clear()
         self.model.deleted_collapsed = True
         self.model.set_profile(self.work)
         self.cables.set_profile(self.work)
@@ -770,6 +795,8 @@ class ProfilesPage(QWidget):
 
     def close_profile(self) -> None:
         self.current = self.base = self.work = None
+        self._undo.clear()
+        self._redo.clear()
         self.model.set_profile(None)
         self.cables.set_profile(None)
         self._update_state()
@@ -786,6 +813,7 @@ class ProfilesPage(QWidget):
             return True
         return False
 
+    @_undoable
     def revert(self) -> None:
         if self.base is None:
             return
@@ -794,25 +822,58 @@ class ProfilesPage(QWidget):
         self.cables.set_profile(self.work, reset_collapsed=False)
         self._update_state()
 
+    # --- отмена / повтор ---
+
+    def _record(self, before: RemapProfile) -> None:
+        """После действия: профиль изменился — снимок «до» в стек отмены, повтор сбрасывается."""
+        if self.work is None or before.to_dict() == self.work.to_dict():
+            return
+        self._undo.append(before)
+        del self._undo[:-UNDO_LIMIT]
+        self._redo.clear()
+
+    def _restore(self, snap: RemapProfile) -> None:
+        """Вернуть рабочую копию к снимку (на месте: таблица и «кабели» держат тот же объект)."""
+        w = self.work
+        maps_changed = (w.source_map, w.target_map) != (snap.source_map, snap.target_map)
+        w.name, w.source_map, w.target_map, w.rules = snap.name, snap.source_map, snap.target_map, snap.rules
+        self._changed(relayout=True)
+        if maps_changed:
+            self.cables.resort()
+
+    def undo(self) -> bool:
+        if self.work is None or not self._undo:
+            return False
+        self._redo.append(copy.deepcopy(self.work))
+        self._restore(self._undo.pop())
+        return True
+
+    def redo(self) -> bool:
+        if self.work is None or not self._redo:
+            return False
+        self._undo.append(copy.deepcopy(self.work))
+        self._restore(self._redo.pop())
+        return True
+
     def unassigned(self) -> list[int]:
         """Ноты исходной карты без правила."""
         src = self.work.source_map if self.work is not None else None
         return [] if src is None else [n for n in sorted(src.names) if n not in self.work.rules]
 
+    @_undoable
     def save(self) -> bool:
-        """Сохранить. Ноты исходной карты без правила: диалог, затем явные keep (with_explicit_keeps) —
-        при конвертации спрашивать придётся только о нотах, которых нет в исходной карте."""
+        """Сохранить. Ноты исходной карты без правила: диалог — по умолчанию удаляются (delete), отмеченные
+        остаются на своих номерах (явный keep). Конвертация спрашивает только о нотах вне исходной карты."""
         if self.work is None or self.current is None:
             return False
-        work = self.work
+        out = copy.deepcopy(self.work)
         unassigned = self.unassigned()
         if unassigned:
-            to_delete = self.ask_unassigned(len(unassigned), unassigned_keep_warnings(work))
-            if to_delete is None:
+            to_keep = self.ask_unassigned(unassigned)
+            if to_keep is None:
                 return False
-            for n in to_delete:  # только отмеченные; остальные неназначенные станут явным keep
-                work.rules[n] = Rule.delete()
-        out = with_explicit_keeps(work)
+            for n in unassigned:
+                out.rules[n] = Rule.keep() if n in to_keep else Rule.delete()
         try:
             self.storage.save_profile(out, profile_id=self.current, overwrite=True)
         except (OSError, ValueError) as e:
@@ -918,6 +979,7 @@ class ProfilesPage(QWidget):
         if not entries:
             menu.addAction("No maps yet").setEnabled(False)
 
+    @_undoable
     def choose_map(self, side: str, ref: MapRef | None) -> bool:
         """Встроить в профиль копию карты (или убрать карту). Правила сохраняются; если они есть — спросить."""
         if self.work is None:
@@ -986,6 +1048,7 @@ class ProfilesPage(QWidget):
                        lambda: self.clear_rules(notes))
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    @_undoable
     def assign_selected(self) -> bool:
         notes = self.selected_notes()
         if self.work is None or not notes:
@@ -1000,27 +1063,45 @@ class ProfilesPage(QWidget):
             return self.assign_note(notes, pick.note)
         return self.assign_articulation(notes, pick.articulation)
 
+    @_undoable
     def assign_articulation(self, notes: list[int], articulation: str) -> bool:
-        """Цель — артикуляция целевой карты. Одна нота — на неё; несколько с Write to — на Write to;
-        несколько без Write to — спросить один раз и запомнить как primary в КОПИИ целевой карты профиля
-        (карта пользователя в хранилище не меняется)."""
-        tgt = self.work.target_map
-        candidates = articulations(tgt).get(normalize_name(articulation), [])
-        if not candidates:
+        """Цель — артикуляция целевой карты (логика — core assign_plan / assign_to_articulation): нота, чей номер
+        есть среди нот артикуляции, остаётся на нём; остальные — на Write to. Нужен выбор Write to — спросить
+        один раз; он запоминается как primary в КОПИИ целевой карты профиля (карта в хранилище не меняется)."""
+        if self.work is None or self.work.target_map is None or not notes:
             return False
-        flagged = [n for n in candidates if n in tgt.primary]
-        if len(candidates) == 1:
-            dst = candidates[0]
-        elif len(flagged) == 1:
-            dst = flagged[0]
-        else:
-            dst = self.ask_write_to(tgt.names[candidates[0]], candidates)
-            if dst is None:
+        try:
+            plan = assign_plan(self.work, notes, articulation)
+        except ValueError:
+            return False
+        write_to = None
+        if plan.ask:
+            write_to = self.ask_write_to(plan.name, list(plan.targets), plan.preselect)
+            if write_to is None:
                 return False
-            tgt.primary.difference_update(candidates)
-            tgt.primary.add(dst)
-        return self.assign_note(notes, dst)
+        new = assign_to_articulation(self.work, notes, articulation, write_to)
+        was_deleted = any(self.work.rules.get(n) == Rule.delete() for n in notes)
+        self.work.target_map, self.work.rules = new.target_map, new.rules
+        self._changed(relayout=was_deleted)
+        if was_deleted:
+            self.select_notes(notes)
+        self.set_status(f"{len(plan.same) + len(plan.others)} note(s) → {plan.name}.")
+        return True
 
+    @_undoable
+    def group_drop(self, notes: list[int], targets: list[int]) -> int:
+        """Кабель отпустили на заголовке группы цели: n → n для нот, чей номер есть в группе (core
+        connect_same_numbers; ноты без совпадения и уже подключённые не трогаются, вопросов нет)."""
+        if self.work is None or not notes:
+            return 0
+        new, done = connect_same_numbers(self.work, notes, targets)
+        if done:
+            self.work.rules = new.rules
+            self._changed(relayout=True)
+        self.set_status(f"{len(done)} of {len(set(notes))} connected")
+        return len(done)
+
+    @_undoable
     def assign_note(self, notes: list[int], dst: int) -> bool:
         was_deleted = any(self.work.rules.get(n) == Rule.delete() for n in notes)
         for n in notes:
@@ -1031,6 +1112,7 @@ class ProfilesPage(QWidget):
         self.set_status(f"{len(notes)} note(s) → {dst}.")
         return True
 
+    @_undoable
     def delete_notes(self, notes: list[int]) -> None:
         if self.work is None or not notes:
             return
@@ -1039,6 +1121,7 @@ class ProfilesPage(QWidget):
         self._changed(relayout=True)
         self.set_status(f"Deleted {len(notes)} note(s).")
 
+    @_undoable
     def clear_rules(self, notes: list[int]) -> None:
         if self.work is None or not notes:
             return
@@ -1049,6 +1132,7 @@ class ProfilesPage(QWidget):
         self._changed(relayout=was_deleted or self.work.source_map is None)
         self.set_status(f"Cleared {len(notes)} rule(s).")
 
+    @_undoable
     def connect_to(self, notes: list[int], slot: str) -> bool:
         """Кабель отпустили на строке цели (вид «кабелями»): та же логика, что у выбора цели в таблице.
         slot — «a:<артикуляция>» (Write to спросят один раз, если нужно) или «n:<номер>» (нота вне целевой карты)."""
@@ -1058,6 +1142,7 @@ class ProfilesPage(QWidget):
             return self.assign_articulation(notes, slot[2:])
         return self.assign_note(notes, int(slot[2:]))
 
+    @_undoable
     def toggle_strike(self, notes: list[int]) -> None:
         """Правый клик в пуле: зачеркнуть (delete); если все ноты уже зачёркнуты — вернуть (без правила)."""
         if self.work is None or not notes:
@@ -1067,9 +1152,10 @@ class ProfilesPage(QWidget):
         else:
             self.delete_notes(notes)
 
+    @_undoable
     def set_write_to(self, note: int) -> bool:
-        """Write to артикуляции цели = note (в копии целевой карты профиля); правила map на эту артикуляцию
-        переводятся на note."""
+        """Write to артикуляции цели = note (в копии целевой карты профиля); на note переводятся правила map,
+        которые шли на прежний Write to (кроме n → n) — core with_write_to."""
         if self.work is None or self.work.target_map is None or note not in self.work.target_map.names:
             return False
         new = with_write_to(self.work, note)
@@ -1079,6 +1165,7 @@ class ProfilesPage(QWidget):
         self.set_status(f"Write to: {note} ({pitch_name(note)}) · {moved} rule(s) moved.")
         return True
 
+    @_undoable
     def accept_suggestions(self) -> tuple[int, int, int] | None:
         """Правила из точных и вероятных подсказок (существующие не меняются).
         Возвращает (добавлено, нужен выбор Write to, без совпадения) — среди нот без правила."""

@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from .legacy_map import NOTE_MAP
 from .notemap import (
-    NoteMap, articulations, check_note, instrument_group, map_body_from_dict, map_body_to_dict, normalize_name,
+    NoteMap, articulations, check_note, map_body_from_dict, map_body_to_dict, normalize_name, primary_note,
 )
 
 FORMAT_VERSION = 1
@@ -208,40 +208,6 @@ def validate_profile(p: RemapProfile) -> list[ProfileIssue]:
     return issues
 
 
-DIFFERENT_INSTRUMENT = "!"  # на этом номере в цели другой инструмент, нет ноты или у имени нет группы
-SAME_INSTRUMENT = "≈"       # тот же инструмент, другое имя — скорее всего тот же звук, но стоит проверить
-
-
-@dataclass(frozen=True)
-class KeepWarning:
-    """Неназначенная нота, которая при keep попадёт на другой звук или на отсутствующую ноту цели."""
-    note: int
-    marker: str              # DIFFERENT_INSTRUMENT / SAME_INSTRUMENT
-    source_name: str
-    target_name: str | None  # None — в целевой карте нет такой ноты
-
-
-def unassigned_keep_warnings(p: RemapProfile) -> list[KeepWarning]:
-    """Для диалога сохранения: ноты исходной карты без правила, у которых keep_issue() не пуст.
-
-    Маркер только упорядочивает и подписывает предупреждение (сначала «!», затем «≈», внутри — по номеру);
-    правил не создаёт и не меняет. Сравнение инструментов — instrument_group() через normalize_name."""
-    src, tgt = p.source_map, p.target_map
-    if src is None:
-        return []
-    out: list[KeepWarning] = []
-    for n in sorted(src.names):
-        if n in p.rules or keep_issue(src, tgt, n) is None:
-            continue
-        target_name = tgt.names.get(n) if tgt is not None else None
-        g_src = instrument_group(src.names[n])
-        g_tgt = instrument_group(target_name) if target_name is not None else None
-        same = g_src is not None and g_tgt is not None and normalize_name(g_src) == normalize_name(g_tgt)
-        out.append(KeepWarning(n, SAME_INSTRUMENT if same else DIFFERENT_INSTRUMENT, src.names[n], target_name))
-    out.sort(key=lambda w: (w.marker != DIFFERENT_INSTRUMENT, w.note))
-    return out
-
-
 def with_explicit_keeps(p: RemapProfile) -> RemapProfile:
     """Новый профиль: каждой ноте исходной карты без правила — явный keep (входной профиль не меняется).
 
@@ -255,24 +221,114 @@ def with_explicit_keeps(p: RemapProfile) -> RemapProfile:
     return out
 
 
-def with_write_to(p: RemapProfile, note: int) -> RemapProfile:
-    """Новый профиль: note — Write to своей артикуляции, и все правила map на ноты этой артикуляции
-    переведены на note (входной профиль не меняется).
+def _set_primary(tgt: NoteMap, notes: list[int], note: int) -> None:
+    """primary = note среди нот артикуляции (на месте); у артикуляции на одной ноте флаг не нужен."""
+    if len(notes) > 1:
+        tgt.primary.difference_update(notes)
+        tgt.primary.add(note)
 
+
+def with_write_to(p: RemapProfile, note: int) -> RemapProfile:
+    """Новый профиль: note — Write to своей артикуляции (входной профиль не меняется).
+
+    На note переводятся ТОЛЬКО правила map, которые шли на прежний Write to и не совпадают по номеру
+    (правило n → n остаётся: нота уже на своём номере). Правила на другие ноты артикуляции не трогаются;
+    если Write to не было — перенаправлять нечего.
     primary ставится во ВСТРОЕННУЮ копию целевой карты профиля (карта в хранилище не меняется) и снимается
     с прочих нот артикуляции; у артикуляции на одной ноте флаг не нужен — не ставится."""
     tgt = p.target_map
     if tgt is None or note not in tgt.names:
         raise ValueError(f"note {note} is not in the target map")
     out = copy.deepcopy(p)
-    notes = articulations(out.target_map)[normalize_name(tgt.names[note])]
-    if len(notes) > 1:
-        out.target_map.primary.difference_update(notes)
-        out.target_map.primary.add(note)
-    for src, rule in out.rules.items():
-        if rule.action == "map" and rule.dst in notes:
-            out.rules[src] = Rule.map_to(note)
+    name = tgt.names[note]
+    old = primary_note(tgt, name)
+    _set_primary(out.target_map, articulations(tgt)[normalize_name(name)], note)
+    if old is not None and old != note:
+        for src, rule in out.rules.items():
+            if rule.action == "map" and rule.dst == old and src != old:
+                out.rules[src] = Rule.map_to(note)
     return out
+
+
+# --- назначение нот на цель ---
+
+@dataclass(frozen=True)
+class AssignPlan:
+    """Что будет при назначении исходных нот на артикуляцию цели (assign_plan)."""
+    name: str                   # имя артикуляции в целевой карте
+    targets: tuple[int, ...]    # её ноты
+    same: tuple[int, ...]       # исходные ноты, чей номер — среди её нот: n → n
+    others: tuple[int, ...]     # остальные: на Write to
+    write_to: int | None        # текущий Write to или выбранный молча (одна совпавшая нота); None — см. ask
+    preselect: int | None       # для вопроса о Write to: первая совпавшая нота (или None)
+
+    @property
+    def ask(self) -> bool:
+        """Нужно спросить Write to: есть ноты не на своих номерах, а Write to не выбран."""
+        return bool(self.others) and self.write_to is None
+
+
+def assign_plan(p: RemapProfile, notes: list[int], articulation: str) -> AssignPlan:
+    """План назначения нот на артикуляцию целевой карты (по имени, сравнение через normalize_name).
+
+    Нота, чей номер есть среди нот артикуляции, остаётся на нём (n → n) — без вопросов. Остальные — на
+    Write to артикуляции. Write to нет: одна совпавшая нота в этом же назначении — она и станет Write to
+    (молча); несколько совпавших или ни одной — спросить (один раз на назначение, предвыбор — первая
+    совпавшая)."""
+    tgt = p.target_map
+    if tgt is None:
+        raise ValueError("the profile has no target map")
+    targets = articulations(tgt).get(normalize_name(articulation))
+    if not targets:
+        raise ValueError(f"no articulation {articulation!r} in the target map")
+    name = tgt.names[targets[0]]
+    notes = sorted(set(notes))
+    same = tuple(n for n in notes if n in targets)
+    others = tuple(n for n in notes if n not in targets)
+    write_to = primary_note(tgt, name)
+    if write_to is None and others and len(same) == 1:
+        write_to = same[0]
+    return AssignPlan(name, tuple(targets), same, others, write_to, same[0] if same else None)
+
+
+def assign_to_articulation(p: RemapProfile, notes: list[int], articulation: str,
+                           write_to: int | None = None) -> RemapProfile:
+    """Новый профиль: ноты назначены на артикуляцию по assign_plan() (входной профиль не меняется).
+
+    write_to — ответ на вопрос (нужен, если plan.ask; иначе игнорируется, если Write to уже есть).
+    Новый Write to (выбранный молча или ответом) записывается как primary во ВСТРОЕННУЮ копию целевой карты.
+    Прежние правила этих нот (delete/keep/map) заменяются."""
+    plan = assign_plan(p, notes, articulation)
+    out = copy.deepcopy(p)
+    wt = plan.write_to if plan.write_to is not None else write_to
+    if plan.others:
+        if wt is None:
+            raise ValueError(f'"{plan.name}" is on several notes: choose the Write to note')
+        if wt not in plan.targets:
+            raise ValueError(f"note {wt} is not a note of {plan.name!r}")
+        if primary_note(p.target_map, plan.name) != wt:
+            _set_primary(out.target_map, list(plan.targets), wt)
+    for n in plan.same:
+        out.rules[n] = Rule.map_to(n)
+    for n in plan.others:
+        out.rules[n] = Rule.map_to(wt)
+    return out
+
+
+def connect_same_numbers(p: RemapProfile, notes: list[int], targets: list[int]) -> tuple[RemapProfile, list[int]]:
+    """Перетаскивание на группу цели: каждой ноте, чей номер среди targets, — n → n.
+
+    Ноты без совпадения и ноты, у которых уже есть правило map, не трогаются; вопросов нет.
+    Возвращает новый профиль и подключённые ноты (по возрастанию)."""
+    out = copy.deepcopy(p)
+    wanted = set(targets)
+    done = []
+    for n in sorted(set(notes)):
+        rule = out.rules.get(n)
+        if n in wanted and (rule is None or rule.action != "map"):
+            out.rules[n] = Rule.map_to(n)
+            done.append(n)
+    return out, done
 
 
 def legacy_profile() -> RemapProfile:
