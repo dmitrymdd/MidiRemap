@@ -493,6 +493,18 @@ def map_rule_count(p):
     return sum(r.action == "map" for r in p.rules.values())
 
 
+def cabled_note_count(editor):
+    """Нот под кабелями (у строки алиасов один кабель на все её ноты)."""
+    return sum(len(c.cable.notes) for c in editor.cable_items)
+
+
+def unique_mapped_note(p):
+    """Нота с правилом map, имя которой в исходной карте не повторяется (строка без алиасов)."""
+    names = [normalize_name(v) for v in p.source_map.names.values()]
+    return next(n for n, r in sorted(p.rules.items())
+                if r.action == "map" and names.count(normalize_name(p.source_map.names[n])) == 1)
+
+
 def test_cables_view_toggle_keeps_edits(window):
     from midiremap.ui.cable_layout import DELETE
     from midiremap.ui.profiles_page import CABLES_VIEW, TABLE_VIEW
@@ -502,15 +514,16 @@ def test_cables_view_toggle_keeps_edits(window):
     rules = dict(page.work.rules)
     page.set_view(CABLES_VIEW)
     assert page.view == CABLES_VIEW and page.cables.active
-    assert len(page.cables.cable_items) == map_rule_count(page.work) > 0
+    assert cabled_note_count(page.cables) == map_rule_count(page.work) > 0
+    assert len(page.cables.cable_items) < map_rule_count(page.work)  # алиасы EZD3 — по кабелю на строку
     assert page.work.rules == rules and page.dirty
     # правка при показанных кабелях: строка без кабеля остаётся на месте до пересортировки
-    n = next(n for n, r in sorted(page.work.rules.items()) if r.action == "map")
+    n = unique_mapped_note(page.work)
     y = page.cables.current.source_row(n).y
     page.delete_notes([n])
     row = page.cables.current.source_row(n)
     assert row.y == y and row.block is None and not row.connected
-    assert len(page.cables.cable_items) == map_rule_count(page.work)
+    assert cabled_note_count(page.cables) == map_rule_count(page.work)
     page.set_view(TABLE_VIEW)
     assert page.work.rules[n] == Rule.delete() and page.dirty and not page.cables.active
     page.set_view(CABLES_VIEW)  # показ — пересортировка
@@ -519,13 +532,14 @@ def test_cables_view_toggle_keeps_edits(window):
 
 
 def test_cables_view_toolbar(window):
-    from midiremap.ui.profiles_page import CABLES_VIEW, RESORT_TIP, TABLE_VIEW
+    from midiremap.ui.profiles_page import CABLES_VIEW, REFRESH_TIP, TABLE_VIEW
     page = window.profiles_page
     new_profile(page)
-    assert page.resort_btn.isHidden() and page.assign_btn.isEnabled()
+    assert page.refresh_btn.isHidden() and page.assign_btn.isEnabled()
     page.set_view(CABLES_VIEW)
-    assert not page.resort_btn.isHidden() and page.resort_btn.toolTip() == RESORT_TIP
-    assert not page.assign_btn.isEnabled()
+    assert not page.refresh_btn.isHidden() and page.refresh_btn.toolTip() == REFRESH_TIP == "Refresh layout"
+    assert page.refresh_btn.text() == "↻"
+    assert page.assign_btn.isEnabled()  # Assign target — для выделенных строк «кабелей»
     assert page.cables_view_btn.isChecked() and not page.table_view_btn.isChecked()
     page.table_view_btn.click()
     assert page.view == TABLE_VIEW and page.assign_btn.isEnabled()
@@ -538,10 +552,10 @@ def test_cables_resort_button_reflows(window):
     new_profile(page)
     page.accept_suggestions()
     page.set_view(CABLES_VIEW)
-    n = next(n for n, r in sorted(page.work.rules.items()) if r.action == "map")
+    n = unique_mapped_note(page.work)
     page.clear_rules([n])
     assert page.cables.current.source_row(n).block is None
-    page.resort_btn.click()
+    page.refresh_btn.click()
     assert page.cables.current.source_row(n).block == UNASSIGNED
 
 
@@ -557,12 +571,13 @@ def test_cables_header_click_collapses(window, app):
     page.set_view(CABLES_VIEW)
     head = page.cables.current.header(UNASSIGNED)
     assert head.y == 0 and not head.collapsed
-    pos = page.cables.mapFromScene(QPointF(PAD + 30, PAD + ROW / 2))
-    QTest.mouseClick(page.cables.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+    pool = page.cables.pool
+    pos = pool.mapFromScene(QPointF(PAD + 30, PAD + ROW / 2))
+    QTest.mouseClick(pool.viewport(), Qt.MouseButton.LeftButton, pos=pos)
     app.processEvents()
     head = page.cables.current.header(UNASSIGNED)
     assert head.collapsed and head.count == len(page.work.source_map.names)
-    assert page.cables.current.source_rows == []
+    assert page.cables.current.pool.rows == []
 
 
 def test_cables_view_saves_with_same_dialog(window, storage):
@@ -572,9 +587,390 @@ def test_cables_view_saves_with_same_dialog(window, storage):
     pid = new_profile(page)
     page.set_view(CABLES_VIEW)
     page.accept_suggestions()
-    assert len(page.cables.cable_items) == map_rule_count(page.work)
+    assert cabled_note_count(page.cables) == map_rule_count(page.work)
     page.answers["unassigned"] = set()
     assert page.save() and page.answers["asked"][-1][0] == "unassigned"
     saved = storage.load_profile(pid)
     assert page.cables.profile is page.work and page.work.to_dict() == saved.to_dict()
     assert page.cables.current.header(KEEP).count == sum(r == Rule.keep() for r in saved.rules.values())
+
+
+def test_cables_pool_is_separate_column(window):
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    window.resize(1300, 900)
+    window.show()
+    new_profile(page)
+    page.accept_suggestions()
+    page.set_view(CABLES_VIEW)
+    ed = page.cables
+    lay = ed.current
+    # пул — своя view со своей прокруткой; сцена начинается сверху
+    assert ed.pool is not ed.view and ed.splitter.count() == 2
+    assert set(ed.pool_items) == {n for r in lay.pool.rows for n in r.notes}
+    assert min(t.y for t in lay.scene.target_rows + lay.scene.target_headers) == 0
+    assert ed.view.verticalScrollBar() is not ed.pool.verticalScrollBar()
+    ed.pool.verticalScrollBar().setValue(ed.pool.verticalScrollBar().maximum())
+    assert ed.view.verticalScrollBar().value() == 0
+    # слой для кабеля-превью (8b2b): поверх обоих, мышь не перехватывает
+    assert ed.overlay.geometry() == ed.rect()
+    assert ed.overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    a = ed.source_anchor(lay.pool.rows[0].note)
+    b = ed.source_anchor(lay.scene.source_rows[0].note)
+    assert a is not None and b is not None and a.x() < b.x()
+    ed.overlay.show_preview([a], b)
+    assert ed.overlay.preview is not None
+    ed.overlay.clear_preview()
+
+
+def test_cable_hover_highlights_and_dims(window):
+    from midiremap.ui.cable_view import DIMMED
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    new_profile(page)
+    page.accept_suggestions()
+    page.set_view(CABLES_VIEW)
+    ed = page.cables
+    cable = ed.cable_items[0]
+    ed.hover_cable(cable)
+    assert cable.pen().widthF() > ed.cable_items[1].pen().widthF()
+    assert cable.opacity() == 1.0 and ed.cable_items[1].opacity() == DIMMED
+    assert ed.source_items[cable.cable.src].highlighted
+    assert ed.target_items[cable.cable.target.slot].highlighted
+    assert sum(r.highlighted for r in ed.scene_rows) == 1
+    ed.hover_cable(None)
+    assert all(c.opacity() == 1.0 for c in ed.cable_items)
+    assert not any(r.highlighted for r in ed.scene_rows)
+
+
+def test_removed_cable_row_dimmed_in_scene(window):
+    from midiremap.ui.cable_view import STALE
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    new_profile(page)
+    page.accept_suggestions()
+    page.set_view(CABLES_VIEW)
+    n = unique_mapped_note(page.work)
+    pool_count = len(page.cables.pool_items)
+    page.clear_rules([n])
+    assert page.cables.source_items[n].opacity() == STALE and n not in page.cables.pool_items
+    assert len(page.cables.pool_items) == pool_count  # в пул — только после пересортировки
+    page.refresh_btn.click()
+    assert n in page.cables.pool_items and n not in page.cables.source_items
+
+
+# --- вид «кабелями»: правка (8b2b) ---
+
+def cables_page(window, accept=True, size=(1300, 900)):
+    from midiremap.ui.profiles_page import CABLES_VIEW
+    page = window.profiles_page
+    window.resize(*size)
+    window.show()
+    new_profile(page)
+    if accept:
+        page.accept_suggestions()
+    page.set_view(CABLES_VIEW)
+    QApplication.processEvents()  # отложенные resize окна перерисовывают колонки
+    return page, page.cables
+
+
+def editor_point(ed, view, scene_pt):
+    """Точка сцены view в координатах CableEditor."""
+    from PySide6.QtCore import QPointF
+    return QPointF(view.viewport().mapTo(ed, view.mapFromScene(scene_pt)))
+
+
+def target_point(ed, slot):
+    return editor_point(ed, ed.view, ed.target_items[slot].rect.center())
+
+
+def show_target_group(ed, slot):
+    """Режим «все» для группы цели, в которой лежит артикуляция slot."""
+    from midiremap.core.notemap import instrument_group
+    from midiremap.ui.cable_layout import TARGET_PREFIX
+    if slot in ed.target_items:
+        return
+    tgt = ed.profile.target_map
+    name = next(v for v in tgt.names.values() if "a:" + normalize_name(v) == slot)
+    ed.toggle_target(TARGET_PREFIX + normalize_name(instrument_group(name)))
+    assert slot in ed.target_items
+
+
+def pool_row(ed, pred):
+    return next(item for item in ed.pool_rows if not item.model.expanded and pred(item))
+
+
+def header_item(view, key):
+    return next(i for i in view.scene().items() if getattr(i, "header", None) is not None and i.header.key == key)
+
+
+def drop(app, ed, notes, at):
+    ed.begin_drag(set(notes), at)
+    ed.drag_to(at)
+    ed.end_drag(drop=True)
+    app.processEvents()
+
+
+def test_drag_pool_alias_row_onto_target_maps_all_its_notes(window, app):
+    page, ed = cables_page(window, accept=False)
+    ezd = page.work.source_map
+    row = pool_row(ed, lambda i: len(i.notes) > 1)  # строка алиасов EZD3
+    assert row.model.alias and row.count == len(row.notes)
+    assert len({normalize_name(ezd.names[n]) for n in row.notes}) == 1
+    slot, dst = single_note_articulation(page.work.target_map)
+    show_target_group(ed, "a:" + slot)
+    drop(app, ed, row.notes, target_point(ed, "a:" + slot))
+    assert all(page.work.rules[n] == Rule.map_to(dst) for n in row.notes) and page.dirty
+    moved = ed.current.source_row(row.notes[0])
+    assert moved.block is None and moved.connected and moved.notes == row.notes
+    assert len([c for c in ed.cable_items if c.cable.notes == row.notes]) == 1  # один кабель на строку
+    assert not ed.selection
+
+
+def test_drag_with_real_mouse_events(window, app):
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    page, ed = cables_page(window, accept=False)
+    slot, dst = single_note_articulation(page.work.target_map)
+    show_target_group(ed, "a:" + slot)
+    row = pool_row(ed, lambda i: len(i.notes) == 1)
+    note = row.notes[0]
+
+    def send(kind, pos, buttons):
+        vp = ed.pool.viewport()
+        ev = QMouseEvent(kind, pos, QPointF(vp.mapToGlobal(pos.toPoint())), Qt.MouseButton.LeftButton, buttons,
+                         Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(vp, ev)
+
+    start = QPointF(ed.pool.mapFromScene(row.rect.center()))
+    send(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    assert ed.selected_notes() == [note]
+    send(QEvent.Type.MouseMove, start + QPointF(30, 0), Qt.MouseButton.LeftButton)
+    assert ed.dragging
+    # курсор над строкой цели: события идут в viewport пула (захват мыши), координаты — за его пределами
+    tgt = ed.target_items["a:" + slot]
+    at = QPointF(ed.pool.viewport().mapFrom(ed, target_point(ed, "a:" + slot).toPoint()))
+    send(QEvent.Type.MouseMove, at, Qt.MouseButton.LeftButton)
+    ed._tick()
+    assert tgt.highlighted and ed.overlay.preview and ed.overlay.valid
+    send(QEvent.Type.MouseButtonRelease, at, Qt.MouseButton.NoButton)
+    app.processEvents()
+    assert not ed.dragging and ed.overlay.preview is None
+    assert page.work.rules[note] == Rule.map_to(dst)
+
+
+def test_multi_select_drag_asks_write_to_once(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = multi_note_articulation(page.work.target_map)
+    show_target_group(ed, "a:" + key)
+    rows = [i for i in ed.pool_rows if not i.model.expanded][:3]
+    no, shift, ctrl = (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ShiftModifier,
+                       Qt.KeyboardModifier.ControlModifier)
+    ed._press_row(ed.pool, rows[0], no, rows[0].rect.center())
+    ed._press_row(ed.pool, rows[2], shift, rows[2].rect.center())
+    sel = {n for r in rows for n in r.notes}
+    assert set(ed.selected_notes()) == sel and all(r.selected for r in rows)
+    ed._press_row(ed.pool, rows[1], ctrl, rows[1].rect.center())
+    sel -= set(rows[1].notes)
+    assert set(ed.selected_notes()) == sel and not rows[1].selected
+    # Cancel в вопросе о Write to — ничего не меняется
+    before = dict(page.work.rules)
+    drop(app, ed, ed.selected_notes(), target_point(ed, "a:" + key))
+    assert page.work.rules == before and page.answers["asked"][-1][0] == "write_to"
+    # выбор — один вопрос на всё перетаскивание
+    asked = len(page.answers["asked"])
+    page.answers["write_to"] = [notes[-1]]
+    drop(app, ed, sel, target_point(ed, "a:" + key))
+    assert len(page.answers["asked"]) == asked + 1
+    assert all(page.work.rules[n] == Rule.map_to(notes[-1]) for n in sel)
+    assert notes[-1] in page.work.target_map.primary
+
+
+def test_drop_replaces_previous_rule_and_esc_cancels(window, app):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+    page, ed = cables_page(window, accept=False)
+    slot, dst = single_note_articulation(page.work.target_map)
+    show_target_group(ed, "a:" + slot)
+    row = pool_row(ed, lambda i: len(i.notes) == 1)
+    n = row.notes[0]
+    page.delete_notes([n])
+    assert ed.current.source_row(n).state == "delete"
+    at = target_point(ed, "a:" + slot)
+    ed.begin_drag({n}, at)
+    ed.drag_to(at)
+    QApplication.sendEvent(ed.pool, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                                              Qt.KeyboardModifier.NoModifier))
+    app.processEvents()
+    assert not ed.dragging and ed.overlay.preview is None and page.work.rules[n] == Rule.delete()
+    # отпустили мимо цели — ничего
+    drop(app, ed, [n], editor_point(ed, ed.pool, ed.pool_items[n].rect.center()))
+    assert page.work.rules[n] == Rule.delete()
+    drop(app, ed, [n], at)
+    assert page.work.rules[n] == Rule.map_to(dst)
+
+
+def test_preview_spring_follows_cursor():
+    from PySide6.QtCore import QPointF
+    from midiremap.ui.cable_view import _Drag
+    d = _Drag((1,), QPointF(200, 100), QPointF(0, 0), QPointF(0, 0))
+    d.step()
+    assert 0 < d.pos.x() < 200  # запаздывает
+    for _ in range(60):
+        d.step()
+    assert abs(d.pos.x() - 200) < 1 and abs(d.pos.y() - 100) < 1
+
+
+def test_autoscroll_near_edge(window, app):
+    from PySide6.QtCore import QPointF
+    page, ed = cables_page(window, accept=False, size=(1200, 600))
+    bar = ed.pool.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == 0
+    vp = ed.pool.viewport()
+    bottom = QPointF(vp.mapTo(ed, vp.rect().bottomLeft()))
+    at = QPointF(bottom.x() + 40, bottom.y() - 4)
+    ed.begin_drag({ed.pool_rows[0].notes[0]}, at)
+    ed._tick()
+    ed._tick()
+    assert bar.value() > 0
+    assert ed.view.verticalScrollBar().value() == 0  # прокручивается только колонка под курсором
+    ed.cancel_drag()
+
+
+def test_right_click_cable_removes_connection(window, app):
+    from midiremap.ui.cable_view import STALE
+    page, ed = cables_page(window)
+    cable = ed.cable_items[0]
+    notes = cable.cable.notes
+    pos = ed.view.mapFromScene(cable.path().pointAtPercent(0.5))
+    QTest.mouseClick(ed.view.viewport(), Qt.MouseButton.RightButton, pos=pos)
+    app.processEvents()
+    assert all(n not in page.work.rules for n in notes) and page.dirty
+    assert ed.source_items[notes[0]].opacity() == STALE  # остаётся в колонке 2 до пересортировки
+
+
+def test_right_click_pool_row_and_group_toggle_strike(window, app):
+    from midiremap.ui.cable_layout import KEEP, UNASSIGNED
+    page, ed = cables_page(window, accept=False)
+    row = ed.pool_rows[0]
+    notes = row.notes
+    QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(row.rect.center()))
+    assert all(page.work.rules[n] == Rule.delete() for n in notes)
+    row = ed.pool_items[notes[0]]
+    assert row.strike and row.model.block == UNASSIGNED  # в Delete — только после пересортировки
+    QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(row.rect.center()))
+    assert all(n not in page.work.rules for n in notes)
+    # группа: зачеркнуть всю; если уже вся зачёркнута — вернуть
+    head = next(h for h in ed.current.pool.headers if h.level == 1)
+    page.delete_notes([head.notes[0]])
+    item = header_item(ed.pool, head.key)
+    QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(item.rect.center()))
+    assert all(page.work.rules[n] == Rule.delete() for n in head.notes)
+    ed.right_click(header_item(ed.pool, head.key))
+    assert all(n not in page.work.rules for n in head.notes)
+    # Keep/Delete: delete ↔ без правила
+    for n in notes:
+        page.work.rules[n] = Rule.keep()
+    page.refresh_btn.click()
+    ed.toggle_pool(KEEP)
+    keep_row = ed.pool_items[notes[0]]
+    assert keep_row.model.block == KEEP and keep_row.marker == "="
+    ed.right_click(keep_row)
+    assert all(page.work.rules[n] == Rule.delete() for n in notes)
+    ed.right_click(ed.pool_items[notes[0]])
+    assert all(n not in page.work.rules for n in notes)
+
+
+def test_write_to_badge_repoints_rules(window, app, storage):
+    page, ed = cables_page(window)
+    key, notes = multi_note_articulation(page.work.target_map)
+    slot = "a:" + key
+    srcs = [n for n in sorted(page.work.source_map.names) if n not in page.work.rules][:2]
+    page.answers["write_to"] = [notes[0]]
+    assert page.connect_to(srcs, slot)
+    assert all(page.work.rules[n] == Rule.map_to(notes[0]) for n in srcs)
+    item = ed.target_items[slot]
+    assert item.badge and item.marker == f"+{len(notes) - 1}"
+    ed.pick_write_to = lambda t, at: notes[-1]
+    QTest.mouseClick(ed.view.viewport(), Qt.MouseButton.LeftButton,
+                     pos=ed.view.mapFromScene(item.badge_rect().center()))
+    app.processEvents()
+    assert page.work.target_map.primary & set(notes) == {notes[-1]}
+    assert all(page.work.rules[n] == Rule.map_to(notes[-1]) for n in srcs)
+    assert ed.current.target_row(slot).write_to == notes[-1]
+    page.answers["unassigned"] = set()
+    assert page.save()
+    assert storage.load_profile(page.current).target_map.primary & set(notes) == {notes[-1]}
+    assert not load_map_template("Superior Drummer 3").primary  # шаблон не тронут
+
+
+def test_target_groups_connected_only_and_toggle(window, app):
+    page, ed = cables_page(window, accept=False)
+    heads = ed.current.scene.target_headers
+    assert heads and all(h.collapsed and not h.shown for h in heads)
+    assert ed.current.scene.target_rows == []  # без связей — только заголовки
+    head = heads[0]
+    item = header_item(ed.view, head.key)
+    QTest.mouseClick(ed.view.viewport(), Qt.MouseButton.LeftButton, pos=ed.view.mapFromScene(item.rect.center()))
+    app.processEvents()
+    assert head.key in ed.show_all and not ed.current.header(head.key).collapsed
+    assert len(ed.current.scene.target_rows) == head.count
+    # без режима «все» видны только подключённые артикуляции
+    page.accept_suggestions()
+    ed.show_all.clear()
+    page.refresh_btn.click()
+    lay = ed.current.scene
+    assert any(h.shown for h in lay.target_headers)
+    assert len(lay.target_rows) == sum(h.shown for h in lay.target_headers)
+
+
+def test_spring_loaded_group_opens_while_dragging(window, app):
+    page, ed = cables_page(window, accept=False)
+    head = ed.current.scene.target_headers[0]
+    item = header_item(ed.view, head.key)
+    at = editor_point(ed, ed.view, item.rect.center())
+    ed.begin_drag({ed.pool_rows[0].notes[0]}, at)
+    ed.drag_to(at)
+    assert ed._spring.isActive() and item.highlighted
+    ed._spring_open()  # ~500 мс наведения
+    assert head.key in ed.show_all and ed.dragging
+    assert len(ed.current.scene.target_rows) == head.count
+    ed.cancel_drag()
+
+
+def test_alias_expand_in_pool_leaves_scene_untouched(window, app):
+    page, ed = cables_page(window)
+    row = pool_row(ed, lambda i: len(i.notes) > 1)
+    notes = row.notes
+    scene_items = list(ed.scene_rows)
+    QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.LeftButton,
+                     pos=ed.pool.mapFromScene(row.chevron_rect().center()))
+    app.processEvents()
+    head = next(i for i in ed.pool_rows if i.model.expanded and i.notes == notes)
+    children = [i for i in ed.pool_rows if i.model.child and i.notes[0] in notes]
+    assert len(children) == len(notes) and head.chevron == "expanded"
+    assert ed.scene_rows == scene_items  # сцена не перестраивалась
+    # тащим одну ноту из раскрытых — разделение алиасов
+    slot, dst = single_note_articulation(page.work.target_map)
+    show_target_group(ed, "a:" + slot)
+    drop(app, ed, [notes[0]], target_point(ed, "a:" + slot))
+    assert page.work.rules[notes[0]] == Rule.map_to(dst)
+    assert all(page.work.rules.get(n) != Rule.map_to(dst) for n in notes[1:])
+
+
+def test_pool_collapse_rebuilds_only_pool(window, app):
+    from midiremap.ui.cable_layout import UNASSIGNED
+    page, ed = cables_page(window)
+    scene_items = list(ed.scene_rows)
+    ed.toggle_pool(UNASSIGNED)
+    assert ed.current.header(UNASSIGNED).collapsed and ed.scene_rows == scene_items
+
+
+def test_assign_target_uses_cable_selection(window, app):
+    page, ed = cables_page(window, accept=False)
+    slot, dst = single_note_articulation(page.work.target_map)
+    row = ed.pool_rows[0]
+    ed.set_selection(set(row.notes))
+    page.answers["pick"] = Pick(note=dst)
+    assert page.assign_selected()
+    assert all(page.work.rules[n] == Rule.map_to(dst) for n in row.notes)

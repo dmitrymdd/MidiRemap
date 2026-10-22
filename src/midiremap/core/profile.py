@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from .legacy_map import NOTE_MAP
 from .notemap import (
-    NoteMap, check_note, instrument_group, map_body_from_dict, map_body_to_dict, normalize_name,
+    NoteMap, articulations, check_note, instrument_group, map_body_from_dict, map_body_to_dict, normalize_name,
 )
 
 FORMAT_VERSION = 1
@@ -252,6 +252,26 @@ def with_explicit_keeps(p: RemapProfile) -> RemapProfile:
         for n in out.source_map.names:
             out.rules.setdefault(n, Rule.keep())
     out.validate()
+    return out
+
+
+def with_write_to(p: RemapProfile, note: int) -> RemapProfile:
+    """Новый профиль: note — Write to своей артикуляции, и все правила map на ноты этой артикуляции
+    переведены на note (входной профиль не меняется).
+
+    primary ставится во ВСТРОЕННУЮ копию целевой карты профиля (карта в хранилище не меняется) и снимается
+    с прочих нот артикуляции; у артикуляции на одной ноте флаг не нужен — не ставится."""
+    tgt = p.target_map
+    if tgt is None or note not in tgt.names:
+        raise ValueError(f"note {note} is not in the target map")
+    out = copy.deepcopy(p)
+    notes = articulations(out.target_map)[normalize_name(tgt.names[note])]
+    if len(notes) > 1:
+        out.target_map.primary.difference_update(notes)
+        out.target_map.primary.add(note)
+    for src, rule in out.rules.items():
+        if rule.action == "map" and rule.dst in notes:
+            out.rules[src] = Rule.map_to(note)
     return out
 
 

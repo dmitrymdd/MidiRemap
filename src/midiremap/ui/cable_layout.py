@@ -1,21 +1,31 @@
 """Раскладка вида профиля «кабелями» (этап 8b2): чистый Python, без Qt — покрывается pytest.
 
-Слева — исходные ноты: сверху блоки состояний Unassigned / Keep / Delete (внутри — группы instrument_group
-исходной карты), ниже — подключённые ноты (правило map) напротив своей цели. Справа — целевая карта: по строке
-на артикуляцию (имена сравниваются через normalize_name), под заголовками групп instrument_group. map на
-неосновную ноту артикуляции — кабель к той же строке артикуляции. Высота строки цели = max(1, число исходных
-строк напротив неё): связка 10-в-1 — одна высокая строка цели и десять строк напротив.
+Три колонки, две раскладки:
+- ПУЛ (PoolLayout, своя прокрутка): блоки состояний Unassigned / Keep / Delete, внутри — группы instrument_group
+  исходной карты;
+- СЦЕНА (SceneLayout, общая прокрутка колонок 2 и 3, начинается сверху): подключённые исходные ноты (правило map)
+  напротив своей цели и целевая карта — по строке на артикуляцию (имена сравниваются через normalize_name), под
+  заголовками групп instrument_group. map на неосновную ноту артикуляции — кабель к той же строке. Высота строки
+  цели = max(1, число строк напротив неё): связка 10-в-1 — одна высокая строка цели и десять строк напротив.
 
-Координаты — в строках (y, height); пиксели считает виджет (cable_view.py).
+Координаты — в строках (y, height) каждой раскладки отдельно; пиксели считает виджет (cable_view.py).
 
 Порядок ЗАМОРОЖЕН между явными пересортировками (OrderSnapshot):
-- строка, у которой убрали кабель (правило стало keep/delete/пусто), остаётся на месте без кабеля;
-- строка, которую подключили или переподключили к другой цели, сразу встаёт напротив цели;
-- строка, сменившая состояние без подключения, остаётся в своём блоке (вид строки — по текущему правилу).
+- подключили (или переподключили к другой цели) — строка сразу уходит из пула и встаёт напротив цели;
+- убрали кабель (правило стало keep/delete/пусто) — строка остаётся в сцене на своём месте, без кабеля
+  (SourceRow.stale, виджет её приглушает); после пересортировки возвращается в пул;
+- сменилось состояние без подключения (напр. удалили в таблице) — строка остаётся в своём блоке пула
+  (вид — по текущему правилу).
 Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)).
 
-Сворачивание: ключи — BLOCKS, «<блок>/<группа>», «target/<группа>». Свёрнутый заголовок показывает число;
-у свёрнутой группы цели кабели сходятся на её заголовке, а высота заголовка вмещает все строки напротив.
+Алиасы источника (одно имя на нескольких нотах, normalize_name) в одном месте (блок пула или строка цели) —
+ОДНА строка с несколькими нотами (SourceRow.notes) и одним кабелем; правила при этом по-прежнему по нотам.
+Строку можно раскрыть (ключ «<место>|<имя>» в expanded): заголовок алиасов + строка на каждую ноту.
+Ноты с разными правилами показываются раскрытыми всегда (SourceRow.mixed).
+
+Сворачивание пула: ключи — BLOCKS и «<блок>/<группа>». Группы цели — два режима: «только подключённые»
+(по умолчанию; видны артикуляции, напротив которых есть строки, группа без них — один заголовок) и «все»
+(ключ «target/<группа>» в show_all). Заголовок показывает число нот (пул) или артикуляций (цель).
 """
 from __future__ import annotations
 
@@ -26,6 +36,7 @@ from ..core.notemap import NoteMap, articulations, instrument_group, normalize_n
 from ..core.profile import RemapProfile, Rule
 
 UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
+MIXED = "mixed"  # заголовок раскрытых алиасов, у нот которых разные правила
 BLOCKS = (UNASSIGNED, KEEP, DELETE)
 BLOCK_LABELS = {UNASSIGNED: "Unassigned", KEEP: "Keep", DELETE: "Delete"}
 DEFAULT_COLLAPSED = frozenset({KEEP, DELETE})
@@ -33,8 +44,6 @@ DEFAULT_COLLAPSED = frozenset({KEEP, DELETE})
 TARGET_PREFIX = "target/"
 # служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
 OTHER, MISSING = "\0other", "\0missing"
-
-GAP = 1  # пустая строка между блоками состояний и подключёнными нотами
 
 
 @dataclass(frozen=True)
@@ -61,20 +70,35 @@ class Header:
     key: str
     label: str
     count: int        # нот в блоке/группе слева; артикуляций в группе справа
-    collapsed: bool
+    collapsed: bool   # пул — свёрнут; цель — часть артикуляций скрыта (режим «только подключённые»)
     level: int        # 0 — блок состояния или группа цели, 1 — группа внутри блока
     y: int
-    height: int = 1
+    notes: tuple[int, ...] = ()  # пул: ноты блока или группы (правый клик по группе)
+    shown: int | None = None     # цель: артикуляций, напротив которых есть строки
 
 
 @dataclass(frozen=True)
 class SourceRow:
-    note: int
+    """Строка слева: одна нота или несколько нот-алиасов (одно имя, одно место, одинаковые правила)."""
+    notes: tuple[int, ...]
     name: str | None   # None — ноты нет в исходной карте
-    state: str         # UNASSIGNED / KEEP / DELETE / MAPPED — по текущему правилу
-    connected: bool    # есть кабель (map в цель, напротив которой стоит строка)
-    block: str | None  # блок состояния; None — строка напротив цели
+    state: str         # UNASSIGNED / KEEP / DELETE / MAPPED — по текущему правилу; MIXED — правила разные
+    connected: bool    # есть кабель (map в цель, напротив которой стоит строка); у заголовка — хоть у одной ноты
+    block: str | None  # блок пула; None — строка в сцене напротив цели
     y: int
+    alias: str | None = None  # ключ раскрытия «<место>|<имя>»: у строки из нескольких нот и у заголовка алиасов
+    expanded: bool = False    # заголовок раскрытых алиасов: под ним — строки по нотам (child), кабеля у него нет
+    mixed: bool = False       # у нот разные правила — свернуть нельзя
+    child: bool = False       # строка ноты под заголовком алиасов
+
+    @property
+    def note(self) -> int:
+        return self.notes[0]
+
+    @property
+    def stale(self) -> bool:
+        """Строка в сцене, у которой убрали кабель: стоит на месте до пересортировки."""
+        return self.block is None and not self.connected
 
 
 @dataclass(frozen=True)
@@ -91,31 +115,52 @@ class TargetRow:
 
 @dataclass(frozen=True)
 class Cable:
-    src: int
+    """Кабель строки слева (у строки алиасов — один на все её ноты)."""
+    notes: tuple[int, ...]
     dst: int
     src_y: int
-    target: TargetRow | Header  # Header — свёрнутая группа цели
+    target: TargetRow
+
+    @property
+    def src(self) -> int:
+        return self.notes[0]
 
 
 @dataclass
-class CableLayout:
-    source_headers: list[Header]
+class PoolLayout:
+    """Колонка 1 — пул (своя прокрутка)."""
+    headers: list[Header]
+    rows: list[SourceRow]
+    height: int
+
+
+@dataclass
+class SceneLayout:
+    """Колонки 2 и 3 — подключённые ноты и цель (общая прокрутка, с y = 0)."""
     source_rows: list[SourceRow]
     target_headers: list[Header]
     target_rows: list[TargetRow]
     cables: list[Cable]
     height: int
-    connected_top: int     # y первой строки области «напротив цели»
+
+
+@dataclass
+class CableLayout:
+    pool: PoolLayout
+    scene: SceneLayout
     order: OrderSnapshot   # порядок, по которому построено (передать в следующий build_layout)
 
     def source_row(self, note: int) -> SourceRow | None:
-        return next((r for r in self.source_rows if r.note == note), None)
+        """Строка с нотой в пуле или в сцене (у раскрытых алиасов — строка самой ноты, а не заголовок).
+        None — нота в свёрнутом блоке/группе."""
+        rows = [r for r in self.pool.rows + self.scene.source_rows if note in r.notes]
+        return next((r for r in rows if not r.expanded), rows[0] if rows else None)
 
     def target_row(self, slot: str) -> TargetRow | None:
-        return next((r for r in self.target_rows if r.slot == slot), None)
+        return next((r for r in self.scene.target_rows if r.slot == slot), None)
 
     def header(self, key: str) -> Header | None:
-        return next((h for h in self.source_headers + self.target_headers if h.key == key), None)
+        return next((h for h in self.pool.headers + self.scene.target_headers if h.key == key), None)
 
 
 # --- ключи и состояния ---
@@ -252,78 +297,106 @@ def _target_groups(p: RemapProfile, order: OrderSnapshot) -> list[tuple[str | No
 
 
 def build_layout(p: RemapProfile | None, collapsed: Iterable[str] = DEFAULT_COLLAPSED,
-                 snapshot: OrderSnapshot | None = None) -> CableLayout:
-    """Раскладка обеих колонок и кабелей. snapshot — порядок прошлой раскладки (layout.order) или None
-    (пересортировать). Новый порядок — в результате (CableLayout.order)."""
+                 snapshot: OrderSnapshot | None = None, show_all: Iterable[str] = (),
+                 expanded: Iterable[str] = ()) -> CableLayout:
+    """Раскладки пула и сцены. snapshot — порядок прошлой раскладки (layout.order) или None (пересортировать).
+    collapsed — свёрнутые блоки и группы пула; show_all — группы цели в режиме «все»; expanded — раскрытые
+    алиасы («<место>|<имя>»). Новый порядок — в результате (CableLayout.order)."""
     if p is None:
-        return CableLayout([], [], [], [], [], 0, 0, OrderSnapshot())
-    collapsed = set(collapsed)
+        return CableLayout(PoolLayout([], [], 0), SceneLayout([], [], [], [], 0), OrderSnapshot())
     order = update_order(p, snapshot)
+    expanded = set(expanded)
+    return CableLayout(_pool_layout(p, order, set(collapsed), expanded),
+                       _scene_layout(p, order, set(show_all), expanded), order)
+
+
+def _source_row(p: RemapProfile, notes: list[int], y: int, block: str | None, slot: str | None,
+                **extra) -> SourceRow:
+    rules = [p.rules.get(n) for n in notes]
+    connected = any(r is not None and r.action == "map" and slot == slot_key(p.target_map, r.dst) for r in rules)
+    state = note_state(rules[0]) if len(set(rules)) == 1 else MIXED
     names = p.source_map.names if p.source_map is not None else {}
-    src_grouped = any(instrument_group(v) for v in names.values())
-    tgt = p.target_map
+    return SourceRow(tuple(notes), names.get(notes[0]), state, connected, block, y, **extra)
 
-    def source_row(n: int, y: int, block: str | None, slot: str | None) -> SourceRow:
-        rule = p.rules.get(n)
-        connected = rule is not None and rule.action == "map" and slot == slot_key(tgt, rule.dst)
-        return SourceRow(n, names.get(n), note_state(rule), connected, block, y)
 
-    s_heads: list[Header] = []
-    s_rows: list[SourceRow] = []
+def _unit_rows(p: RemapProfile, notes: Iterable[int], y: int, block: str | None, slot: str | None,
+               expanded: set[str]) -> list[SourceRow]:
+    """Строки одного места (блок или цель): алиасы — одной строкой (на месте первой ноты), раскрытые или
+    с разными правилами — заголовок и строки по нотам."""
+    names = p.source_map.names if p.source_map is not None else {}
+    by_name: dict[str, list[int]] = {}
+    for n in notes:
+        by_name.setdefault(normalize_name(names[n]) if n in names else f"\0{n}", []).append(n)
+    place = block if block is not None else slot
+    out: list[SourceRow] = []
+    for name, members in by_name.items():
+        if len(members) == 1:
+            out.append(_source_row(p, members, y + len(out), block, slot))
+            continue
+        key = f"{place}|{name}"
+        mixed = len({p.rules.get(n) for n in members}) > 1
+        if not mixed and key not in expanded:
+            out.append(_source_row(p, members, y + len(out), block, slot, alias=key))
+            continue
+        out.append(_source_row(p, members, y + len(out), block, slot, alias=key, expanded=True, mixed=mixed))
+        for n in members:
+            out.append(_source_row(p, [n], y + len(out), block, slot, child=True))
+    return out
+
+
+def _pool_layout(p: RemapProfile, order: OrderSnapshot, collapsed: set[str], expanded: set[str]) -> PoolLayout:
+    names = p.source_map.names if p.source_map is not None else {}
+    grouped = any(instrument_group(v) for v in names.values())
+    heads: list[Header] = []
+    rows: list[SourceRow] = []
     y = 0
     for b in BLOCKS:
         notes = order.blocks.get(b, ())
         if not notes:
             continue
-        s_heads.append(Header(b, BLOCK_LABELS[b], len(notes), b in collapsed, 0, y))
+        heads.append(Header(b, BLOCK_LABELS[b], len(notes), b in collapsed, 0, y, tuple(notes)))
         y += 1
         if b in collapsed:
             continue
         groups: dict[str, tuple[str, list[int]]] = {}
         for n in notes:
-            gkey, glabel = _source_group(names, n) if src_grouped else ("", "")
+            gkey, glabel = _source_group(names, n) if grouped else ("", "")
             groups.setdefault(gkey, (glabel, []))[1].append(n)
         for gkey, (glabel, members) in groups.items():
-            if src_grouped:
+            if grouped:
                 key = f"{b}/{gkey}"
-                s_heads.append(Header(key, glabel, len(members), key in collapsed, 1, y))
+                heads.append(Header(key, glabel, len(members), key in collapsed, 1, y, tuple(members)))
                 y += 1
                 if key in collapsed:
                     continue
-            for n in members:
-                s_rows.append(source_row(n, y, b, None))
-                y += 1
-    if y and order.slots:
-        y += GAP
-    connected_top = y
+            units = _unit_rows(p, members, y, b, None, expanded)
+            rows.extend(units)
+            y += len(units)
+    return PoolLayout(heads, rows, y)
 
+
+def _scene_layout(p: RemapProfile, order: OrderSnapshot, show_all: set[str], expanded: set[str]) -> SceneLayout:
+    s_rows: list[SourceRow] = []
     t_heads: list[Header] = []
     t_rows: list[TargetRow] = []
     cables: list[Cable] = []
+    y = 0
     for gkey, glabel, rows in _target_groups(p, order):
+        visible = rows
         if gkey is not None:
             key = TARGET_PREFIX + gkey
-            if key in collapsed:
-                members = [(n, r.slot) for r in rows for n in order.slots.get(r.slot, ())]
-                head = Header(key, glabel, len(rows), True, 0, y, max(1, len(members)))
-                t_heads.append(head)
-                for i, (n, slot) in enumerate(members):
-                    row = source_row(n, y + i, None, slot)
-                    s_rows.append(row)
-                    if row.connected:
-                        cables.append(Cable(n, p.rules[n].dst, row.y, head))
-                y += head.height
-                continue
-            t_heads.append(Header(key, glabel, len(rows), False, 0, y))
+            occupied = [r for r in rows if order.slots.get(r.slot)]  # и строки без кабеля до пересортировки
+            if key not in show_all:
+                visible = occupied
+            t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), 0, y, shown=len(occupied)))
             y += 1
-        for r in rows:
-            members = order.slots.get(r.slot, ())
-            placed = TargetRow(r.slot, r.label, r.notes, r.write_to, r.in_map, y, max(1, len(members)))
+        for r in visible:
+            units = _unit_rows(p, order.slots.get(r.slot, ()), y, None, r.slot, expanded)
+            placed = TargetRow(r.slot, r.label, r.notes, r.write_to, r.in_map, y, max(1, len(units)))
             t_rows.append(placed)
-            for i, n in enumerate(members):
-                row = source_row(n, y + i, None, r.slot)
+            for row in units:
                 s_rows.append(row)
-                if row.connected:
-                    cables.append(Cable(n, p.rules[n].dst, row.y, placed))
+                if row.connected and not row.expanded:
+                    cables.append(Cable(row.notes, p.rules[row.note].dst, row.y, placed))
             y += placed.height
-    return CableLayout(s_heads, s_rows, t_heads, t_rows, cables, y, connected_top, order)
+    return SceneLayout(s_rows, t_heads, t_rows, cables, y)

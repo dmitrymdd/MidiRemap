@@ -25,12 +25,12 @@ from ..core.notemap import NoteMap, articulations, duplicate_map, instrument_gro
 from ..core.pitch import pitch_name
 from ..core.profile import (
     DIFFERENT_INSTRUMENT, NO_RULE, SAME_INSTRUMENT, KeepWarning, ProfileIssue, RemapProfile, Rule,
-    unassigned_keep_warnings, validate_profile, with_explicit_keeps,
+    unassigned_keep_warnings, validate_profile, with_explicit_keeps, with_write_to,
 )
 from ..core.suggest import Suggestion, apply_suggestions, suggest_rules
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
-from .cable_view import CableView
+from .cable_view import CableEditor
 from .maps_page import (
     HEADER_ROLE, REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, LayoutRow, MapListDelegate, MapRef, group_rows,
     header_data, update_spans, wrapped_tooltip,
@@ -39,7 +39,7 @@ from .theme import TOKENS, repolish
 
 SOURCE, TARGET = "source", "target"
 TABLE_VIEW, CABLES_VIEW = "table", "cables"
-RESORT_TIP = "Re-sort: put connected notes opposite their targets and regroup the rest"
+REFRESH_TIP = "Refresh layout"
 
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3  # имя профиля без пометки «•»
 
@@ -546,12 +546,13 @@ class ProfilesPage(QWidget):
             tools.addWidget(btn)
             setattr(self, f"{view}_view_btn", btn)
         self.table_view_btn.setChecked(True)
-        self.resort_btn = QPushButton("⇅")
-        self.resort_btn.setToolTip(RESORT_TIP)
-        self.resort_btn.clicked.connect(lambda: self.cables.resort())
+        self.refresh_btn = QPushButton("↻")
+        self.refresh_btn.setToolTip(REFRESH_TIP)
+        self.refresh_btn.setObjectName("iconButton")
+        self.refresh_btn.clicked.connect(lambda: self.cables.resort())
         tools.addSpacing(10)
         tools.addWidget(self.summary, stretch=1)
-        tools.addWidget(self.resort_btn)
+        tools.addWidget(self.refresh_btn)
         tools.addWidget(self.assign_btn)
         tools.addWidget(self.accept_btn)
         right.addLayout(tools)
@@ -578,7 +579,11 @@ class ProfilesPage(QWidget):
         header.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_TARGET, QHeaderView.ResizeMode.Stretch)
         self.model.modelReset.connect(lambda: update_spans(self.table, len(COLUMNS)))
-        self.cables = CableView()
+        self.cables = CableEditor()
+        self.cables.connect_requested.connect(self.connect_to)
+        self.cables.disconnect_requested.connect(self.clear_rules)
+        self.cables.strike_requested.connect(self.toggle_strike)
+        self.cables.write_to_requested.connect(self.set_write_to)
         self.views = QStackedWidget()
         self.views.addWidget(self.table)
         self.views.addWidget(self.cables)
@@ -847,11 +852,9 @@ class ProfilesPage(QWidget):
         self.duplicate_btn.setEnabled(has)
         self.rename_btn.setEnabled(has)
         self.delete_btn.setEnabled(has)
-        for btn in (self.source_btn, self.target_btn, self.resort_btn):
+        for btn in (self.source_btn, self.target_btn, self.refresh_btn, self.assign_btn):
             btn.setEnabled(has)
-        cables = self.view == CABLES_VIEW
-        self.assign_btn.setEnabled(has and not cables)  # в виде «кабелями» выделения пока нет (8b2b)
-        self.resort_btn.setVisible(cables)
+        self.refresh_btn.setVisible(self.view == CABLES_VIEW)
         both = has and self.work.source_map is not None and self.work.target_map is not None
         self.accept_btn.setEnabled(both)
         self.accept_btn.setToolTip(ACCEPT_TIP if both else "Needs both a source and a target map")
@@ -944,6 +947,9 @@ class ProfilesPage(QWidget):
     # --- правила ---
 
     def selected_notes(self) -> list[int]:
+        """Выделенные ноты текущего вида (строки таблицы или строки «кабелей»)."""
+        if self.view == CABLES_VIEW:
+            return self.cables.selected_notes()
         rows = {i.row() for i in self.table.selectionModel().selectedRows()}
         return sorted(n for n in map(self.model.note_at, rows) if n is not None)
 
@@ -1042,6 +1048,36 @@ class ProfilesPage(QWidget):
         # без исходной карты строка существует только пока есть правило
         self._changed(relayout=was_deleted or self.work.source_map is None)
         self.set_status(f"Cleared {len(notes)} rule(s).")
+
+    def connect_to(self, notes: list[int], slot: str) -> bool:
+        """Кабель отпустили на строке цели (вид «кабелями»): та же логика, что у выбора цели в таблице.
+        slot — «a:<артикуляция>» (Write to спросят один раз, если нужно) или «n:<номер>» (нота вне целевой карты)."""
+        if self.work is None or not notes:
+            return False
+        if slot.startswith("a:"):
+            return self.assign_articulation(notes, slot[2:])
+        return self.assign_note(notes, int(slot[2:]))
+
+    def toggle_strike(self, notes: list[int]) -> None:
+        """Правый клик в пуле: зачеркнуть (delete); если все ноты уже зачёркнуты — вернуть (без правила)."""
+        if self.work is None or not notes:
+            return
+        if all(self.work.rules.get(n) == Rule.delete() for n in notes):
+            self.clear_rules(notes)
+        else:
+            self.delete_notes(notes)
+
+    def set_write_to(self, note: int) -> bool:
+        """Write to артикуляции цели = note (в копии целевой карты профиля); правила map на эту артикуляцию
+        переводятся на note."""
+        if self.work is None or self.work.target_map is None or note not in self.work.target_map.names:
+            return False
+        new = with_write_to(self.work, note)
+        moved = sum(1 for n, r in new.rules.items() if r != self.work.rules.get(n))
+        self.work.target_map, self.work.rules = new.target_map, new.rules
+        self._changed()
+        self.set_status(f"Write to: {note} ({pitch_name(note)}) · {moved} rule(s) moved.")
+        return True
 
     def accept_suggestions(self) -> tuple[int, int, int] | None:
         """Правила из точных и вероятных подсказок (существующие не меняются).
