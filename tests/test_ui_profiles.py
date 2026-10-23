@@ -1028,7 +1028,7 @@ def test_drop_single_match_becomes_write_to_silently(window, app):
     assert page.work.rules == {other: Rule.map_to(notes[1]), notes[1]: Rule.map_to(notes[1])}
     assert page.work.target_map.primary & set(notes) == {notes[1]} and page.answers["asked"] == []
     item = ed.target_items["a:" + key]
-    assert [(line[1], line[3]) for line in item.lines] == [(str(notes[1]), False)]  # у цели акцента нет
+    assert [line[1] for line in item.lines] == [str(notes[1])]
     assert f"Write to: {notes[1]}" in item.toolTip()  # Write to — в подсказке (и галочкой в меню «+N»)
 
 
@@ -1133,27 +1133,17 @@ def test_undo_redo_stack(window, app, storage):
 
 # --- полировка (8b2d): «+N» у алиасов, список профилей, ширины колонок, полные имена ---
 
-def test_alias_row_badge_and_same_number_highlight(window, app):
+def test_alias_row_badge_and_shown_number(window, app):
     page, ed = cables_page(window)
-    accent = lambda item: item.lines[0][3]
-    # свёрнутая строка алиасов: показан номер n → n, но обычным цветом
+    # свёрнутая строка алиасов: «+N» и номер ноты n → n
     item = next((i for i in ed.scene_rows if len(i.notes) > 1 and not i.model.expanded and i.model.same), None)
     assert item is not None
     row = item.model
     assert item.pill == f"+{len(row.notes) - 1}" and not item.badge  # бейдж источника не кликабелен
-    assert item.number == str(row.shown) and not accent(item)
+    assert item.number == str(row.shown)
     assert all(str(n) in item.toolTip() for n in row.notes)  # номера — в подсказке
-    # одиночная строка n → n — без подсветки
-    single = next(i for i in ed.scene_rows if len(i.notes) == 1 and not i.model.child and i.model.same)
-    assert not accent(single)
-    # раскрытые алиасы: строка ноты n → n — кандидат на акцент, но подсветка выключена (ACCENT_SAME_NUMBER)
-    child = next(i for i in ed.scene_rows if i.model.child and i.model.same)
-    assert child.model.accent and not accent(child)
-    head = next(i for i in ed.scene_rows if i.model.expanded and child.notes[0] in i.notes)
-    assert not accent(head)
-    assert all(not accent(i) for i in ed.scene_rows if i.model.child and not i.model.same)
     pool = next(i for i in ed.pool_rows if len(i.notes) > 1 and not i.model.expanded)
-    assert pool.number == str(min(pool.notes)) and not accent(pool)
+    assert pool.number == str(min(pool.notes))
 
 
 def test_sidebar_collapses_and_persists(app, storage):
@@ -1231,42 +1221,6 @@ def test_truncated_names_in_tooltips(window, app):
     fits = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) <= i.name_room()]
     assert cut and all(i.toolTip().startswith(i.name) for i in cut)
     assert all(not i.toolTip().startswith(i.name) for i in fits if i.toolTip())
-
-
-def accented(item):
-    return [number for _, number, _, accent in item.lines if accent]
-
-
-def test_number_accent_only_on_expanded_alias_note(window, monkeypatch):
-    monkeypatch.setattr(cable_view, "ACCENT_SAME_NUMBER", True)  # подсветка выключена, правило — на случай включения
-    src = NoteMap("S", {35: "Kick", 36: "Kick", 37: "Kick", 38: "Snare", 42: "Hat", 44: "Hat"})
-    tgt = NoteMap("T", {36: "Kick", 38: "Snare", 42: "Hat", 44: "Hat", 46: "Open"}, primary={42})
-    rules = {35: Rule.map_to(36), 36: Rule.map_to(36), 37: Rule.map_to(36), 38: Rule.map_to(38),
-             42: Rule.map_to(42), 44: Rule.map_to(44)}
-    ed = window.profiles_page.cables
-    ed.set_profile(RemapProfile("p", src, tgt, rules))
-    rows = {item.notes: item for item in ed.scene_rows}
-    # свёрнутые алиасы и одиночная строка — без акцента, хотя идут n -> n
-    assert accented(rows[(35, 36, 37)]) == [] and accented(rows[(38,)]) == []
-    # алиасы с разными правилами (42 -> 42, 44 -> 44) раскрыты всегда: акцент у нот, заголовок — без
-    assert accented(rows[(42, 44)]) == [] and accented(rows[(42,)]) == ["42"] and accented(rows[(44,)]) == ["44"]
-    ed.toggle_alias("a:kick|kick", in_pool=False)
-    rows = {item.notes: item for item in ed.scene_rows}
-    assert accented(rows[(35, 36, 37)]) == []
-    assert [accented(rows[(n,)]) for n in (35, 36, 37)] == [[], ["36"], []]
-    # цель: ни с Write to (Hat, 42), ни без него, ни у одиночной — акцента нет
-    assert all(accented(item) == [] for item in ed.target_items.values())
-    assert "Write to" in ed.target_items["a:hat"].toolTip()
-
-
-def test_number_accent_disabled_by_default(window):
-    src = NoteMap("S", {35: "Kick", 36: "Kick"})
-    tgt = NoteMap("T", {36: "Kick"})
-    ed = window.profiles_page.cables
-    ed.set_profile(RemapProfile("p", src, tgt, {35: Rule.map_to(36), 36: Rule.map_to(36)}))
-    ed.toggle_alias("a:kick|kick", in_pool=False)
-    assert any(item.model.accent for item in ed.scene_rows)
-    assert not any(accented(item) for item in ed.scene_rows + list(ed.target_items.values()))
 
 
 def test_primary_cable_thicker_others_thinner(window):

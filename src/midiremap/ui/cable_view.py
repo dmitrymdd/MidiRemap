@@ -63,9 +63,6 @@ CABLE_W = 2.0                      # подсказки (пунктир), пре
 CABLE_PRIMARY_W = CABLE_W          # основной кабель ноты цели (Cable.primary)
 CABLE_THIN_W = CABLE_W / 1.5       # прочие кабели; превью от неназначенных нот
 CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
-# Акцент номера n -> n у ноты под раскрытыми алиасами (SourceRow.accent). Выключен: основную связь показывает
-# толщина кабеля. Код оставлен — включить, поставив True.
-ACCENT_SAME_NUMBER = False
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
 STALE = 0.45        # прозрачность строки без кабеля (до пересортировки)
@@ -212,12 +209,12 @@ class _Row(QGraphicsItem):
     def __init__(self, rect: QRectF, role: str, model: SourceRow | TargetRow, number: str, pitch: str, name: str,
                  *, name_color="text", strike=False, italic=False, marker="", pill="", chevron: str | None = None,
                  badge=False, port: str | None = None, dashed=False, warn=False, tooltip="",
-                 lines: list[tuple[int, str, str, bool]] | None = None) -> None:
+                 lines: list[tuple[int, str, str]] | None = None) -> None:
         super().__init__()
         self.rect, self.role, self.model = rect, role, model
         self.number, self.pitch, self.name = number, pitch, name
-        # номера по строкам блока: (смещение, номер, высота, подсветка); по умолчанию — один, на первой строке
-        self.lines = lines if lines is not None else [(0, number, pitch, False)]
+        # номера по строкам блока: (смещение, номер, высота); по умолчанию — один, на первой строке
+        self.lines = lines if lines is not None else [(0, number, pitch)]
         self.name_color, self.strike, self.italic, self.marker = name_color, strike, italic, marker
         self.pill, self.chevron, self.badge = pill, chevron, badge  # chevron: collapsed / expanded / fixed
         self.port, self.dashed, self.warn = port, dashed, warn
@@ -297,10 +294,10 @@ class _Row(QGraphicsItem):
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         right_mid = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         num_font, pitch_font = _font(base, weight=QFont.Weight.Medium), _font(base, size_delta=-1.5)
-        for off, number, pitch, accent in self.lines:  # у строки цели — номер на уровне своего кабеля
+        for off, number, pitch in self.lines:  # у строки цели — номер на уровне своего кабеля
             top = line.top() + off * ROW
             p.setFont(num_font)
-            p.setPen(_color("accent" if accent else "text"))
+            p.setPen(_color("text"))  # номера акцентом не выделяются
             p.drawText(QRectF(x, top, NUM_W, line.height()), right_mid, number)
             p.setFont(pitch_font)
             p.setPen(_color("text_muted"))
@@ -1273,7 +1270,7 @@ class CableEditor(QWidget):
                     strike=row.state == DELETE, marker="=" if row.state == KEEP else "",
                     pill=f"+{len(row.notes) - 1}" if len(row.notes) > 1 and not row.expanded else "",
                     chevron=chevron, port="right" if cabled else None, dashed=row.suggested,
-                    warn=bool(issues), tooltip=tip, lines=[(0, str(n), pitch_name(n), ACCENT_SAME_NUMBER and row.accent)])
+                    warn=bool(issues), tooltip=tip)
 
     def _target_item(self, r: QRectF, t: TargetRow, connected: bool, dashed: bool = False) -> _Row:
         tgt = self.profile.target_map
@@ -1283,12 +1280,12 @@ class CableEditor(QWidget):
             return _Row(r, TARGET, t, str(t.notes[0]), pitch_name(t.notes[0]), "—", name_color="text_faint",
                         italic=True, port=port, dashed=dashed, tooltip=tip)
         many = len(t.notes) > 1
-        lines = [(off, str(n), pitch_name(n), False) for off, n in t.numbers]  # у цели акцента нет (Write to — в меню «+N»)
+        lines = [(off, str(n), pitch_name(n)) for off, n in t.numbers]
         tip = ""
         if many:
             wt = WRITE_TO_HINT.format(n=t.write_to) if t.write_to is not None else "Write to: not chosen"
             tip = f"On notes {', '.join(map(str, t.notes))}\n{wt}\n{BADGE_HINT}"
-        _, number, pitch, _ = lines[0]
+        _, number, pitch = lines[0]
         return _Row(r, TARGET, t, number, pitch, t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
                     badge=many, port=port, dashed=dashed, tooltip=tip, lines=lines)
 

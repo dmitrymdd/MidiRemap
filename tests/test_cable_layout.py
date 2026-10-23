@@ -454,25 +454,24 @@ def test_alias_row_shows_same_number_or_lowest():
     assert row.suggested and row.notes == (35, 36, 37) and row.shown == 36 and row.same
 
 
-# --- акцент на номере: единственное правило ---
+# --- same: нота идёт на свой же номер (только для выбора shown) ---
 
-def test_accent_only_on_expanded_alias_note_going_to_itself():
+def test_same_marks_rows_going_to_their_own_number():
     src = NoteMap("S", {35: "Kick", 36: "Kick", 37: "Kick", 38: "Snare"})
     tgt = NoteMap("T", {36: "Kick", 38: "Snare"})
     p = profile({35: Rule.map_to(36), 36: Rule.map_to(36), 37: Rule.map_to(36), 38: Rule.map_to(38)},
                 src=src, tgt=tgt)
-    # свёрнутые алиасы («+N»), даже если показан номер n -> n; одиночная строка n -> n — без акцента
     collapsed, single = build_layout(p, no_collapse()).scene.source_rows
-    assert collapsed.notes == (35, 36, 37) and collapsed.same and not collapsed.accent
-    assert single.notes == (38,) and single.same and not single.accent
-    # раскрытые: заголовок — без акцента, акцент — только у ноты 36 (36 -> 36)
+    assert collapsed.notes == (35, 36, 37) and collapsed.same and collapsed.shown == 36
+    assert single.notes == (38,) and single.same
+    # раскрытые: у заголовка same нет, у нот — только 36 (36 -> 36)
     rows = build_layout(p, no_collapse(), expanded={"a:kick|kick"}).scene.source_rows
     head, *children = rows[:4]
-    assert head.expanded and not head.accent
-    assert {c.note: c.accent for c in children} == {35: False, 36: True, 37: False}
-    # в пуле (правил нет) акцента нет нигде, даже раскрытом
+    assert head.expanded and not head.same
+    assert {c.note: c.same for c in children} == {35: False, 36: True, 37: False}
+    # в пуле (правил нет) same нет нигде, даже в раскрытых
     pool = build_layout(profile(src=src, tgt=tgt), no_collapse(), expanded={"unassigned|kick"}).pool.rows
-    assert not any(r.accent for r in pool)
+    assert not any(r.same for r in pool)
 
 
 # --- основной кабель: ровно один на ноту цели (Cable.primary) ---
