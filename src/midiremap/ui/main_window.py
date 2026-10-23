@@ -19,9 +19,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import ConversionReport, RemapProfile, convert, legacy_profile
+from ..core.profile import FORWARD, REVERSE
 from ..storage import Storage
 from .maps_page import MapsPage
 from .profiles_page import ProfilesPage, profile_summary
+from .settings import ui_settings
 from .theme import repolish as _repolish, stylesheet
 
 MIDI_EXTS = {".mid", ".midi"}
@@ -29,6 +31,10 @@ MIDI_EXTS = {".mid", ".midi"}
 PAGE_CONVERT, PAGE_PROFILES, PAGE_MAPS = 0, 1, 2
 
 ACTION_LABELS = {"map": "remapped", "delete": "deleted", "keep": "kept as is"}
+
+DIRECTION_KEY = "convert/direction"  # ui.ini: направление конвертации, общее для всех профилей
+DIRECTION_TIPS = {FORWARD: "Direction: source map → target map. Click to convert in reverse",
+                  REVERSE: "Direction: target map → source map (reverse). Click to convert forward"}
 
 
 def is_midi(path: str | Path | None) -> bool:
@@ -199,6 +205,9 @@ class MainWindow(QMainWindow):
         self.storage = storage if storage is not None else Storage()
         self.source: Path | None = None
         self.output: Path | None = None  # готовый результат последней успешной конвертации
+        self.settings = ui_settings(self.storage)
+        saved = self.settings.value(DIRECTION_KEY)
+        self.direction = saved if saved in (FORWARD, REVERSE) else FORWARD
         self._seed_error = ""
         try:  # первый запуск: схема первой версии — обычный профиль (удалённый не вернётся)
             self.storage.seed_profiles([legacy_profile()])
@@ -279,12 +288,18 @@ class MainWindow(QMainWindow):
         self.profile_combo = QComboBox()
         self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        self.direction_btn = QPushButton()
+        self.direction_btn.setObjectName("direction")
+        self.direction_btn.setFixedWidth(44)
+        self.direction_btn.clicked.connect(self.toggle_direction)
+        self._show_direction()
         self.edit_profile_btn = QPushButton("Edit")
         self.edit_profile_btn.setToolTip("Open this profile in the Profiles tab")
         self.edit_profile_btn.clicked.connect(self.edit_selected_profile)
         prow = QHBoxLayout()
         prow.setContentsMargins(0, 0, 0, 0)
         prow.addWidget(self.profile_combo, stretch=1)
+        prow.addWidget(self.direction_btn)
         prow.addWidget(self.edit_profile_btn)
         self.profile_summary = _label("", "muted")
         chooser_box = QVBoxLayout(chooser)
@@ -406,10 +421,21 @@ class MainWindow(QMainWindow):
             self.profile_summary.setText("")
             return
         try:
-            text = profile_summary(self.storage.load_profile(profile_id))
+            text = profile_summary(self.storage.load_profile(profile_id), self.direction)
         except (OSError, ValueError) as e:
             text = f"Cannot read the profile: {e}"
         self.profile_summary.setText(text)
+
+    def _show_direction(self) -> None:
+        self.direction_btn.setText("←" if self.direction == REVERSE else "→")
+        self.direction_btn.setToolTip(DIRECTION_TIPS[self.direction])
+
+    def toggle_direction(self) -> None:
+        """→ / ←: прямое или обратное направление конвертации (запоминается в ui.ini)."""
+        self.direction = FORWARD if self.direction == REVERSE else REVERSE
+        self.settings.setValue(DIRECTION_KEY, self.direction)
+        self._show_direction()
+        self._on_profile_changed()
 
     def selected_profile(self) -> RemapProfile:
         profile_id = self.profile_combo.currentData()
@@ -524,14 +550,15 @@ class MainWindow(QMainWindow):
         dst = output_path_for(self.source)
         try:
             profile = self.selected_profile()
-            report = convert(self.source, dst, profile)
+            report = convert(self.source, dst, profile, direction=self.direction)
         except Exception as exc:  # показываем любую ошибку ядра/хранилища, окно не падает
             QMessageBox.critical(self, "MidiRemap: error", f"Conversion failed:\n\n{exc}")
             self.set_status("Conversion failed.", "error")
             return
         self.output = dst
         self.out_card.set_file(dst, ready=True)
-        self.report_view.setPlainText(f"Profile: {profile.name}\n\n" + format_report(report))
+        reverse = " (reverse)" if self.direction == REVERSE else ""
+        self.report_view.setPlainText(f"Profile: {profile.name}{reverse}\n\n" + format_report(report))
         self.set_status(f"Converted: {dst.name}", "ok")
 
     def set_status(self, text: str, state: str = "") -> None:

@@ -1247,3 +1247,65 @@ def test_drag_preview_thin_from_unassigned_notes(window):
     ed.begin_drag({36}, QPointF(0, 0))  # подключённая строка — обычный кабель
     assert ed.overlay.width == cable_view.CABLE_W
     ed.cancel_drag()
+
+
+# --- двунаправленные профили (8b3a) ---
+
+def test_reverse_rules_follow_connect_with_undo_redo(window, app):
+    from midiremap.core.profile import derive_reverse
+    page, ed = cables_page(window, accept=False)
+    page.work.reverse_rules = derive_reverse(page.work)  # заданы явно (как после сохранения формата 2)
+    key, notes = three_note_articulation(page.work)
+    n = notes[0]
+    assert n not in page.work.reverse_rules
+    assert page.connect_to([n], "a:" + key)
+    assert page.work.reverse_rules[n] == Rule.map_to(n)
+    assert all(page.work.reverse_rules[m] == Rule.map_to(n) for m in notes)  # алиасы цели — туда же
+    assert page.undo()
+    assert not set(notes) & set(page.work.reverse_rules)
+    assert page.redo()
+    assert page.work.reverse_rules[n] == Rule.map_to(n)
+
+
+def test_map_change_resets_reverse_rules_in_one_undo_step(window, app):
+    page, ed = cables_page(window)
+    manual = {36: Rule.delete(), 38: Rule.map_to(40)}
+    page.work.reverse_rules = dict(manual)
+    assert page.choose_map("target", EZD3)
+    assert page.work.reverse_rules is None  # снова выводятся из прямых
+    assert page.undo()
+    assert page.work.reverse_rules == manual and page.work.target_map.name == "Superior Drummer 3"
+    assert page.redo() and page.work.reverse_rules is None
+
+
+def test_convert_direction_toggle(app, storage, tmp_path):
+    from midiremap.core.profile import REVERSE
+    from midiremap.ui.main_window import DIRECTION_KEY
+    w = MainWindow(storage)
+    page = w.profiles_page
+    stub_dialogs(page)
+    pid = new_profile(page, "Kit")
+    page.apply_suggestions()
+    assert page.save()
+    saved = storage.load_profile(pid)
+    w.show_page(PAGE_CONVERT)
+    w.profile_combo.setCurrentIndex(w.profile_combo.findData(pid))
+    assert w.direction_btn.text() == "→" and "Click to convert in reverse" in w.direction_btn.toolTip()
+    assert w.profile_summary.text() == f"EZdrummer 3 → Superior Drummer 3 · {len(saved.rules)} rules"
+    w.direction_btn.click()
+    assert w.direction == REVERSE and w.direction_btn.text() == "←"
+    n = len(saved.effective_reverse())
+    assert w.profile_summary.text() == f"Superior Drummer 3 → EZdrummer 3 · {n} rules"
+    assert w.settings.value(DIRECTION_KEY) == REVERSE
+    src = tmp_path / "groove.mid"
+    shutil.copy(SAMPLE, src)
+    w.load(src)
+    w.convert()
+    assert w.status.text() == "Converted: groove_remapped.mid"
+    assert w.report_view.toPlainText().startswith("Profile: Kit (reverse)")
+    w.close()
+    w2 = MainWindow(storage)  # направление — между запусками
+    assert w2.direction == REVERSE and w2.direction_btn.text() == "←"
+    w2.direction_btn.click()
+    w2.close()
+    assert MainWindow(storage).direction_btn.text() == "→"

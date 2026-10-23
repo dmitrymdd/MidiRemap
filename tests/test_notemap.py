@@ -93,7 +93,7 @@ def test_profile_embedded_map_keeps_primary_and_meta():
     target.meta = MapMeta(source='SD3 window', status='verified', notes='n')
     p = RemapProfile('p', target_map=target, rules={36: Rule.map_to(36)})
     data = json.loads(p.to_json())
-    assert data['format'] == 1 and data['target_map']['primary'] == [51]
+    assert data['format'] == 2 and data['target_map']['primary'] == [51]
     assert data['target_map']['meta'] == {'source': 'SD3 window', 'status': 'verified', 'notes': 'n'}
     back = RemapProfile.from_json(p.to_json())
     assert back == p and back.target_map.meta.status == 'verified'

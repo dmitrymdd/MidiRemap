@@ -45,7 +45,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
 from ..core.notemap import NoteMap, articulations, instrument_group, normalize_name, primary_note
-from ..core.profile import RemapProfile, Rule
+from ..core.profile import RemapProfile, Rule, primary_pairs
 from ..core.suggest import plan_suggestions
 
 UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
@@ -458,18 +458,13 @@ def _pool_layout(ctx: _Ctx, order: OrderSnapshot, collapsed: set[str], expanded:
     return PoolLayout(heads, rows, y)
 
 
-def _mark_primary(cables: list[Cable]) -> list[Cable]:
-    """Основной кабель — РОВНО ОДИН на каждую ноту цели, на которую идут кабели (для обратного направления
-    8b3 нужна однозначность): нота источника, идущая на свой же номер (n -> n), иначе наименьшая из идущих на эту
-    ноту — независимо от того, алиасы это или разные артикуляции источника («многие в одну»). Строка алиасов
-    (свёрнутая, «+N») основная, если среди её нот есть основная. Подсказки (пунктир) основными не бывают.
-    Только показ: правила и JSON не меняются."""
-    by_dst: dict[int, list[int]] = {}
-    for c in cables:
-        if not c.suggested and c.dst is not None:
-            by_dst.setdefault(c.dst, []).extend(c.notes)
-    main = {(d if d in notes else min(notes), d) for d, notes in by_dst.items()}
-    return [replace(c, primary=True) if any((n, c.dst) in main for n in c.notes) else c for c in cables]
+def _mark_primary(cables: list[Cable], pairs: set[tuple[int, int]]) -> list[Cable]:
+    """Основной кабель — тот, чья пара (исходная нота, нота цели) есть в primary_pairs() профиля: обратное
+    правило ноты цели ведёт назад на эту исходную ноту (8b3a). Пока обратные правила выводятся из прямых — ровно
+    один на ноту цели: n -> n, иначе наименьшая из идущих на неё. Строка алиасов (свёрнутая, «+N») основная, если
+    среди её нот есть основная. Подсказки (пунктир) основными не бывают."""
+    return [replace(c, primary=True) if not c.suggested and any((n, c.dst) in pairs for n in c.notes) else c
+            for c in cables]
 
 
 def _scene_layout(ctx: _Ctx, order: OrderSnapshot, show_all: set[str], expanded: set[str]) -> SceneLayout:
@@ -478,6 +473,7 @@ def _scene_layout(ctx: _Ctx, order: OrderSnapshot, show_all: set[str], expanded:
     t_heads: list[Header] = []
     t_rows: list[TargetRow] = []
     cables: list[Cable] = []
+    pairs = primary_pairs(p)
     y = 0
     for gkey, glabel, rows in _target_groups(p, order):
         visible = rows
@@ -506,6 +502,6 @@ def _scene_layout(ctx: _Ctx, order: OrderSnapshot, show_all: set[str], expanded:
             for row in cabled:
                 dst = ctx.dst(row.shown)
                 slot_cables.append(Cable(row.notes, dst, row.y, placed, y + first.get(dst, 0), row.suggested))
-            cables.extend(_mark_primary(slot_cables))
+            cables.extend(_mark_primary(slot_cables, pairs))
             y += placed.height
     return SceneLayout(s_rows, t_heads, t_rows, cables, y)

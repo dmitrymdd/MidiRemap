@@ -10,7 +10,7 @@ from typing import Literal
 import mido
 
 from .notemap import normalize_name
-from .profile import Action, RemapProfile, Rule, check_note
+from .profile import FORWARD, Action, RemapProfile, Rule, check_note
 
 NOTE_TYPES = ('note_on', 'note_off')
 DEFAULT_RULE = Rule.keep()
@@ -81,7 +81,9 @@ def _scan(midi: mido.MidiFile) -> Analysis:
     return Analysis(dict(sorted(counts.items())), sorted(tracks), sorted(channels), [])
 
 
-def analyze(src_path: str | Path, profile: RemapProfile) -> Analysis:
+def analyze(src_path: str | Path, profile: RemapProfile, direction: str = FORWARD) -> Analysis:
+    """direction — FORWARD или REVERSE (профиль в обратную сторону, RemapProfile.reversed())."""
+    profile = profile.oriented(direction)
     a = _scan(mido.MidiFile(str(src_path)))
     a.unresolved = [n for n in a.note_counts if n not in profile.rules]
     return a
@@ -199,12 +201,15 @@ def _warnings(profile: RemapProfile, scan: Analysis, notes: dict[int, NoteResult
 
 def convert(src: str | Path, dst: str | Path, profile: RemapProfile,
             overrides: Mapping[int, Rule] | None = None,
-            merge_window_ticks: int = 0) -> ConversionReport:
+            merge_window_ticks: int = 0, direction: str = FORWARD) -> ConversionReport:
     """Конвертирует MIDI по профилю. Ремапятся все каналы и дорожки.
 
     overrides — решения пользователя для этой конвертации; в профиль ядро их не записывает.
     merge_window_ticks — допуск слияния многие-в-одну; пока поддерживается только 0 (точный тик).
+    direction — FORWARD (исходная карта -> целевая) или REVERSE (обратные правила, карты меняются местами;
+    overrides — по нотам файла, как и в прямом).
     """
+    profile = profile.oriented(direction)
     if merge_window_ticks < 0:
         raise ValueError("merge_window_ticks cannot be negative")
     if merge_window_ticks > 0:

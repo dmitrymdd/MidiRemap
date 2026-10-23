@@ -39,7 +39,7 @@ def test_round_trip_without_maps():
     p = RemapProfile('Без карт', rules={60: Rule.delete(), 36: Rule.map_to(35), 38: Rule.keep()})
     text = p.to_json()
     data = json.loads(text)
-    assert data['format'] == 1 and data['source_map'] is None and data['target_map'] is None
+    assert data['format'] == 2 and data['source_map'] is None and data['target_map'] is None
     assert data['rules'] == [{'src': 36, 'action': 'map', 'dst': 35},
                              {'src': 38, 'action': 'keep'},
                              {'src': 60, 'action': 'delete'}]
@@ -78,7 +78,7 @@ def test_legacy_profile_round_trip():
     assert RemapProfile.from_json(p.to_json()) == p
 
 
-@pytest.mark.parametrize('version', [2, 0, '1', None, True])
+@pytest.mark.parametrize('version', [3, 0, '1', '2', None, True])
 def test_unknown_format_version(version):
     with pytest.raises(ProfileFormatError, match='version'):
         RemapProfile.from_json(json.dumps({'format': version, 'name': 'x', 'rules': []}))

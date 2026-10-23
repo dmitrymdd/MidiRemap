@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
-    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, with_write_to,
+    FORWARD, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, sync_reverse, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
@@ -63,7 +63,8 @@ DISMISS_TIP = "Hide the suggestions for these maps"
 
 
 def _undoable(fn):
-    """Действие страницы над рабочей копией — один шаг отмены (если профиль изменился)."""
+    """Действие страницы над рабочей копией — один шаг отмены (если профиль изменился).
+    Заданные обратные правила следуют за правкой прямых (sync_reverse) в том же шаге."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         if self.work is None or self._in_edit:
@@ -74,6 +75,8 @@ def _undoable(fn):
             return fn(self, *args, **kwargs)
         finally:
             self._in_edit = False
+            if self.work is not None:
+                self.work.reverse_rules = sync_reverse(before[0], self.work)
             self._record(before)
     return wrapper
 
@@ -82,8 +85,10 @@ def map_summary(m: NoteMap | None) -> str:
     return m.name if m is not None else "no map"
 
 
-def profile_summary(p: RemapProfile) -> str:
-    """«<исходная карта> → <целевая карта> · N rules» (или «no maps» без обеих карт)."""
+def profile_summary(p: RemapProfile, direction: str = FORWARD) -> str:
+    """«<исходная карта> → <целевая карта> · N rules» (или «no maps» без обеих карт) в направлении direction:
+    для REVERSE — карты наоборот и число обратных правил."""
+    p = p.oriented(direction)
     n = len(p.rules)
     rules = f"{n} rule" + ("" if n == 1 else "s")
     if p.source_map is None and p.target_map is None:
@@ -543,6 +548,7 @@ class ProfilesPage(QWidget):
         maps_changed = (w.source_map, w.target_map) != (profile.source_map, profile.target_map)
         w.name, w.source_map, w.target_map, w.rules = profile.name, profile.source_map, profile.target_map, \
             profile.rules
+        w.reverse_rules = profile.reverse_rules
         self._changed()
         if maps_changed:
             self.cables.resort()
@@ -738,6 +744,7 @@ class ProfilesPage(QWidget):
             self.work.source_map = m
         else:
             self.work.target_map = m
+        self.work.reverse_rules = None  # обратные правила по нотам прежней карты не переживают смену — снова выводятся
         self._compute_suggestions()
         self._sync_suggestions()
         self.cables.resort()  # смена карты — пересортировка
