@@ -1,9 +1,12 @@
 """Вид профиля «кабелями» (этап 8b2): показ и правка перетаскиванием кабелей.
 
-Три колонки: пул (Unassigned / Delete) — отдельная QGraphicsView со своей прокруткой; подключённые ноты
-и цель — вторая QGraphicsView (колонки 2 и 3 в одной сцене — одна общая прокрутка, кабели между ними внутри
-сцены). Между ними QSplitter. Поверх обоих — прозрачный для мыши слой CableOverlay: на нём рисуется кабель-превью
-от исходных строк к курсору через границу пула и сцены.
+Колонки (QSplitter, 8b3b1 — симметрично): левый пул (Unassigned / Delete) — отдельная QGraphicsView со своей
+прокруткой; подключённые ноты и цель — вторая QGraphicsView (колонки 2 и 3 в одной сцене — одна общая прокрутка,
+кабели между ними внутри сцены); правый пул — третья QGraphicsView, зеркало левого (для обратного направления 8b3b2;
+пока всегда пустой, пояснение — только в подсказке, drop не принимает). Над каждой колонкой — строка-заголовок
+(left_head / mid_head / right_head), её заполняет страница: карта источника, статус и подсказки, карта цели.
+Поверх всего — прозрачный для мыши слой CableOverlay: на нём рисуется кабель-превью от исходных строк к курсору
+через границу пула и сцены.
 
 Порядок, группы, алиасы, высоты строк и кабели считает cable_layout (без Qt); здесь — рисование, выделение,
 перетаскивание, правый клик и подсказки. Профиль — рабочая копия страницы Profiles: виджет его НЕ меняет, а
@@ -37,8 +40,8 @@ from dataclasses import dataclass
 from PySide6.QtCore import QPoint, QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import (
-    QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QMenu, QSplitter, QVBoxLayout,
-    QWidget,
+    QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QMenu, QSplitter,
+    QVBoxLayout, QWidget,
 )
 
 from ..core.notemap import primary_note
@@ -72,6 +75,10 @@ MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колон
 GRIP = 6            # ширина зоны захвата границы колонок, px
 SUGGESTED = 0.7     # непрозрачность пунктирного кабеля подсказки
 POOL_KEY, COLUMNS_KEY = "cables/pool_width", "cables/columns"  # ключи QSettings
+POOL_RIGHT_KEY = "cables/pool_right_width"
+POOL_MIN = 200      # минимальная ширина пула (левого и правого)
+HEAD_H = 34         # высота строки-заголовка над колонками
+RIGHT_POOL_TIP = "Reverse direction: target notes without a rule will appear here"
 
 FRAME_MS = 16                   # кадр кабеля-превью и автопрокрутки
 STIFFNESS, DAMPING = 0.3, 0.6   # пружина конца кабеля-превью (лёгкое запаздывание, без раскачки)
@@ -601,8 +608,24 @@ class _Drag:
         self.pos = self.pos + self.vel
 
 
+def _column(view: QGraphicsView) -> tuple[QWidget, QHBoxLayout]:
+    """Колонка сплиттера: строка-заголовок (её заполняет страница) и view под ней."""
+    col = QWidget()
+    box = QVBoxLayout(col)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(6)
+    head_widget = QWidget()
+    head_widget.setFixedHeight(HEAD_H)
+    head = QHBoxLayout(head_widget)
+    head.setContentsMargins(0, 0, 0, 0)
+    head.setSpacing(6)
+    box.addWidget(head_widget)
+    box.addWidget(view, stretch=1)
+    return col, head
+
+
 class CableEditor(QWidget):
-    """Пул | подключённые и цель (QSplitter) + слой для кабелей-превью поверх обоих."""
+    """Левый пул | подключённые и цель | правый пул (QSplitter) + слой для кабелей-превью поверх всего."""
 
     connect_requested = Signal(list, str)   # ноты, строка цели (slot): map — решает страница (Write to и т.п.)
     group_drop_requested = Signal(list, list)  # ноты, ноты группы цели: n → n для совпавших номеров
@@ -616,16 +639,28 @@ class CableEditor(QWidget):
         self.pool = _ColumnView(self._draw_pool)
         self.view = _ColumnView(self._draw_scene)
         self.pool.handler = self.view.handler = self
+        # правый пул (8b3b1): пока всегда пустой, без обработчика мыши — drop сюда не идёт (цель drop — только сцена)
+        self.pool_right = _ColumnView(lambda: None)
+        self.pool_right.setObjectName("cablesPlaceholder")
+        self.pool_right.setToolTip(RIGHT_POOL_TIP)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(8)
-        self.splitter.addWidget(self.pool)
-        self.splitter.addWidget(self.view)
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([_setting(settings, POOL_KEY, POOL_WIDTH, int), 800])
+        heads = []
+        for view in (self.pool, self.view, self.pool_right):
+            col, head = _column(view)
+            self.splitter.addWidget(col)
+            heads.append(head)
+        self.left_head, self.mid_head, self.right_head = heads
+        for i, stretch in enumerate((0, 1, 0)):
+            self.splitter.setStretchFactor(i, stretch)
+        # ширины пулов в px; точно — при первом показе (до него QSplitter масштабирует их пропорционально)
+        self._pool_widths: tuple[int, int] | None = (_setting(settings, POOL_KEY, POOL_WIDTH, int),
+                                                     _setting(settings, POOL_RIGHT_KEY, POOL_WIDTH, int))
+        self.splitter.setSizes([self._pool_widths[0], 800, self._pool_widths[1]])
         self.splitter.splitterMoved.connect(self._save_pool_width)
-        self.pool.setMinimumWidth(200)
+        self.pool.setMinimumWidth(POOL_MIN)
+        self.pool_right.setMinimumWidth(POOL_MIN)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self.splitter)
@@ -669,6 +704,20 @@ class CableEditor(QWidget):
         super().resizeEvent(event)
         self.overlay.setGeometry(self.rect())
         self.overlay.raise_()
+        self._apply_pool_widths()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_pool_widths()
+
+    def _apply_pool_widths(self) -> None:
+        """Сохранённые ширины пулов — один раз, когда вид впервые показан с настоящей шириной."""
+        if self._pool_widths is None or not self.isVisible():
+            return
+        left, right = self._pool_widths
+        self._pool_widths = None
+        total = sum(self.splitter.sizes())
+        self.splitter.setSizes([left, max(SCENE_MIN, total - left - right), right])
 
     # --- управление ---
 
@@ -1082,7 +1131,7 @@ class CableEditor(QWidget):
         self.pool_items, self.pool_rows, self.pool_headers = {}, [], {}
         if lay is None:
             return
-        width = self.pool.begin(lay.pool.height, 200)
+        width = self.pool.begin(lay.pool.height, POOL_MIN)
         col = width - 2 * PAD
         scene = self.pool.scene()
         for h in lay.pool.headers:
@@ -1164,7 +1213,9 @@ class CableEditor(QWidget):
 
     def _save_pool_width(self, *_) -> None:
         if self.settings is not None:
-            self.settings.setValue(POOL_KEY, self.splitter.sizes()[0])
+            sizes = self.splitter.sizes()
+            self.settings.setValue(POOL_KEY, sizes[0])
+            self.settings.setValue(POOL_RIGHT_KEY, sizes[2])
 
     def _scene_columns(self, width: float) -> tuple[float, float, float, float]:
         """x колонки 2, x колонки 3, ширины колонок 2 и 3."""

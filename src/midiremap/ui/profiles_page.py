@@ -1,5 +1,7 @@
-"""Менеджер и редактор профилей ремапа (PySide6): список профилей слева (сворачивается в узкую полосу), справа —
-карты профиля и вид «кабелями» (cable_view.py).
+"""Менеджер и редактор профилей ремапа (PySide6). Раскладка (8b3b1): одна строка заголовка —
+[профиль ▾] [⋯] [место под переключатель направления] статус … [↻] [Revert] [Save]; под ней вид «кабелями»
+(cable_view.py): над левым пулом — карта источника, над сценой — счётчик правил и панель подсказок, над правым
+пулом — карта цели. Всё остальное по высоте — сцене.
 
 Логики профилей здесь нет — только вызовы midiremap.core (suggestion_targets, plan_suggestions, apply_suggested,
 assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и midiremap.storage. Диалоги вынесены
@@ -20,12 +22,12 @@ from __future__ import annotations
 import copy
 import functools
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
+    QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..core.notemap import NoteMap, duplicate_map
@@ -37,24 +39,24 @@ from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
 from .cable_view import CableEditor
-from .maps_page import (
-    HEADER_ROLE, REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, MapListDelegate, MapRef, wrapped_tooltip,
-)
-from .settings import setting_bool, ui_settings
+from .maps_page import TEMPLATE, USER, MapRef, wrapped_tooltip
+from .settings import ui_settings
 from .theme import TOKENS, repolish
 
 SOURCE, TARGET = "source", "target"
 REFRESH_TIP = "Refresh layout"
 
-NAME_ROLE = Qt.ItemDataRole.UserRole + 3  # имя профиля без пометки «•»
+ID_ROLE = Qt.ItemDataRole.UserRole           # ID профиля в хранилище (None — профиль не читается)
+NAME_ROLE = Qt.ItemDataRole.UserRole + 3     # имя профиля без пометки «•»
+SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 4  # «карты · N rules» сохранённого состояния (подсказка пункта)
 
 UNDO_LIMIT = 200
 UNDO_KEYS, REDO_KEYS = ("Ctrl+Z",), ("Ctrl+Y", "Ctrl+Shift+Z")
 UNDO_TIP = "Undo (Ctrl+Z) · Redo (Ctrl+Y)"
 
-SIDEBAR_WIDTH, STRIP_WIDTH = 290, 34
-SIDEBAR_KEY = "profiles/sidebar_collapsed"
-COLLAPSE_TIP, EXPAND_TIP = "Hide the profile list", "Show the profile list"
+MORE_TIP = "New, rename, duplicate or delete a profile"
+SOURCE_TIP = "Source map: the layout the MIDI file was made for (e.g. Guitar Pro 8 export)\nClick to choose a map"
+TARGET_TIP = "Target map: the layout of the plugin the converted file is for\nClick to choose a map"
 
 SUGGEST_TIP = ("Notes whose names match the target map, shown as dashed cables.\n"
                "Apply connects them: a note whose number is in the target stays on it, "
@@ -99,6 +101,28 @@ def profile_summary(p: RemapProfile, direction: str = FORWARD) -> str:
 def _pair_key(p: RemapProfile) -> tuple:
     """Пара карт профиля (для «скрыть подсказки для этих карт»)."""
     return tuple((m.name, tuple(sorted(m.names.items()))) for m in (p.source_map, p.target_map))
+
+
+class DotsButton(QPushButton):
+    """Кнопка «⋯» (меню действий с профилем): три точки рисуются сами — глиф шрифта на 100 % слишком мелкий.
+    Цвет — как у текста кнопок-иконок (↻): приглушённый, при наведении — обычный."""
+    DOT_R, DOT_GAP = 1.8, 6.0  # радиус точки и шаг между центрами, px
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("", parent)
+        self.setObjectName("iconButton")
+        self.setMinimumWidth(40)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        token = "text_faint" if not self.isEnabled() else "text" if self.underMouse() or self.isDown() else "text_muted"
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(TOKENS[token]))
+        c = QRectF(self.rect()).center()
+        for k in (-1, 0, 1):
+            p.drawEllipse(QPointF(c.x() + k * self.DOT_GAP, c.y()), self.DOT_R, self.DOT_R)
 
 
 class UnassignedDialog(QDialog):
@@ -170,7 +194,7 @@ class UnassignedDialog(QDialog):
 # --- страница ---
 
 class ProfilesPage(QWidget):
-    """Список профилей (слева) и редактор выбранного профиля (справа)."""
+    """Строка заголовка (выбор профиля, действия, Save) и редактор выбранного профиля под ней."""
 
     dirty_changed = Signal(bool)
     profiles_changed = Signal()  # профиль сохранён, создан, переименован или удалён
@@ -190,104 +214,83 @@ class ProfilesPage(QWidget):
         self._suggest: dict[int, str] = {}  # подсказки: нота без правила -> артикуляция цели
         self._dismissed: set[tuple] = set()  # пары карт, для которых подсказки скрыты (до открытия профиля)
         self._build_ui()
-        self.set_sidebar_collapsed(setting_bool(self.settings, SIDEBAR_KEY))
         self.reload_list()
         self._update_state()
 
     # --- построение UI ---
 
     def _build_ui(self) -> None:
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 10, 0, 0)
-        root.setSpacing(16)
+        root.setSpacing(8)
 
-        self.sidebar = QWidget()
-        side = QVBoxLayout(self.sidebar)
-        side.setContentsMargins(0, 0, 0, 0)
-        side.setSpacing(8)
-        self.sidebar_btn = QPushButton()
-        self.sidebar_btn.setObjectName("iconButton")
-        self.sidebar_btn.clicked.connect(lambda: self.set_sidebar_collapsed(not self.sidebar_collapsed))
-        self.sidebar_caption = QLabel("PROFILES")
-        self.sidebar_caption.setObjectName("section")
-        side_head = QHBoxLayout()
-        side_head.setSpacing(4)
-        side_head.addWidget(self.sidebar_caption, stretch=1)
-        side_head.addWidget(self.sidebar_btn)
-        side.addLayout(side_head)
-        self.sidebar_body = QWidget()
-        left = QVBoxLayout(self.sidebar_body)
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(8)
-        self.list = QListWidget()
-        self.list.setItemDelegate(MapListDelegate(self.list))
-        self.list.setMouseTracking(True)
-        self.list.currentItemChanged.connect(self._on_current_changed)
-        left.addWidget(self.list, stretch=1)
-        self.new_btn = QPushButton("New")
-        self.duplicate_btn = QPushButton("Duplicate")
-        self.rename_btn = QPushButton("Rename")
-        self.delete_btn = QPushButton("Delete")
-        self.new_btn.clicked.connect(self.new_profile)
-        self.duplicate_btn.clicked.connect(self.duplicate)
-        self.rename_btn.clicked.connect(self.rename)
-        self.delete_btn.clicked.connect(self.delete)
-        grid = QGridLayout()
-        grid.setSpacing(6)
-        for i, b in enumerate((self.new_btn, self.duplicate_btn, self.rename_btn, self.delete_btn)):
-            grid.addWidget(b, i // 2, i % 2)
-        left.addLayout(grid)
-        side.addWidget(self.sidebar_body, stretch=1)
-        side.addStretch(0)  # свёрнуто — кнопка остаётся вверху
-        root.addWidget(self.sidebar)
-
-        right = QVBoxLayout()
-        right.setSpacing(6)
-        self.title = QLabel("No profile selected")
-        self.title.setObjectName("mapTitle")
-        self.dirty_label = QLabel("● Unsaved changes")
-        self.dirty_label.setObjectName("dirty")
-        head = QHBoxLayout()
-        head.addWidget(self.title, stretch=1)
-        head.addWidget(self.dirty_label)
-        right.addLayout(head)
-
-        self.source_btn = QPushButton()
-        self.target_btn = QPushButton()
-        maps_row = QHBoxLayout()
-        for side_name, btn, caption in ((SOURCE, self.source_btn, "SOURCE MAP"),
-                                        (TARGET, self.target_btn, "TARGET MAP")):
-            menu = QMenu(btn)
-            menu.aboutToShow.connect(lambda m=menu, s=side_name: self._fill_map_menu(m, s))
-            btn.setMenu(menu)
-            col = QVBoxLayout()
-            col.setSpacing(2)
-            label = QLabel(caption)
-            label.setObjectName("section")
-            col.addWidget(label)
-            col.addWidget(btn)
-            maps_row.addLayout(col, stretch=1)
-            if side_name == SOURCE:
-                arrow = QLabel("→")
-                arrow.setObjectName("icon")
-                maps_row.addWidget(arrow, alignment=Qt.AlignmentFlag.AlignBottom)
-        self.source_btn.setToolTip("The layout the MIDI file was made for (e.g. Guitar Pro 8 export)")
-        self.target_btn.setToolTip("The layout of the plugin the converted file is for")
-        right.addLayout(maps_row)
-
-        self.summary = QLabel()
-        self.summary.setObjectName("muted")
+        # строка заголовка: [профиль ▾] [⋯] [направление — 8b3b2] статус … [↻] [Revert] [Save]
+        self.combo = QComboBox()
+        self.combo.setMinimumWidth(240)
+        self.combo.setMaximumWidth(420)
+        self.combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.combo.currentIndexChanged.connect(self._on_combo_changed)
+        self.more_btn = DotsButton()
+        self.more_btn.setToolTip(MORE_TIP)
+        more = QMenu(self.more_btn)
+        self.new_action = more.addAction("New", self.new_profile)
+        self.rename_action = more.addAction("Rename", self.rename)
+        self.duplicate_action = more.addAction("Duplicate", self.duplicate)
+        more.addSeparator()
+        self.delete_action = more.addAction("Delete", self.delete)
+        self.more_btn.setMenu(more)
+        self.direction_slot = QHBoxLayout()  # 8b3b2: переключатель направления (пока пусто)
+        self.direction_slot.setContentsMargins(0, 0, 0, 0)
+        self.status = QLabel()
+        self.status.setObjectName("status")
+        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # длинный — обрезается
         self.refresh_btn = QPushButton("↻")
         self.refresh_btn.setToolTip(REFRESH_TIP)
         self.refresh_btn.setObjectName("iconButton")
         self.refresh_btn.clicked.connect(lambda: self.cables.resort())
-        tools = QHBoxLayout()
-        tools.setSpacing(6)
-        tools.addWidget(self.summary, stretch=1)
-        tools.addWidget(self.refresh_btn)
-        right.addLayout(tools)
+        self.revert_btn = QPushButton("Revert")
+        self.revert_btn.setToolTip(f"Discard unsaved changes\n{UNDO_TIP}")
+        self.revert_btn.clicked.connect(self.revert)
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setObjectName("primary")
+        self.save_btn.clicked.connect(self.save)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(self.combo, stretch=1)
+        head.addWidget(self.more_btn)
+        head.addLayout(self.direction_slot)
+        head.addSpacing(10)
+        head.addWidget(self.status, stretch=2)
+        head.addWidget(self.refresh_btn)
+        head.addWidget(self.revert_btn)
+        head.addWidget(self.save_btn)
+        root.addLayout(head)
+        self.header_controls = (self.combo, self.more_btn, self.refresh_btn, self.revert_btn, self.save_btn)
 
-        # панель подсказок: «N matches · Apply · ✕» (не диалог, ничего не блокирует)
+        self.cables = CableEditor(self.settings)
+        self.cables.connect_requested.connect(self.connect_to)
+        self.cables.group_drop_requested.connect(self.group_drop)
+        self.cables.disconnect_requested.connect(self.clear_rules)
+        self.cables.strike_requested.connect(self.toggle_strike)
+        self.cables.write_to_requested.connect(self.set_write_to)
+        root.addWidget(self.cables, stretch=1)
+
+        # над внешними колонками — карты: источник над левым пулом, цель над правым
+        self.source_btn = QPushButton()
+        self.target_btn = QPushButton()
+        for side_name, btn, tip, head_box in ((SOURCE, self.source_btn, SOURCE_TIP, self.cables.left_head),
+                                              (TARGET, self.target_btn, TARGET_TIP, self.cables.right_head)):
+            menu = QMenu(btn)
+            menu.aboutToShow.connect(lambda m=menu, s=side_name: self._fill_map_menu(m, s))
+            btn.setMenu(menu)
+            btn.setToolTip(tip)
+            btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            head_box.addWidget(btn)
+
+        # над сценой — счётчик правил и панель подсказок «N matches · Apply · ✕» (не диалог, ничего не блокирует)
+        self.summary = QLabel()
+        self.summary.setObjectName("muted")
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.suggest_bar = QFrame()
         self.suggest_bar.setObjectName("suggestBar")
         self.suggest_label = QLabel()
@@ -299,60 +302,39 @@ class ProfilesPage(QWidget):
         self.dismiss_btn.setToolTip(DISMISS_TIP)
         self.dismiss_btn.clicked.connect(self.dismiss_suggestions)
         bar = QHBoxLayout(self.suggest_bar)
-        bar.setContentsMargins(10, 2, 4, 2)
+        bar.setContentsMargins(10, 0, 4, 0)
         bar.setSpacing(4)
         dot = QLabel("·")
         dot.setObjectName("muted")
         bar.addWidget(self.suggest_label)
         bar.addWidget(dot)
         bar.addWidget(self.apply_btn)
-        bar.addStretch(1)
         bar.addWidget(self.dismiss_btn)
-        right.addWidget(self.suggest_bar)
-
-        self.cables = CableEditor(self.settings)
-        self.cables.connect_requested.connect(self.connect_to)
-        self.cables.group_drop_requested.connect(self.group_drop)
-        self.cables.disconnect_requested.connect(self.clear_rules)
-        self.cables.strike_requested.connect(self.toggle_strike)
-        self.cables.write_to_requested.connect(self.set_write_to)
-        right.addWidget(self.cables, stretch=1)
-
-        self.revert_btn = QPushButton("Revert")
-        self.revert_btn.setToolTip(f"Discard unsaved changes\n{UNDO_TIP}")
-        self.revert_btn.clicked.connect(self.revert)
-        self.save_btn = QPushButton("Save")
-        self.save_btn.setObjectName("primary")
-        self.save_btn.clicked.connect(self.save)
-        self.status = QLabel()
-        self.status.setObjectName("status")
-        self.status.setWordWrap(True)
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.status, stretch=1)
-        bottom.addWidget(self.revert_btn)
-        bottom.addWidget(self.save_btn)
-        right.addLayout(bottom)
-        root.addLayout(right, stretch=1)
+        mid = self.cables.mid_head
+        mid.addSpacing(4)
+        mid.addWidget(self.summary, stretch=1)
+        mid.addWidget(self.suggest_bar)
 
         context = Qt.ShortcutContext.WidgetWithChildrenShortcut
         for keys, slot in ((UNDO_KEYS, self.undo), (REDO_KEYS, self.redo)):
             for k in keys:
                 QShortcut(QKeySequence(k), self, activated=slot, context=context)
 
-    # --- список профилей: свернуть в полосу ---
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._fit_header()
 
-    @property
-    def sidebar_collapsed(self) -> bool:
-        return self.sidebar_body.isHidden()
-
-    def set_sidebar_collapsed(self, collapsed: bool) -> None:
-        """Свернуть список профилей в узкую полосу (имя профиля и «●» остаются в заголовке редактора)."""
-        self.sidebar_body.setHidden(collapsed)
-        self.sidebar_caption.setHidden(collapsed)
-        self.sidebar.setFixedWidth(STRIP_WIDTH if collapsed else SIDEBAR_WIDTH)
-        self.sidebar_btn.setText("»" if collapsed else "«")
-        self.sidebar_btn.setToolTip(EXPAND_TIP if collapsed else COLLAPSE_TIP)
-        self.settings.setValue(SIDEBAR_KEY, collapsed)
+    def _fit_header(self) -> None:
+        """Контролы строки заголовка — одной высоты (по самому высокому), «⋯» — размером с ↻. Считается при
+        показе: размеры зависят от стиля окна, а при создании страницы он ещё не применён."""
+        for w in self.header_controls:
+            w.setMinimumHeight(0)
+            w.setMaximumHeight(16777215)
+            w.ensurePolished()
+        height = max(w.sizeHint().height() for w in self.header_controls)
+        for w in self.header_controls:
+            w.setFixedHeight(height)
+        self.more_btn.setFixedWidth(self.refresh_btn.sizeHint().width())
 
     # --- диалоги (тесты подменяют эти методы) ---
 
@@ -402,13 +384,13 @@ class ProfilesPage(QWidget):
     def show_error(self, text: str) -> None:
         QMessageBox.warning(self, "MidiRemap", text)
 
-    # --- список ---
+    # --- список (комбобокс профилей) ---
 
     def reload_list(self, select: str | None = None) -> None:
-        """Перестроить список; выделение — select или текущий профиль (сигналы при этом не идут)."""
+        """Перестроить список; выбран — select или текущий профиль (сигналы при этом не идут)."""
         select = select or self.current
-        self.list.blockSignals(True)
-        self.list.clear()
+        self.combo.blockSignals(True)
+        self.combo.clear()
         try:
             entries, issues = self.storage.list_profiles()
         except OSError as e:
@@ -422,57 +404,62 @@ class ProfilesPage(QWidget):
                 self._item(e.name, f"cannot read: {err}", None)
                 continue
             self._item(p.name, profile_summary(p), e.id)
-        if not entries:
-            self._item("No profiles yet", "Click New to create one", None)
+        self.combo.setPlaceholderText("Select a profile" if entries else "No profiles yet")
+        self.combo.setToolTip("" if entries else "Create one: ⋯ → New")
         if issues:
             self.set_status(f"Skipped unreadable profiles ({len(issues)}): "
                             + ", ".join(i.path.name for i in issues), "error")
-        for i in range(self.list.count()):
-            if select is not None and self.list.item(i).data(REF_ROLE) == select:
-                self.list.setCurrentRow(i)
-                break
-        self.list.blockSignals(False)
+        self.combo.setCurrentIndex(self._index_of(select))
+        self.combo.blockSignals(False)
         self._mark_dirty_item()
 
     def _item(self, title: str, subtitle: str, profile_id: str | None) -> None:
-        item = QListWidgetItem(title)
-        item.setData(NAME_ROLE, title)
-        item.setData(SUBTITLE_ROLE, subtitle)
-        item.setData(REF_ROLE, profile_id)
-        item.setData(HEADER_ROLE, False)
-        item.setToolTip(wrapped_tooltip(f"{title}\n{subtitle}"))
+        self.combo.addItem(title)
+        i = self.combo.count() - 1
+        self.combo.setItemData(i, profile_id, ID_ROLE)
+        self.combo.setItemData(i, title, NAME_ROLE)
+        self.combo.setItemData(i, subtitle, SUBTITLE_ROLE)
+        self.combo.setItemData(i, wrapped_tooltip(subtitle), Qt.ItemDataRole.ToolTipRole)
+        if profile_id is None:  # профиль не читается — пункт виден, но не выбирается
+            self.combo.model().item(i).setEnabled(False)
+
+    def _index_of(self, profile_id: str | None) -> int:
         if profile_id is None:
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-        self.list.addItem(item)
+            return -1
+        return next((i for i in range(self.combo.count()) if self.combo.itemData(i, ID_ROLE) == profile_id), -1)
+
+    def _show_current(self) -> None:
+        """Комбобокс показывает открытый профиль (без сигналов)."""
+        index = self._index_of(self.current)
+        if self.combo.currentIndex() != index:
+            self.combo.blockSignals(True)
+            self.combo.setCurrentIndex(index)
+            self.combo.blockSignals(False)
 
     def _mark_dirty_item(self) -> None:
-        """«•» перед именем профиля с несохранёнными правками; подзаголовок — сохранённое состояние."""
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            name = item.data(NAME_ROLE)
+        """«•» перед именем профиля с несохранёнными правками; подсказка — сохранённое состояние."""
+        for i in range(self.combo.count()):
+            name = self.combo.itemData(i, NAME_ROLE)
             if name is None:
                 continue
-            text = f"• {name}" if self._dirty and item.data(REF_ROLE) == self.current else name
-            if item.text() != text:
-                item.setText(text)
+            text = f"• {name}" if self._dirty and self.combo.itemData(i, ID_ROLE) == self.current else name
+            if self.combo.itemText(i) != text:
+                self.combo.setItemText(i, text)
 
-    def _on_current_changed(self, cur: QListWidgetItem | None, prev: QListWidgetItem | None) -> None:
-        profile_id = cur.data(REF_ROLE) if cur is not None else None
+    def _on_combo_changed(self, index: int) -> None:
+        profile_id = self.combo.itemData(index, ID_ROLE) if index >= 0 else None
         if profile_id is None or profile_id == self.current:
             return
         if not self.maybe_leave():
-            self.list.blockSignals(True)
-            self.list.setCurrentItem(prev)
-            self.list.blockSignals(False)
+            self._show_current()
             return
         self.open(profile_id)
 
     def select(self, profile_id: str) -> None:
-        """Выделить и открыть профиль (с вопросом о несохранённых правках)."""
-        for i in range(self.list.count()):
-            if self.list.item(i).data(REF_ROLE) == profile_id:
-                self.list.setCurrentRow(i)
-                return
+        """Выбрать и открыть профиль (с вопросом о несохранённых правках)."""
+        index = self._index_of(profile_id)
+        if index >= 0:
+            self.combo.setCurrentIndex(index)
 
     # --- редактор ---
 
@@ -488,6 +475,7 @@ class ProfilesPage(QWidget):
             return False
         self.current, self.base = profile_id, p
         self.work = copy.deepcopy(p)
+        self._show_current()
         self._undo.clear()
         self._redo.clear()
         self._suggest = {}  # открытие профиля подсказок не показывает
@@ -613,22 +601,18 @@ class ProfilesPage(QWidget):
             self._dirty = dirty
             self.dirty_changed.emit(dirty)
         self._mark_dirty_item()
-        self.dirty_label.setVisible(dirty)
         self.save_btn.setEnabled(dirty)
         self.revert_btn.setEnabled(dirty)
-        self.duplicate_btn.setEnabled(has)
-        self.rename_btn.setEnabled(has)
-        self.delete_btn.setEnabled(has)
+        for action in (self.duplicate_action, self.rename_action, self.delete_action):
+            action.setEnabled(has)
         for btn in (self.source_btn, self.target_btn, self.refresh_btn):
             btn.setEnabled(has)
         self._update_suggest_bar()
         if not has:
-            self.title.setText("No profile selected")
             self.source_btn.setText("—")
             self.target_btn.setText("—")
             self.summary.setText("")
             return
-        self.title.setText(self.work.name)
         self.source_btn.setText(map_summary(self.work.source_map))
         self.target_btn.setText(map_summary(self.work.target_map))
         n_rules = len(self.work.rules)

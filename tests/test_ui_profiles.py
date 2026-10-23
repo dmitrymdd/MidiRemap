@@ -19,7 +19,8 @@ from midiremap.storage import Storage, sanitize_id  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui import cable_view  # noqa: E402
 from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.ui.maps_page import TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.ui.profiles_page import ID_ROLE, SUBTITLE_ROLE  # noqa: E402
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
@@ -481,17 +482,20 @@ def test_dirty_profile_marked_in_list(window):
     pid = new_profile(page, "Mark")
     page.answers["unassigned"] = set()
     page.save()
+    combo = page.combo
 
-    def item(profile_id):
-        return next(page.list.item(i) for i in range(page.list.count())
-                    if page.list.item(i).data(REF_ROLE) == profile_id)
-    assert item(pid).text() == "Mark"
-    saved_subtitle = item(pid).data(SUBTITLE_ROLE)
+    def index(profile_id):
+        return next(i for i in range(combo.count()) if combo.itemData(i, ID_ROLE) == profile_id)
+    assert combo.itemText(index(pid)) == "Mark" and combo.currentIndex() == index(pid)
+    saved_subtitle = combo.itemData(index(pid), SUBTITLE_ROLE)
+    assert saved_subtitle in combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole)  # подсказка пункта
+    assert saved_subtitle == "EZdrummer 3 → Superior Drummer 3 · " + f"{len(page.base.rules)} rules"
     page.clear_rules([sorted(page.work.source_map.names)[0]])
-    assert item(pid).text() == "• Mark" and item(LEGACY_ID).text() == legacy_profile().name
-    assert item(pid).data(SUBTITLE_ROLE) == saved_subtitle  # подзаголовок — сохранённое состояние
+    assert combo.itemText(index(pid)) == "• Mark" and combo.itemText(index(LEGACY_ID)) == legacy_profile().name
+    assert combo.currentText() == "• Mark"
+    assert combo.itemData(index(pid), SUBTITLE_ROLE) == saved_subtitle  # подсказка — сохранённое состояние
     page.revert()
-    assert item(pid).text() == "Mark"
+    assert combo.itemText(index(pid)) == "Mark"
 
 
 def test_write_to_choice_shows_number_and_pitch(window, monkeypatch):
@@ -635,7 +639,7 @@ def test_cables_pool_is_separate_column(window):
     ed = page.cables
     lay = ed.current
     # пул — своя view со своей прокруткой; сцена начинается сверху
-    assert ed.pool is not ed.view and ed.splitter.count() == 2
+    assert ed.pool is not ed.view and ed.splitter.count() == 3  # левый пул | сцена | правый пул (8b3b1)
     assert set(ed.pool_items) == {n for r in lay.pool.rows for n in r.notes}
     assert min(t.y for t in lay.scene.target_rows + lay.scene.target_headers) == 0
     assert ed.view.verticalScrollBar() is not ed.pool.verticalScrollBar()
@@ -1146,32 +1150,100 @@ def test_alias_row_badge_and_shown_number(window, app):
     assert pool.number == str(min(pool.notes))
 
 
-def test_sidebar_collapses_and_persists(app, storage):
-    from midiremap.ui.profiles_page import STRIP_WIDTH
+def test_single_row_header_and_more_menu(window, app, storage):
+    """8b3b1: заголовок в одну строку — профиль, «⋯», место под направление, статус, ↻, Revert, Save;
+    списка профилей и кнопки сворачивания больше нет."""
+    from midiremap.ui.profiles_page import MORE_TIP
+    page = window.profiles_page
+    assert not hasattr(page, "list") and not hasattr(page, "sidebar_btn") and not hasattr(page, "title")
+    assert page.combo.currentIndex() == -1 and page.combo.placeholderText() == "Select a profile"
+    assert not page.rename_action.isEnabled() and not page.delete_action.isEnabled()
+    pid = new_profile(page, "Kit")
+    assert page.combo.currentData(ID_ROLE) == pid and page.combo.currentText() == "• Kit"  # карты выбраны — правка
+    assert page.rename_action.isEnabled() and page.duplicate_action.isEnabled() and page.delete_action.isEnabled()
+    menu = page.more_btn.menu()
+    assert [a.text() for a in menu.actions() if not a.isSeparator()] == ["New", "Rename", "Duplicate", "Delete"]
+    assert page.more_btn.toolTip() == MORE_TIP and page.direction_slot.count() == 0  # слот 8b3b2 пуст
+    assert page.more_btn.text() == ""  # точки рисуются, не глиф шрифта
+    # всё в одной строке: те же координаты по вертикали, Save — правее всех
+    widgets = (page.combo, page.more_btn, page.status, page.refresh_btn, page.revert_btn, page.save_btn)
+    window.resize(1300, 900)
+    window.show()
+    QApplication.processEvents()
+    centers = {w.mapTo(page, w.rect().center()).y() for w in widgets}
+    assert max(centers) - min(centers) <= 2
+    assert len({w.height() for w in page.header_controls}) == 1  # одна высота у всех контролов заголовка
+    assert page.more_btn.width() == page.refresh_btn.sizeHint().width()  # «⋯» — размером с ↻
+    xs = [w.mapTo(page, w.rect().topLeft()).x() for w in widgets]
+    assert xs == sorted(xs)
+    # карты — над внешними колонками, счётчик и подсказки — над сценой
+    ed = page.cables
+    assert ed.left_head.indexOf(page.source_btn) >= 0 and ed.right_head.indexOf(page.target_btn) >= 0
+    assert ed.mid_head.indexOf(page.summary) >= 0 and ed.mid_head.indexOf(page.suggest_bar) >= 0
+    assert page.source_btn.text() == "EZdrummer 3" and page.target_btn.text() == "Superior Drummer 3"
+    # Delete через «⋯» — то же подтверждение
+    page.answers["confirm"] = False
+    page.delete_action.trigger()
+    assert storage.load_profile(pid) is not None
+    page.answers["confirm"] = True
+    page.delete_action.trigger()
+    assert page.current is None and page.combo.currentIndex() == -1
+    assert page.combo.findData(pid, ID_ROLE) == -1
+
+
+def test_switching_profile_in_combo_asks_about_unsaved(window, app):
+    page = window.profiles_page
+    a = new_profile(page, "A")
+    page.answers["unassigned"] = set()
+    page.save()
+    page.clear_rules([sorted(page.work.source_map.names)[0]])
+    assert page.dirty
+    page.answers["save_changes"] = "cancel"
+    page.combo.setCurrentIndex(page.combo.findData(LEGACY_ID, ID_ROLE))
+    assert page.current == a and page.combo.currentData(ID_ROLE) == a and page.combo.currentText() == "• A"
+    page.answers["save_changes"] = "save"
+    page.combo.setCurrentIndex(page.combo.findData(LEGACY_ID, ID_ROLE))
+    assert page.current == LEGACY_ID and page.combo.currentData(ID_ROLE) == LEGACY_ID and not page.dirty
+    assert page.answers["asked"].count("save_changes") == 2
+
+
+def test_right_pool_is_empty_placeholder(window, app):
+    from midiremap.ui.cable_view import RIGHT_POOL_TIP
+    page, ed = cables_page(window)
+    assert ed.pool_right.scene().items() == [] and ed.pool_right.toolTip() == RIGHT_POOL_TIP
+    assert ed.pool_right.objectName() == "cablesPlaceholder" and ed.pool_right.handler is None
+    assert ed.pool_right.verticalScrollBar() is not ed.pool.verticalScrollBar()
+    # симметрия: правый пул той же минимальной ширины, что и левый
+    assert ed.pool_right.minimumWidth() == ed.pool.minimumWidth()
+    # кабель, отпущенный над правым пулом, ничего не меняет
+    from PySide6.QtCore import QPointF
+    rules = dict(page.work.rules)
+    note = next(iter(ed.pool_items))
+    vp = ed.pool_right.viewport()
+    at = QPointF(vp.mapTo(ed, vp.rect().center()))
+    ed.begin_drag({note}, at)
+    ed.drag_to(at)
+    ed._tick()
+    assert ed._drag.hover is None
+    ed.end_drag(drop=True)
+    QApplication.processEvents()
+    assert page.work.rules == rules
+
+
+def test_old_sidebar_key_is_ignored(app, storage):
+    from midiremap.ui.settings import ui_settings
+    s = ui_settings(storage)
+    s.setValue("profiles/sidebar_collapsed", True)
+    s.sync()
     w = MainWindow(storage)
-    w.show_page(PAGE_PROFILES)
-    page = w.profiles_page
-    stub_dialogs(page)
-    new_profile(page, "Kit")
-    assert not page.sidebar_collapsed and page.list.isVisibleTo(page)
-    page.sidebar_btn.click()
-    assert page.sidebar_collapsed and not page.list.isVisibleTo(page)
-    assert page.sidebar.maximumWidth() == STRIP_WIDTH and page.sidebar_btn.toolTip() == "Show the profile list"
-    assert page.title.text() == "Kit" and page.dirty_label.isVisibleTo(page)  # имя и «●» — в заголовке
-    page.answers["save_changes"] = "discard"
+    assert w.profiles_page.combo.isVisibleTo(w.profiles_page)
     w.close()
-    w2 = MainWindow(storage)  # состояние — между запусками
-    assert w2.profiles_page.sidebar_collapsed
-    w2.profiles_page.sidebar_btn.click()
-    assert not w2.profiles_page.sidebar_collapsed
-    w2.close()
-    assert not MainWindow(storage).profiles_page.sidebar_collapsed
 
 
 def test_scene_columns_resize_and_persist(window, app, storage):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
-    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, PORT, SCENE_MIN
+    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, POOL_RIGHT_KEY, PORT, SCENE_MIN
     page, ed = cables_page(window)
     vp = ed.view.viewport()
     width = ed.view.width_px(SCENE_MIN)
@@ -1202,11 +1274,19 @@ def test_scene_columns_resize_and_persist(window, app, storage):
     assert abs(t.rect.left() - nb3) < 1 and abs(t.rect.right() - nend) < 1
     assert page.work.rules == rules and not ed.dragging  # граница — не перетаскивание кабеля
     assert page.settings.value(COLUMNS_KEY)
-    ed.splitter.setSizes([340, 900])
+    ed.splitter.setSizes([340, 700, 260])
     ed.splitter.splitterMoved.emit(340, 1)
-    assert int(page.settings.value(POOL_KEY)) == ed.splitter.sizes()[0]
+    sizes = ed.splitter.sizes()
+    assert int(page.settings.value(POOL_KEY)) == sizes[0]
+    assert int(page.settings.value(POOL_RIGHT_KEY)) == sizes[2]
     w2 = MainWindow(storage)  # ширины — между запусками
     assert w2.profiles_page.cables.columns == pytest.approx(ed.columns, abs=1e-3)
+    w2.resize(window.size())
+    w2.show_page(PAGE_PROFILES)
+    w2.show()
+    QApplication.processEvents()
+    w2_sizes = w2.profiles_page.cables.splitter.sizes()
+    assert (w2_sizes[0], w2_sizes[2]) == (sizes[0], sizes[2])
     w2.close()
 
 

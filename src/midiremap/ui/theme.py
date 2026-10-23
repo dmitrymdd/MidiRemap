@@ -98,6 +98,7 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QPushButton#segment:checked {{ color: {t['accent']}; border-color: {t['accent']}; }}
     QPushButton#iconButton {{ font-size: 14pt; padding: 1px 12px; color: {t['text_muted']}; }}
     QPushButton#iconButton:hover {{ color: {t['text']}; }}
+    QPushButton#iconButton::menu-indicator {{ image: none; width: 0; }}
     QFrame#suggestBar {{ background: {t['surface']}; border: 1px dashed {t['accent_muted']}; border-radius: 6px; }}
     QFrame#suggestBar QLabel {{ background: transparent; color: {t['text_muted']}; }}
     QPushButton#link {{ background: transparent; border: none; padding: 3px 6px; color: {t['accent']};
@@ -105,6 +106,7 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QPushButton#link:hover {{ color: {t['accent_hover']}; }}
     QPushButton#link:disabled {{ color: {t['text_faint']}; }}
     QGraphicsView#cables {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 8px; }}
+    QGraphicsView#cablesPlaceholder {{ background: {t['bg']}; border: 1px dashed {t['border']}; border-radius: 8px; }}
     QLabel#mapTitle {{ font-size: 14pt; font-weight: 600; }}
     QLabel#chip {{ border: 1px solid {t['border']}; border-radius: 9px; padding: 1px 8px; font-size: 8pt;
                    font-weight: 700; color: {t['text_muted']}; }}
