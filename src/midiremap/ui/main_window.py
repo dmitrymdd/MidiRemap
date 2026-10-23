@@ -342,7 +342,7 @@ class MainWindow(QMainWindow):
         return _label(text, "section")
 
     def _bind_shortcuts(self) -> None:
-        # горячие клавиши экрана Convert; на других вкладках выключены (там Enter/Ctrl+C нужны таблицам)
+        # горячие клавиши экрана Convert; на других вкладках выключены (там Enter/Ctrl+C нужны редакторам)
         self._convert_shortcuts = [
             QShortcut(QKeySequence(keys), self, activated=slot)
             for keys, slot in ((QKeySequence.StandardKey.Paste, self.paste_file),

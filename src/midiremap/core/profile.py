@@ -151,7 +151,7 @@ def _map_from_dict(data: Any, what: str) -> NoteMap | None:
 
 # Коды ProfileIssue. NO_RULE — не ошибка, а вопрос пользователю (по умолчанию нота остаётся на месте);
 # остальные — предупреждения.
-SRC_NOT_IN_SOURCE = "src_not_in_source_map"      # правило для ноты, которой нет в исходной карте
+SRC_NOT_IN_SOURCE = "src_not_in_source_map"      # map/keep для ноты, которой нет в исходной карте (delete — норма)
 DST_NOT_IN_TARGET = "dst_not_in_target_map"      # map на ноту, которой нет в целевой карте
 KEEP_NOT_IN_TARGET = "keep_not_in_target_map"    # keep, а этого номера нет в целевой карте
 KEEP_DIFFERENT = "keep_different_articulation"   # keep, а на этом номере в целевой карте другая артикуляция
@@ -186,13 +186,14 @@ def validate_profile(p: RemapProfile) -> list[ProfileIssue]:
     """Замечания к правилам профиля относительно его карт, по возрастанию исходной ноты.
 
     Каждая проверка — только если нужная карта есть; профиль без карт замечаний не получает.
+    delete для ноты вне исходной карты — не замечание (удалить лишнее — норма).
     map на неосновную ноту артикуляции с несколькими нотами — допустимо, не проверяется.
     """
     src_map, tgt_map = p.source_map, p.target_map
     issues: list[ProfileIssue] = []
     for src in sorted(p.rules):
         rule = p.rules[src]
-        if src_map is not None and src not in src_map.names:
+        if src_map is not None and src not in src_map.names and rule.action != "delete":
             issues.append(ProfileIssue(SRC_NOT_IN_SOURCE, src, f"rule for note {src}, which is not in the source map"))
         if rule.action == "map" and tgt_map is not None and rule.dst not in tgt_map.names:
             issues.append(ProfileIssue(DST_NOT_IN_TARGET, src,

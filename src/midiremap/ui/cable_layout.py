@@ -17,7 +17,7 @@
 - подключили (или переподключили к другой цели) — строка сразу уходит из пула и встаёт напротив цели;
 - убрали кабель (правило стало keep/delete/пусто) — строка остаётся в сцене на своём месте, без кабеля
   (SourceRow.stale, виджет её приглушает); после пересортировки возвращается в пул;
-- сменилось состояние без подключения (напр. удалили в таблице) — строка остаётся в своём блоке пула
+- сменилось состояние без подключения (напр. зачеркнули правым кликом) — строка остаётся в своём блоке пула
   (вид — по текущему правилу).
 Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)).
 
@@ -26,17 +26,28 @@
 Строку можно раскрыть (ключ «<место>|<имя>» в expanded): заголовок алиасов + строка на каждую ноту.
 Ноты с разными правилами показываются раскрытыми всегда (SourceRow.mixed).
 
+Подсказки (8b2d, suggested: нота без правила -> артикуляция цели, совпало имя): строка встаёт напротив своей
+цели, как подключённая, с пунктирным кабелем (Cable.suggested) на номер, куда она легла бы (core
+plan_suggestions; нужен выбор Write to — кабель на первую строку цели). Применили — кабель становится сплошным
+на том же месте; подсказки скрыли — строки остаются на местах приглушёнными до пересортировки.
+
+Строка алиасов показывает один номер (SourceRow.shown): ноту, которая идёт на свой же номер (n -> n,
+SourceRow.same), иначе — наименьшую; остальные — за «+N».
+Акцент на номере — ЕДИНСТВЕННЫЙ случай (SourceRow.accent): строка ноты под раскрытыми алиасами, нота идёт на свой
+же номер. Свёрнутые алиасы, одиночные строки, заголовок раскрытых и все номера цели — обычным цветом.
+
 Сворачивание пула: ключи — BLOCKS и «<блок>/<группа>». Группы цели — два режима: «только подключённые»
 (по умолчанию; видны артикуляции, напротив которых есть строки, группа без них — один заголовок) и «все»
 (ключ «target/<группа>» в show_all). Заголовок показывает число нот (пул) или артикуляций (цель).
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 
 from ..core.notemap import NoteMap, articulations, instrument_group, normalize_name, primary_note
 from ..core.profile import RemapProfile, Rule
+from ..core.suggest import plan_suggestions
 
 UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
 MIXED = "mixed"  # заголовок раскрытых алиасов, у нот которых разные правила
@@ -93,15 +104,28 @@ class SourceRow:
     expanded: bool = False    # заголовок раскрытых алиасов: под ним — строки по нотам (child), кабеля у него нет
     mixed: bool = False       # у нот разные правила — свернуть нельзя
     child: bool = False       # строка ноты под заголовком алиасов
+    suggested: bool = False   # подсказка: правила нет, строка напротив предложенной цели (пунктирный кабель)
+    number: int | None = None  # показываемый номер (см. shown); None — первая нота
+    same: bool = False         # number идёт на свой же номер (n -> n); для выбора shown, НЕ для подсветки
 
     @property
     def note(self) -> int:
         return self.notes[0]
 
     @property
+    def shown(self) -> int:
+        """Номер для показа: у алиасов — нота n -> n или наименьшая."""
+        return self.number if self.number is not None else self.notes[0]
+
+    @property
+    def accent(self) -> bool:
+        """Номер цветом акцента: только строка ноты под раскрытыми алиасами, идущая n -> n."""
+        return self.child and self.same
+
+    @property
     def stale(self) -> bool:
-        """Строка в сцене, у которой убрали кабель: стоит на месте до пересортировки."""
-        return self.block is None and not self.connected
+        """Строка в сцене, у которой убрали кабель (или скрыли подсказку): стоит на месте до пересортировки."""
+        return self.block is None and not self.connected and not self.suggested
 
 
 @dataclass(frozen=True)
@@ -133,10 +157,12 @@ class TargetRow:
 class Cable:
     """Кабель строки слева (у строки алиасов — один на все её ноты)."""
     notes: tuple[int, ...]
-    dst: int
+    dst: int | None  # None — подсказка, которой нужен выбор Write to
     src_y: int
     target: TargetRow
     dst_y: int = 0  # строка номера dst в блоке цели (абсолютная)
+    suggested: bool = False  # пунктир: подсказка, правила ещё нет
+    primary: bool = False    # основной кабель ноты цели (один на ноту, см. _mark_primary) — толще прочих
 
     @property
     def src(self) -> int:
@@ -235,29 +261,41 @@ def _grouped(notes: Iterable[int], names: dict[int, str]) -> list[int]:
 
 # --- порядок ---
 
-def fresh_order(p: RemapProfile) -> OrderSnapshot:
-    """Полная пересортировка: блоки — по группам и номерам, напротив цели — по номерам."""
+def _wanted_slot(p: RemapProfile, n: int, suggested: Mapping[int, str]) -> str | None:
+    """Цель, напротив которой должна стоять нота: по правилу map или по подсказке (нота без правила)."""
+    rule = p.rules.get(n)
+    if rule is not None and rule.action == "map":
+        return slot_key(p.target_map, rule.dst)
+    if rule is None and n in suggested:
+        return "a:" + suggested[n]
+    return None
+
+
+def fresh_order(p: RemapProfile, suggested: Mapping[int, str] = {}) -> OrderSnapshot:
+    """Полная пересортировка: блоки — по группам и номерам, напротив цели — по номерам.
+    suggested — подсказки (нота -> артикуляция цели), только для нот без правила."""
     names = p.source_map.names if p.source_map is not None else {}
     blocks: dict[str, list[int]] = {b: [] for b in BLOCKS}
     slots: dict[str, list[int]] = {}
     for n in all_notes(p):
-        rule = p.rules.get(n)
-        if rule is not None and rule.action == "map":
-            slots.setdefault(slot_key(p.target_map, rule.dst), []).append(n)
+        key = _wanted_slot(p, n, suggested)
+        if key is not None:
+            slots.setdefault(key, []).append(n)
         else:
-            blocks[note_block(rule)].append(n)
+            blocks[note_block(p.rules.get(n))].append(n)
     return OrderSnapshot({b: tuple(_grouped(v, names)) for b, v in blocks.items()},
                          {k: tuple(v) for k, v in slots.items()})
 
 
-def update_order(p: RemapProfile, prev: OrderSnapshot | None) -> OrderSnapshot:
+def update_order(p: RemapProfile, prev: OrderSnapshot | None,
+                 suggested: Mapping[int, str] = {}) -> OrderSnapshot:
     """Замороженный порядок после правок (без пересортировки). prev = None — fresh_order().
 
-    Строка с правилом map не напротив своей цели — переезжает в конец строк этой цели; остальные строки
-    остаются на местах. Ноты, которых больше нет, выбрасываются; новые (и стоявшие у исчезнувшей цели) —
-    в конец своего блока или своей цели."""
+    Строка с правилом map (или подсказкой) не напротив своей цели — переезжает в конец строк этой цели;
+    остальные строки остаются на местах. Ноты, которых больше нет, выбрасываются; новые (и стоявшие
+    у исчезнувшей цели) — в конец своего блока или своей цели."""
     if prev is None:
-        return fresh_order(p)
+        return fresh_order(p, suggested)
     tgt = p.target_map
     arts = articulations(tgt) if tgt is not None else {}
     notes = set(all_notes(p))
@@ -274,9 +312,8 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None) -> OrderSnapshot:
     blocks = {b: keep_known(prev.blocks.get(b, ())) for b in BLOCKS}
     slots = {k: keep_known(v) for k, v in prev.slots.items() if _slot_valid(k, tgt, arts)}
     for n in sorted(notes):
-        rule = p.rules.get(n)
-        if rule is not None and rule.action == "map":
-            key = slot_key(tgt, rule.dst)
+        key = _wanted_slot(p, n, suggested)
+        if key is not None:
             if n in slots.get(key, ()):
                 continue
             if n in seen:
@@ -286,7 +323,7 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None) -> OrderSnapshot:
                         break
             slots.setdefault(key, []).append(n)
         elif n not in seen:
-            blocks[note_block(rule)].append(n)
+            blocks[note_block(p.rules.get(n))].append(n)
     return OrderSnapshot({b: tuple(v) for b, v in blocks.items()},
                          {k: tuple(v) for k, v in slots.items() if v})
 
@@ -320,31 +357,59 @@ def _target_groups(p: RemapProfile, order: OrderSnapshot) -> list[tuple[str | No
 
 def build_layout(p: RemapProfile | None, collapsed: Iterable[str] = DEFAULT_COLLAPSED,
                  snapshot: OrderSnapshot | None = None, show_all: Iterable[str] = (),
-                 expanded: Iterable[str] = ()) -> CableLayout:
+                 expanded: Iterable[str] = (), suggested: Mapping[int, str] = {}) -> CableLayout:
     """Раскладки пула и сцены. snapshot — порядок прошлой раскладки (layout.order) или None (пересортировать).
     collapsed — свёрнутые блоки и группы пула; show_all — группы цели в режиме «все»; expanded — раскрытые
-    алиасы («<место>|<имя>»). Новый порядок — в результате (CableLayout.order)."""
+    алиасы («<место>|<имя>»); suggested — подсказки (нота -> артикуляция цели; ноты с правилом и артикуляции,
+    которых нет в цели, не считаются). Новый порядок — в результате (CableLayout.order)."""
     if p is None:
         return CableLayout(PoolLayout([], [], 0), SceneLayout([], [], [], [], 0), OrderSnapshot())
-    order = update_order(p, snapshot)
+    planned = plan_suggestions(p, suggested) if suggested else {}
+    suggested = {n: a for n, a in suggested.items() if n in planned}
+    order = update_order(p, snapshot, suggested)
     expanded = set(expanded)
-    return CableLayout(_pool_layout(p, order, set(collapsed), expanded),
-                       _scene_layout(p, order, set(show_all), expanded), order)
+    ctx = _Ctx(p, suggested, planned)
+    return CableLayout(_pool_layout(ctx, order, set(collapsed), expanded),
+                       _scene_layout(ctx, order, set(show_all), expanded), order)
 
 
-def _source_row(p: RemapProfile, notes: list[int], y: int, block: str | None, slot: str | None,
+@dataclass(frozen=True)
+class _Ctx:
+    """Профиль и подсказки для построения строк."""
+    p: RemapProfile
+    suggested: Mapping[int, str]       # нота без правила -> артикуляция цели
+    planned: Mapping[int, int | None]  # нота -> куда легла бы подсказка (None — нужен выбор Write to)
+
+    def dst(self, n: int) -> int | None:
+        """Куда идёт нота: по правилу map или по подсказке."""
+        r = self.p.rules.get(n)
+        if r is not None:
+            return r.dst if r.action == "map" else None
+        return self.planned.get(n)
+
+    def suggested_at(self, n: int, slot: str | None) -> bool:
+        return slot is not None and n in self.suggested and "a:" + self.suggested[n] == slot
+
+
+def _source_row(ctx: _Ctx, notes: list[int], y: int, block: str | None, slot: str | None,
                 **extra) -> SourceRow:
+    p = ctx.p
     rules = [p.rules.get(n) for n in notes]
     connected = any(r is not None and r.action == "map" and slot == slot_key(p.target_map, r.dst) for r in rules)
+    suggested = not connected and all(ctx.suggested_at(n, slot) for n in notes)
     state = note_state(rules[0]) if len(set(rules)) == 1 else MIXED
     names = p.source_map.names if p.source_map is not None else {}
-    return SourceRow(tuple(notes), names.get(notes[0]), state, connected, block, y, **extra)
+    cabled = (connected or suggested) and not extra.get("expanded")  # у заголовка раскрытых same нет
+    same = sorted(n for n in notes if cabled and ctx.dst(n) == n)
+    return SourceRow(tuple(notes), names.get(notes[0]), state, connected, block, y, suggested=suggested,
+                     number=same[0] if same else min(notes), same=bool(same), **extra)
 
 
-def _unit_rows(p: RemapProfile, notes: Iterable[int], y: int, block: str | None, slot: str | None,
+def _unit_rows(ctx: _Ctx, notes: Iterable[int], y: int, block: str | None, slot: str | None,
                expanded: set[str]) -> list[SourceRow]:
     """Строки одного места (блок или цель): алиасы — одной строкой (на месте первой ноты), раскрытые или
     с разными правилами — заголовок и строки по нотам."""
+    p = ctx.p
     names = p.source_map.names if p.source_map is not None else {}
     by_name: dict[str, list[int]] = {}
     for n in notes:
@@ -353,20 +418,22 @@ def _unit_rows(p: RemapProfile, notes: Iterable[int], y: int, block: str | None,
     out: list[SourceRow] = []
     for name, members in by_name.items():
         if len(members) == 1:
-            out.append(_source_row(p, members, y + len(out), block, slot))
+            out.append(_source_row(ctx, members, y + len(out), block, slot))
             continue
         key = f"{place}|{name}"
-        mixed = len({p.rules.get(n) for n in members}) > 1
+        # разные правила (или подсказки на разные номера) — раскрыто всегда
+        mixed = len({(p.rules.get(n), ctx.suggested_at(n, slot) and ctx.planned.get(n)) for n in members}) > 1
         if not mixed and key not in expanded:
-            out.append(_source_row(p, members, y + len(out), block, slot, alias=key))
+            out.append(_source_row(ctx, members, y + len(out), block, slot, alias=key))
             continue
-        out.append(_source_row(p, members, y + len(out), block, slot, alias=key, expanded=True, mixed=mixed))
+        out.append(_source_row(ctx, members, y + len(out), block, slot, alias=key, expanded=True, mixed=mixed))
         for n in members:
-            out.append(_source_row(p, [n], y + len(out), block, slot, child=True))
+            out.append(_source_row(ctx, [n], y + len(out), block, slot, child=True))
     return out
 
 
-def _pool_layout(p: RemapProfile, order: OrderSnapshot, collapsed: set[str], expanded: set[str]) -> PoolLayout:
+def _pool_layout(ctx: _Ctx, order: OrderSnapshot, collapsed: set[str], expanded: set[str]) -> PoolLayout:
+    p = ctx.p
     names = p.source_map.names if p.source_map is not None else {}
     grouped = any(instrument_group(v) for v in names.values())
     heads: list[Header] = []
@@ -391,13 +458,28 @@ def _pool_layout(p: RemapProfile, order: OrderSnapshot, collapsed: set[str], exp
                 y += 1
                 if key in collapsed:
                     continue
-            units = _unit_rows(p, members, y, b, None, expanded)
+            units = _unit_rows(ctx, members, y, b, None, expanded)
             rows.extend(units)
             y += len(units)
     return PoolLayout(heads, rows, y)
 
 
-def _scene_layout(p: RemapProfile, order: OrderSnapshot, show_all: set[str], expanded: set[str]) -> SceneLayout:
+def _mark_primary(cables: list[Cable]) -> list[Cable]:
+    """Основной кабель — РОВНО ОДИН на каждую ноту цели, на которую идут кабели (для обратного направления
+    8b3 нужна однозначность): нота источника, идущая на свой же номер (n -> n), иначе наименьшая из идущих на эту
+    ноту — независимо от того, алиасы это или разные артикуляции источника («многие в одну»). Строка алиасов
+    (свёрнутая, «+N») основная, если среди её нот есть основная. Подсказки (пунктир) основными не бывают.
+    Только показ: правила и JSON не меняются."""
+    by_dst: dict[int, list[int]] = {}
+    for c in cables:
+        if not c.suggested and c.dst is not None:
+            by_dst.setdefault(c.dst, []).extend(c.notes)
+    main = {(d if d in notes else min(notes), d) for d, notes in by_dst.items()}
+    return [replace(c, primary=True) if any((n, c.dst) in main for n in c.notes) else c for c in cables]
+
+
+def _scene_layout(ctx: _Ctx, order: OrderSnapshot, show_all: set[str], expanded: set[str]) -> SceneLayout:
+    p = ctx.p
     s_rows: list[SourceRow] = []
     t_heads: list[Header] = []
     t_rows: list[TargetRow] = []
@@ -415,17 +497,21 @@ def _scene_layout(p: RemapProfile, order: OrderSnapshot, show_all: set[str], exp
                                   shown=len(occupied)))
             y += 1
         for r in visible:
-            units = _unit_rows(p, order.slots.get(r.slot, ()), y, None, r.slot, expanded)
-            cabled = [row for row in units if row.connected and not row.expanded]
+            units = _unit_rows(ctx, order.slots.get(r.slot, ()), y, None, r.slot, expanded)
+            cabled = [row for row in units if (row.connected or row.suggested) and not row.expanded]
             first: dict[int, int] = {}  # номер -> смещение первой строки, чей кабель идёт на него
             for row in cabled:
-                first.setdefault(p.rules[row.note].dst, row.y - y)
+                dst = ctx.dst(row.shown)
+                if dst is not None:
+                    first.setdefault(dst, row.y - y)
             lines = tuple(sorted((off, dst) for dst, off in first.items()))
             placed = TargetRow(r.slot, r.label, r.notes, r.write_to, r.in_map, y, max(1, len(units)), lines)
             t_rows.append(placed)
             s_rows.extend(units)
+            slot_cables = []
             for row in cabled:
-                dst = p.rules[row.note].dst
-                cables.append(Cable(row.notes, dst, row.y, placed, y + first[dst]))
+                dst = ctx.dst(row.shown)
+                slot_cables.append(Cable(row.notes, dst, row.y, placed, y + first.get(dst, 0), row.suggested))
+            cables.extend(_mark_primary(slot_cables))
             y += placed.height
     return SceneLayout(s_rows, t_heads, t_rows, cables, y)

@@ -2,6 +2,9 @@
 
 Логики карт здесь нет — только вызовы midiremap.core (duplicate_map, finalize_edit, validate_map, экспорт)
 и midiremap.storage. Диалоги вынесены в методы ask_*/choose_*/show_error, чтобы тесты могли их подменить.
+
+Write to (primary) на вкладке Maps не правится (8b2d): его выбирают в профиле, в копии целевой карты.
+В JSON карты primary остаётся (старые файлы читаются). Имя на нескольких нотах — бейдж «+N» рядом с именем.
 """
 from __future__ import annotations
 
@@ -11,17 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QRect, QSize, QSortFilterProxyModel, Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
-    QTableView, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
+    QStyleOptionViewItem, QTableView, QVBoxLayout, QWidget,
 )
 
 from ..core.notemap import (
     NoteMap, articulations, duplicate_map, finalize_edit, instrument_group, normalize_name, validate_map,
 )
-from ..core.notenames import ParseIssue, load_notenames, primary_only_notes, save_notenames
+from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import pitch_name
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
@@ -32,15 +35,12 @@ TEMPLATE, USER = "template", "user"
 REF_ROLE = Qt.ItemDataRole.UserRole
 SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 1
 HEADER_ROLE = Qt.ItemDataRole.UserRole + 2
+OTHERS_ROLE = Qt.ItemDataRole.UserRole + 4  # сколько ещё нот карты с этим именем (бейдж «+N»)
 
-COL_NOTE, COL_PITCH, COL_NAME, COL_PRIMARY, COL_SHARED = range(5)
-COLUMNS = ("NOTE", "PITCH", "NAME", "WRITE TO", "SAME NAME")
-WRITE_TO_TIP = ("When converting INTO this map and an articulation sits on several notes, "
-                "notes are written to this one.")
+COL_NOTE, COL_PITCH, COL_NAME = range(3)
+COLUMNS = ("NOTE", "PITCH", "NAME")
 COLUMN_TIPS = ("MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
-               "Articulation name. Empty = the note is not in the map",
-               WRITE_TO_TIP + " Available only when the name is on several notes",
-               "How many notes in this map have this name")
+               "Articulation name. Empty = the note is not in the map. +N — the name is on N more notes")
 
 EDIT_TIP = "Double-click or type to edit a name · Empty name: remove the note · Delete: clear selected names"
 
@@ -117,7 +117,7 @@ def update_spans(table: QTableView, columns: int) -> None:
 
 
 def header_data(row: LayoutRow, col: int, role):
-    """Данные строки-заголовка группы (общие для таблиц карт и профилей)."""
+    """Данные строки-заголовка группы в таблице нот."""
     if role == Qt.ItemDataRole.DisplayRole and col == 0:
         return row.label.upper()
     if role == Qt.ItemDataRole.FontRole:
@@ -204,14 +204,6 @@ class NoteTableModel(QAbstractTableModel):
         name = self.map.names.get(note) if self.map is not None else None
         return self._groups.get(normalize_name(name), []) if name is not None else []
 
-    def group_state(self, note: int) -> str:
-        """"" — норма; "warning" — имя на нескольких нотах без Write to; "error" — Write to больше одной."""
-        notes = self.group(note)
-        if len(notes) < 2:
-            return ""
-        flagged = sum(1 for n in notes if n in self.map.primary)
-        return "warning" if flagged == 0 else "error" if flagged > 1 else ""
-
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.rows)
 
@@ -244,29 +236,15 @@ class NoteTableModel(QAbstractTableModel):
                 return pitch_name(n)
             if col == COL_NAME:
                 return name or ""
-            if col == COL_SHARED:
-                return str(len(notes)) if notes else ""
             return None
-        # флажок — только у имён на нескольких нотах (или если флаг уже стоит, например в старом файле)
-        if role == Qt.ItemDataRole.CheckStateRole and col == COL_PRIMARY and (len(notes) > 1 or n in self.map.primary):
-            return Qt.CheckState.Checked if n in self.map.primary else Qt.CheckState.Unchecked
-        if role == Qt.ItemDataRole.BackgroundRole:
-            state = self.group_state(n)
-            return QColor(TOKENS[f"{state}_bg"]) if state else None
-        if role == Qt.ItemDataRole.ForegroundRole:
-            if name is None or (col == COL_SHARED and len(notes) == 1):
-                return QColor(TOKENS["text_faint"])
-            return None
+        if role == OTHERS_ROLE and col == COL_NAME:
+            return max(0, len(notes) - 1)
+        if role == Qt.ItemDataRole.ForegroundRole and name is None:
+            return QColor(TOKENS["text_faint"])
         if role == Qt.ItemDataRole.TextAlignmentRole and col != COL_NAME:
             return int(Qt.AlignmentFlag.AlignCenter)
-        if role == Qt.ItemDataRole.ToolTipRole:
-            state = self.group_state(n)
-            if state == "warning":
-                return f'"{name}" is on {len(notes)} notes and none is marked Write to'
-            if state == "error":
-                return f'"{name}" has several Write to notes — keep only one'
-            if col == COL_PRIMARY and len(notes) > 1:
-                return WRITE_TO_TIP
+        if role == Qt.ItemDataRole.ToolTipRole and col == COL_NAME and len(notes) > 1:
+            return f"{name}\nOn notes {', '.join(map(str, notes))}"
         return None
 
     def flags(self, index):
@@ -276,14 +254,8 @@ class NoteTableModel(QAbstractTableModel):
         if row.is_header:
             return Qt.ItemFlag.ItemIsEnabled
         f = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-        col, n = index.column(), row.note
-        if col == COL_NAME and not self.read_only:
+        if index.column() == COL_NAME and not self.read_only:
             f |= Qt.ItemFlag.ItemIsEditable
-        if col == COL_PRIMARY and n in self.map.names:
-            if self.read_only or len(self.group(n)) < 2:
-                f &= ~Qt.ItemFlag.ItemIsEnabled  # шаблон или имя на одной ноте — флажок неактивен
-            else:
-                f |= Qt.ItemFlag.ItemIsUserCheckable
         return f
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole) -> bool:
@@ -294,9 +266,6 @@ class NoteTableModel(QAbstractTableModel):
             return False
         if col == COL_NAME and role == Qt.ItemDataRole.EditRole:
             return self.set_name(n, str(value or ""))
-        if col == COL_PRIMARY and role == Qt.ItemDataRole.CheckStateRole:
-            checked = value in (Qt.CheckState.Checked, Qt.CheckState.Checked.value)
-            return self.set_primary(n, checked)
         return False
 
     def set_name(self, n: int, label: str) -> bool:
@@ -314,46 +283,46 @@ class NoteTableModel(QAbstractTableModel):
         self._changed()
         return True
 
-    def set_primary(self, n: int, checked: bool) -> bool:
-        """Write to — не больше одной ноты на артикуляцию: отметка снимает флаг с остальных нот имени."""
-        notes = self.group(n)
-        if len(notes) < 2:
-            return False
-        if checked:
-            self.map.primary.difference_update(notes)
-            self.map.primary.add(n)
-        else:
-            self.map.primary.discard(n)
-        self._changed()
-        return True
-
     def _changed(self) -> None:
         self.refresh()  # меняются счётчики и подсветка всех нот затронутых артикуляций
         self.edited.emit()
 
 
-class CheckDelegate(QStyledItemDelegate):
-    """Неактивный флажок (шаблон, имя на одной ноте) рисуется явно неактивным: серая рамка, серая галочка."""
+class NameDelegate(QStyledItemDelegate):
+    """Имя и бейдж «+N» (имя ещё на N нотах карты) — как в виде «кабелями». Правка имени — как обычно."""
+
+    BADGE_PAD = 12
 
     def paint(self, p, option, index) -> None:
-        state = index.data(Qt.ItemDataRole.CheckStateRole)
-        if state is None or index.flags() & Qt.ItemFlag.ItemIsEnabled:
+        others = index.data(OTHERS_ROLE)
+        if not others:
             super().paint(p, option, index)
             return
-        bg = index.data(Qt.ItemDataRole.BackgroundRole)
-        if option.state & QStyle.StateFlag.State_Selected:
-            p.fillRect(option.rect, QColor(TOKENS["selection"]))
-        elif bg is not None:
-            p.fillRect(option.rect, bg)
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        style = opt.widget.style() if opt.widget is not None else QApplication.style()
+        rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, opt.widget)
+        margin = style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin, opt, opt.widget) + 1
+        badge = f"+{others}"
+        small = QFont(opt.font)
+        small.setPointSizeF(max(6.0, small.pointSizeF() - 1.5))
+        small.setBold(True)
         p.save()
-        box = QRect(0, 0, 14, 14)
-        box.moveCenter(option.rect.center())
-        p.setPen(QColor(TOKENS["border"]))
-        p.setBrush(QColor(TOKENS["surface"]))
-        p.drawRoundedRect(box, 3, 3)
-        if state in (Qt.CheckState.Checked, Qt.CheckState.Checked.value):
-            p.setPen(QColor(TOKENS["text_faint"]))
-            p.drawText(box, Qt.AlignmentFlag.AlignCenter, "✓")
+        p.setFont(small)
+        bw = p.fontMetrics().horizontalAdvance(badge) + self.BADGE_PAD
+        # имя рисует сам стиль (тот же отступ, что у строк без бейджа); место под бейдж — заранее
+        opt.text = opt.fontMetrics.elidedText(opt.text, Qt.TextElideMode.ElideRight,
+                                              max(0, rect.width() - 2 * margin - bw - 8))
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, p, opt.widget)
+        x = rect.left() + margin + opt.fontMetrics.horizontalAdvance(opt.text) + 8
+        h = min(rect.height() - 8, 16)
+        pill = QRect(x, rect.center().y() - h // 2 + 1, bw, h)
+        p.setPen(QPen(QColor(TOKENS["border"]), 1))
+        p.setBrush(QColor(TOKENS["bg"]))
+        p.drawRoundedRect(pill, h / 2, h / 2)
+        p.setFont(small)
+        p.setPen(QColor(TOKENS["text_muted"]))
+        p.drawText(pill, Qt.AlignmentFlag.AlignCenter, badge)
         p.restore()
 
 
@@ -519,10 +488,6 @@ class MapsPage(QWidget):
         self.rename_btn = QPushButton("Rename")
         self.delete_btn = QPushButton("Delete")
         self.export_btn = QPushButton("Export .txt")
-        export_menu = QMenu(self.export_btn)
-        export_menu.addAction("Full map…", lambda: self.export(primary_only=False))
-        export_menu.addAction("Write to notes only…", lambda: self.export(primary_only=True))
-        self.export_btn.setMenu(export_menu)
         self.new_btn.setToolTip("Create an empty map")
         self.import_btn.setToolTip("Import a REAPER MIDI note name map (.txt)")
         self.duplicate_btn.setToolTip("Copy the selected map. This is the only way to edit a built-in template")
@@ -532,6 +497,7 @@ class MapsPage(QWidget):
         self.duplicate_btn.clicked.connect(self.duplicate)
         self.rename_btn.clicked.connect(self.rename)
         self.delete_btn.clicked.connect(self.delete)
+        self.export_btn.clicked.connect(self.export)
         grid = QGridLayout()
         grid.setSpacing(6)
         for i, b in enumerate((self.new_btn, self.import_btn, self.duplicate_btn, self.rename_btn,
@@ -598,11 +564,11 @@ class MapsPage(QWidget):
                                    | QAbstractItemView.EditTrigger.AnyKeyPressed)
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
-        for col, width in ((COL_NOTE, 64), (COL_PITCH, 64), (COL_PRIMARY, 80), (COL_SHARED, 96)):
+        for col, width in ((COL_NOTE, 64), (COL_PITCH, 64)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(col, width)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
-        self.table.setItemDelegateForColumn(COL_PRIMARY, CheckDelegate(self.table))
+        self.table.setItemDelegateForColumn(COL_NAME, NameDelegate(self.table))
         self.table.installEventFilter(self)
         for sig in (self.proxy.modelReset, self.proxy.layoutChanged, self.proxy.rowsInserted,
                     self.proxy.rowsRemoved):
@@ -879,15 +845,10 @@ class MapsPage(QWidget):
         self._update_issues()
 
     def _update_issues(self) -> None:
-        issues = validate_map(self.work)
-        errors = [i.message for i in issues if i.severity == "error"]
-        warnings = [i for i in issues if i.severity == "warning"]
+        errors = [i.message for i in validate_map(self.work) if i.severity == "error"]
         parts = []
         if errors:
             parts.append("Errors: " + "; ".join(errors))
-        if warnings:
-            parts.append(f"{len(warnings)} articulation(s) on several notes without a Write to note "
-                         "(highlighted) — they are skipped in “Write to notes only” export.")
         if self.load_issues:
             parts.append(f"{len(self.load_issues)} issue(s) when reading the .txt file "
                          "(see the tooltip).")
@@ -1010,36 +971,20 @@ class MapsPage(QWidget):
         self.reload_list()
         self.set_status(f'Deleted "{name}".', "ok")
 
-    def export(self, primary_only: bool) -> None:
-        """Экспорт карты в том виде, как она в редакторе (включая несохранённые правки)."""
+    def export(self) -> None:
+        """Экспорт всей карты в том виде, как она в редакторе (включая несохранённые правки)."""
         if self.work is None:
             return
         m = finalize_edit(self.base, self.work)
-        skipped: list[str] = []
-        if primary_only:
-            keep, skipped = primary_only_notes(m)
-            if not keep:
-                self.show_error("Nothing to export: no articulation has a single or Write to note.")
-                return
-            if skipped and not self.confirm(
-                    "Export Write to notes only",
-                    f"{len(skipped)} articulation(s) are on several notes without a Write to note "
-                    "and will be skipped. Export anyway?",
-                    "\n".join(skipped)):
-                return
-        suffix = " (write to)" if primary_only else ""
-        path = self.choose_save_file(sanitize_id(m.name + suffix) + ".txt")
+        path = self.choose_save_file(sanitize_id(m.name) + ".txt")
         if not path:
             return
         try:
-            save_notenames(m, path, primary_only)
+            save_notenames(m, path)
         except OSError as e:
             self.show_error(f"Cannot export the map:\n\n{e}")
             return
-        text = f"Exported to {path}."
-        if skipped:
-            text += f" Skipped ({len(skipped)}): " + ", ".join(skipped)
-        self.set_status(text, "ok")
+        self.set_status(f"Exported to {path}.", "ok")
 
     def set_status(self, text: str, state: str = "") -> None:
         self.status.setText(text)

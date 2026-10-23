@@ -19,7 +19,12 @@ write_to_requested) — правила меняет ядро (core/profile.py) �
 (правило delete) / вернуть (без правила). Бейдж «+N» строки цели — меню выбора Write to.
 Строка цели показывает номера, на которые идут кабели (TargetRow.lines); Write to — цветом акцента.
 
-Пересортировка: set_profile(), resort() (кнопка ↻), режим группы цели, включение вида (set_active).
+Подсказки (set_suggestions) — пунктирные кабели (на мышь не реагируют), у строки-подсказки — кольцо вместо точки.
+Границы колонок сцены (правый край колонки 2, края колонки 3) тянутся мышью (зона — со стороны промежутка),
+граница пула — QSplitter; ширины — в QSettings (доли ширины сцены). Имя или подпись не помещается — полностью
+в подсказке.
+
+Пересортировка: set_profile(), resort() (кнопка ↻), режим группы цели.
 После правок — refresh(): порядок заморожен (см. cable_layout). Сворачивание в пуле и раскрытие алиасов
 перестраивают только свою колонку (порядок тот же).
 """
@@ -29,7 +34,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import (
     QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QMenu, QSplitter, QVBoxLayout,
@@ -38,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from ..core.notemap import primary_note
 from ..core.pitch import pitch_name
-from ..core.profile import NO_RULE, ProfileIssue, RemapProfile, validate_profile
+from ..core.profile import NO_RULE, RemapProfile, validate_profile
 from .cable_layout import (
     DEFAULT_COLLAPSED, DELETE, KEEP, MIXED, TARGET_PREFIX, UNASSIGNED, CableLayout, Header, OrderSnapshot,
     SourceRow, TargetRow, build_layout,
@@ -54,11 +59,22 @@ BADGE_W = 32        # бейдж «+N» строки цели (кликабел�
 CHEVRON_W = 18      # шеврон раскрытия алиасов справа в строке
 INDENT = 14         # отступ строк нот под заголовком раскрытых алиасов
 PORT = 3.0          # радиус точки подключения кабеля
-CABLE_W, CABLE_HOVER_W = 2.0, 3.0
+CABLE_W = 2.0                      # подсказки (пунктир), превью от подключённых строк
+CABLE_PRIMARY_W = CABLE_W          # основной кабель ноты цели (Cable.primary)
+CABLE_THIN_W = CABLE_W / 1.5       # прочие кабели; превью от неназначенных нот
+CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
+# Акцент номера n -> n у ноты под раскрытыми алиасами (SourceRow.accent). Выключен: основную связь показывает
+# толщина кабеля. Код оставлен — включить, поставив True.
+ACCENT_SAME_NUMBER = False
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
 STALE = 0.45        # прозрачность строки без кабеля (до пересортировки)
 POOL_WIDTH = 300    # начальная ширина пула
+SCENE_MIN = 460     # минимальная ширина сцены, px
+MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колонки и промежутка для кабелей
+GRIP = 6            # ширина зоны захвата границы колонок, px
+SUGGESTED = 0.7     # непрозрачность пунктирного кабеля подсказки
+POOL_KEY, COLUMNS_KEY = "cables/pool_width", "cables/columns"  # ключи QSettings
 
 FRAME_MS = 16                   # кадр кабеля-превью и автопрокрутки
 STIFFNESS, DAMPING = 0.3, 0.6   # пружина конца кабеля-превью (лёгкое запаздывание, без раскачки)
@@ -87,6 +103,9 @@ WRITE_TO_HINT = "Write to: {n} (orange number) — notes from other numbers are 
 GROUP_HINT = ("Drag onto a target group to connect notes with the same numbers\n"
               "Right-click to delete or restore the whole group")
 TARGET_GROUP_HINT = "Drop notes here to connect those with the same numbers"
+SUGGESTED_HINT = "Apply in the bar above, or drag onto another target"
+SUGGESTED_WRITE_TO_HINT = ("The target is on several notes: drag the row onto it to choose the Write to note. "
+                           "Apply skips it")
 
 
 def _font(base: QFont, *, bold=False, weight: QFont.Weight | None = None, size_delta=0.0, strike=False,
@@ -106,15 +125,41 @@ def _font(base: QFont, *, bold=False, weight: QFont.Weight | None = None, size_d
     return f
 
 
+def _setting(settings: QSettings | None, key: str, default, kind):
+    """Значение из QSettings нужного типа; нет или битое — default."""
+    if settings is None:
+        return default
+    try:
+        value = settings.value(key)
+        return default if value is None else kind(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _load_columns(settings: QSettings | None) -> tuple[float, float, float] | None:
+    try:
+        parts = tuple(float(x) for x in _setting(settings, COLUMNS_KEY, "", str).split(","))
+    except ValueError:
+        return None
+    if len(parts) != 3 or any(f <= 0 for f in parts) or sum(parts) > 1.001:
+        return None
+    return parts
+
+
 def _color(token: str, alpha: float = 1.0) -> QColor:
     c = QColor(TOKENS[token])
     c.setAlphaF(alpha)
     return c
 
 
-def _draw_port(p: QPainter, c: QPointF, token: str = "accent") -> None:
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(_color(token))
+def _draw_port(p: QPainter, c: QPointF, token: str = "accent", hollow: bool = False) -> None:
+    """Точка подключения кабеля; hollow — кольцо (только подсказка, правила ещё нет)."""
+    if hollow:
+        p.setPen(QPen(_color(token), 1.2))
+        p.setBrush(_color("bg"))
+    else:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_color(token))
     p.drawEllipse(c, PORT, PORT)
 
 
@@ -158,23 +203,24 @@ def preview_path(a: QPointF, b: QPointF) -> QPainterPath:
 # --- элементы сцены ---
 
 class _Row(QGraphicsItem):
-    """Строка: фон со скруглением, номер, высота ноты, имя (и «×N» у алиасов), маркер справа; точка кабеля слева
+    """Строка: фон со скруглением, номер, высота ноты, имя, бейдж «+N» и маркер справа; точка кабеля слева
     или справа. Высокая строка цели (связка многие-в-одну) — один блок, текст на уровне первой строки напротив.
 
-    role — POOL / SOURCE / TARGET; model — SourceRow или TargetRow из раскладки."""
+    role — POOL / SOURCE / TARGET; model — SourceRow или TargetRow из раскладки. pill — текст бейджа («+N» —
+    ещё N нот: алиасы источника или скрытые ноты артикуляции цели); badge — бейдж кликабелен (меню Write to)."""
 
     def __init__(self, rect: QRectF, role: str, model: SourceRow | TargetRow, number: str, pitch: str, name: str,
-                 *, name_color="text", strike=False, italic=False, marker="", count=1, chevron: str | None = None,
-                 badge=False, port: str | None = None, warn=False, tooltip="",
+                 *, name_color="text", strike=False, italic=False, marker="", pill="", chevron: str | None = None,
+                 badge=False, port: str | None = None, dashed=False, warn=False, tooltip="",
                  lines: list[tuple[int, str, str, bool]] | None = None) -> None:
         super().__init__()
         self.rect, self.role, self.model = rect, role, model
         self.number, self.pitch, self.name = number, pitch, name
-        # номера по строкам блока: (смещение, номер, высота, Write to); по умолчанию — один, на первой строке
+        # номера по строкам блока: (смещение, номер, высота, подсветка); по умолчанию — один, на первой строке
         self.lines = lines if lines is not None else [(0, number, pitch, False)]
         self.name_color, self.strike, self.italic, self.marker = name_color, strike, italic, marker
-        self.count, self.chevron, self.badge = count, chevron, badge  # chevron: collapsed / expanded / fixed
-        self.port, self.warn = port, warn
+        self.pill, self.chevron, self.badge = pill, chevron, badge  # chevron: collapsed / expanded / fixed
+        self.port, self.dashed, self.warn = port, dashed, warn
         self.highlighted = False
         self.selected = False
         self._hover = False
@@ -200,6 +246,18 @@ class _Row(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return self.rect.adjusted(-PORT - 1, 0, PORT + 1, 0)
 
+    def _right(self) -> float:
+        """Правый край содержимого (левее шеврона)."""
+        return self.rect.right() - (CHEVRON_W + 4 if self.chevron else 0)
+
+    def _pill_right(self) -> float:
+        return self._right() - (MARK_W if self.marker else 0)
+
+    def name_room(self) -> float:
+        """Ширина под имя, px (имя длиннее — обрезается, полное — в подсказке)."""
+        x = self.rect.left() + 6 + NUM_W + 8 + PITCH_W
+        return max(0.0, self._pill_right() - (BADGE_W if self.pill else 8) - x)
+
     def chevron_rect(self) -> QRectF | None:
         """Зона шеврона алиасов (в координатах сцены); None — шеврона нет или он не переключается."""
         if self.chevron not in ("collapsed", "expanded"):
@@ -207,9 +265,10 @@ class _Row(QGraphicsItem):
         return QRectF(self.rect.right() - CHEVRON_W - 4, self.rect.top(), CHEVRON_W + 4, ROW)
 
     def badge_rect(self) -> QRectF | None:
-        if not self.badge:
+        """Зона кликабельного бейджа (меню Write to строки цели)."""
+        if not self.badge or not self.pill:
             return None
-        return QRectF(self.rect.right() - BADGE_W - 4, self.rect.top(), BADGE_W + 4, ROW)
+        return QRectF(self._pill_right() - BADGE_W - 4, self.rect.top(), BADGE_W + 4, ROW)
 
     def hoverEnterEvent(self, event) -> None:
         self._hover = True
@@ -238,43 +297,34 @@ class _Row(QGraphicsItem):
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         right_mid = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         num_font, pitch_font = _font(base, weight=QFont.Weight.Medium), _font(base, size_delta=-1.5)
-        for off, number, pitch, write_to in self.lines:  # у строки цели — номер на уровне своего кабеля
+        for off, number, pitch, accent in self.lines:  # у строки цели — номер на уровне своего кабеля
             top = line.top() + off * ROW
             p.setFont(num_font)
-            p.setPen(_color("accent" if write_to else "text"))
+            p.setPen(_color("accent" if accent else "text"))
             p.drawText(QRectF(x, top, NUM_W, line.height()), right_mid, number)
             p.setFont(pitch_font)
             p.setPen(_color("text_muted"))
             p.drawText(QRectF(x + NUM_W + 8, top, PITCH_W, line.height()), left_mid, pitch)
         x += NUM_W + 8 + PITCH_W
-        right = r.right() - (CHEVRON_W + 4 if self.chevron else 0)
-        mark_w = BADGE_W if self.badge else MARK_W if self.marker else 0
-        name_w = right - x - (mark_w or 8)
+        name_w = self.name_room()
         font = _font(base, strike=self.strike, italic=self.italic)
-        small = _font(base, size_delta=-1.5)
-        count = f"×{self.count}" if self.count > 1 else ""
-        count_w = QFontMetrics(small).horizontalAdvance(count) + 6 if count else 0
-        text = QFontMetrics(font).elidedText(self.name, Qt.TextElideMode.ElideRight, max(0, int(name_w - count_w)))
+        text = QFontMetrics(font).elidedText(self.name, Qt.TextElideMode.ElideRight, int(name_w))
         p.setFont(font)
         p.setPen(_color(self.name_color))
         p.drawText(QRectF(x, line.top(), name_w, line.height()), left_mid, text)
-        if count:
-            p.setFont(small)
-            p.setPen(_color("text_muted"))
-            p.drawText(QRectF(x + QFontMetrics(font).horizontalAdvance(text) + 6, line.top(), count_w,
-                              line.height()), left_mid, count)
-        if self.badge:
-            pill = QRectF(right - BADGE_W, line.top() + 4, BADGE_W - 6, line.height() - 8)
+        if self.pill:
+            pill = QRectF(self._pill_right() - BADGE_W, line.top() + 4, BADGE_W - 6, line.height() - 8)
             p.setPen(QPen(_color("border"), 1))
             p.setBrush(_color("bg"))
             p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
             p.setFont(_font(base, size_delta=-1.5, bold=True))
             p.setPen(_color("text_muted"))
-            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.marker)
-        elif self.marker:
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.pill)
+        if self.marker:
             p.setFont(_font(base, size_delta=-1.5, bold=True))
             p.setPen(_color("text_muted"))
-            p.drawText(QRectF(right - MARK_W, line.top(), MARK_W - 6, line.height()), right_mid, self.marker)
+            p.drawText(QRectF(self._right() - MARK_W, line.top(), MARK_W - 6, line.height()), right_mid,
+                       self.marker)
         if self.chevron:
             _draw_chevron(p, r.right() - CHEVRON_W + 2, line.center().y(), self.chevron == "collapsed",
                           "text_faint" if self.chevron == "fixed" else "text_muted")
@@ -282,9 +332,9 @@ class _Row(QGraphicsItem):
             token = "accent_hover" if self.highlighted else "accent"
             if self.port == "left":  # цель: точка на каждом номере, куда приходят кабели
                 for off, *_ in self.lines:
-                    _draw_port(p, QPointF(r.left(), self.rect.top() + (off + 0.5) * ROW), token)
+                    _draw_port(p, QPointF(r.left(), self.rect.top() + (off + 0.5) * ROW), token, self.dashed)
             else:
-                _draw_port(p, QPointF(r.right(), r.center().y()), token)
+                _draw_port(p, QPointF(r.right(), r.center().y()), token, self.dashed)
 
 
 class _HeaderItem(QGraphicsItem):
@@ -308,6 +358,17 @@ class _HeaderItem(QGraphicsItem):
 
     def boundingRect(self) -> QRectF:
         return QRectF(self.rect)
+
+    def label_x(self) -> float:
+        return self.rect.left() + 6 + 14 * self.header.level + 14
+
+    def label_room(self) -> float:
+        """Ширина под подпись, px (справа — место под число)."""
+        return max(0.0, self.rect.right() - self.label_x() - 48)
+
+    def label_font(self, base: QFont) -> QFont:
+        return (_font(base, bold=True, size_delta=-2.5, caps=True) if self.header.level == 0
+                else _font(base, weight=QFont.Weight.DemiBold, size_delta=-1))
 
     def hoverEnterEvent(self, event) -> None:
         self._hover = True
@@ -333,16 +394,14 @@ class _HeaderItem(QGraphicsItem):
             p.setPen(QPen(_color("accent", 0.8), 1) if self.highlighted else Qt.PenStyle.NoPen)
             p.setBrush(_color("surface_hover"))
             p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
-        x = r.left() + 6 + 14 * h.level
-        _draw_chevron(p, x, r.center().y(), h.collapsed)
-        x += 14
-        font = (_font(base, bold=True, size_delta=-2.5, caps=True) if h.level == 0
-                else _font(base, weight=QFont.Weight.DemiBold, size_delta=-1))
+        x = self.label_x()
+        _draw_chevron(p, x - 14, r.center().y(), h.collapsed)
+        font = self.label_font(base)
         fm = QFontMetrics(font)
         p.setFont(font)
         p.setPen(_color("text_muted"))
-        avail = r.right() - x - 48
-        text = fm.elidedText(h.label, Qt.TextElideMode.ElideRight, max(0, int(avail)))
+        avail = self.label_room()
+        text = fm.elidedText(h.label, Qt.TextElideMode.ElideRight, int(avail))
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         p.drawText(QRectF(x, r.top(), avail, r.height()), left_mid, text)
         count = f"{h.shown} / {h.count}" if h.shown else str(h.count)  # цель: подключённые / все артикуляции
@@ -368,24 +427,35 @@ class _Bundle(QGraphicsItem):
 
 
 class _CableItem(QGraphicsPathItem):
-    """Кабель: наведение — толще и ярче, его строки подсвечены, остальные кабели приглушены."""
+    """Кабель: наведение — толще и ярче, его строки подсвечены, остальные кабели приглушены.
+    Подсказка (cable.suggested) — пунктир, на мышь не реагирует (действия — у строки и в панели подсказок)."""
 
     def __init__(self, path: QPainterPath, cable: Cable, editor: CableEditor, src: _Row, dst: _Row,
                  tooltip: str) -> None:
         super().__init__(path)
         self.cable, self.editor, self.src, self.dst = cable, editor, src, dst
         self.setZValue(0.5)
-        self.setAcceptHoverEvents(True)
-        self.setToolTip(tooltip)
+        self.setAcceptHoverEvents(not cable.suggested)
+        if not cable.suggested:
+            self.setToolTip(tooltip)
         self.set_style(False)
 
     def set_style(self, hovered: bool) -> None:
-        pen = QPen(_color("accent_hover" if hovered else "accent"), CABLE_HOVER_W if hovered else CABLE_W)
+        if self.cable.suggested:
+            pen = QPen(_color("accent", SUGGESTED), CABLE_W, Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([3, 3])
+            self.setPen(pen)
+            self.setZValue(0.4)
+            return
+        width = CABLE_PRIMARY_W if self.cable.primary else CABLE_THIN_W
+        pen = QPen(_color("accent_hover" if hovered else "accent"), width + CABLE_HOVER_EXTRA if hovered else width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self.setPen(pen)
         self.setZValue(0.6 if hovered else 0.5)
 
     def shape(self) -> QPainterPath:
+        if self.cable.suggested:
+            return QPainterPath()  # не перехватывает мышь
         stroker = QPainterPathStroker()
         stroker.setWidth(CABLE_HIT)  # попасть курсором в 2-пиксельную линию
         return stroker.createStroke(self.path())
@@ -415,6 +485,17 @@ class _ColumnView(QGraphicsView):
         self.handler: CableEditor | None = None
         self._on_width_changed = on_width_changed
         self._width = 0
+        self.guide_x: float | None = None  # граница колонок под курсором или перетаскиваемая — тонкая линия
+
+    def set_guide(self, x: float | None) -> None:
+        if x != self.guide_x:
+            self.guide_x = x
+            self.viewport().update()
+
+    def drawForeground(self, p: QPainter, rect: QRectF) -> None:
+        if self.guide_x is not None:
+            p.setPen(QPen(_color("accent", 0.6), 1))
+            p.drawLine(QPointF(self.guide_x, rect.top()), QPointF(self.guide_x, rect.bottom()))
 
     def width_px(self, minimum: int) -> int:
         return max(self.viewport().width(), minimum)
@@ -471,10 +552,11 @@ class CableOverlay(QWidget):
         self.preview: list[QPainterPath] | None = None
         self.end: QPointF | None = None
         self.valid = False  # под курсором — строка цели (кабель ярче)
+        self.width = CABLE_W
 
-    def show_preview(self, starts: list[QPointF], end: QPointF, valid: bool = False) -> None:
+    def show_preview(self, starts: list[QPointF], end: QPointF, valid: bool = False, width: float = CABLE_W) -> None:
         self.preview = [preview_path(a, end) for a in starts]
-        self.end, self.valid = end, valid
+        self.end, self.valid, self.width = end, valid, width
         self.update()
 
     def clear_preview(self) -> None:
@@ -487,7 +569,7 @@ class CableOverlay(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         token = "accent_hover" if self.valid else "accent"
-        pen = QPen(_color(token), CABLE_W)
+        pen = QPen(_color(token), self.width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -531,8 +613,9 @@ class CableEditor(QWidget):
     strike_requested = Signal(list)         # ноты: зачеркнуть (delete) или, если все зачёркнуты, вернуть
     write_to_requested = Signal(int)        # нота цели: сделать Write to и перенаправить правила
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, settings: QSettings | None = None, parent=None) -> None:
         super().__init__(parent)
+        self.settings = settings  # ширины колонок между запусками
         self.pool = _ColumnView(self._draw_pool)
         self.view = _ColumnView(self._draw_scene)
         self.pool.handler = self.view.handler = self
@@ -543,7 +626,8 @@ class CableEditor(QWidget):
         self.splitter.addWidget(self.view)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([POOL_WIDTH, 800])
+        self.splitter.setSizes([_setting(settings, POOL_KEY, POOL_WIDTH, int), 800])
+        self.splitter.splitterMoved.connect(self._save_pool_width)
         self.pool.setMinimumWidth(200)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
@@ -555,10 +639,15 @@ class CableEditor(QWidget):
         self.show_all: set[str] = set()                    # группы цели в режиме «все»
         self.expanded: set[str] = set()                    # раскрытые алиасы («<место>|<имя>»)
         self.selection: set[int] = set()                   # выделенные ноты (строки пула и колонки 2)
+        self.suggested: dict[int, str] = {}                # подсказки: нота без правила -> артикуляция цели
         self.order: OrderSnapshot | None = None
         self.current: CableLayout | None = None  # последняя построенная раскладка
-        self.active = False                      # вид показан (скрытый не перестраивается)
+        # доли ширины сцены: колонка 2, промежуток для кабелей, колонка 3 (None — по умолчанию от ширины)
+        self.columns: tuple[float, float, float] | None = _load_columns(settings)
+        # тащат границу колонок: индекс, ширины (px) и x мыши в начале
+        self._resize: tuple[int, tuple[float, float, float], float] | None = None
         self.cable_items: list[_CableItem] = []
+        self.suggestion_items: list[_CableItem] = []             # пунктирные кабели подсказок
         self.pool_items: dict[int, _Row] = {}                    # нота -> строка пула (у алиасов — общая)
         self.source_items: dict[int, _Row] = {}                  # нота -> строка колонки 2
         self.pool_rows: list[_Row] = []
@@ -566,7 +655,7 @@ class CableEditor(QWidget):
         self.scene_rows: list[_Row] = []
         self.target_items: dict[str, _Row] = {}                  # строки цели по slot
         self.hovered: _CableItem | None = None
-        self._issues: dict[int, list[ProfileIssue]] = {}
+        self._issues: dict[int, list[str]] = {}  # нота -> тексты замечаний (подсказка строки)
         self._press: _Press | None = None
         self._anchor: tuple[_ColumnView, frozenset[int]] | None = None  # начало диапазона Shift+клика
         self._drag: _Drag | None = None
@@ -597,29 +686,22 @@ class CableEditor(QWidget):
             self.expanded.clear()
         self.resort()
 
-    def set_active(self, active: bool) -> None:
-        """Вид показан или скрыт. Показ — пересортировка (правки, сделанные в таблице, раскладываются заново)."""
-        self.active = active
-        if not active:
-            self.cancel_drag()
-        if active:
-            self.resort()
+    def set_suggestions(self, suggested: dict[int, str]) -> None:
+        """Подсказки для показа пунктиром (перестройка — refresh() или resort())."""
+        self.suggested = dict(suggested)
 
     def refresh(self) -> None:
         """Правила изменились: порядок заморожен — строки без кабеля остаются на местах до пересортировки."""
-        if self.active:
-            self._build(self.order)
+        self._build(self.order)
 
     def resort(self) -> None:
         self.order = None
-        if self.active:
-            self._build(None)
+        self._build(None)
 
     def toggle_pool(self, key: str) -> None:
         """Свернуть/развернуть блок или группу пула: перестраивается только пул (порядок тот же)."""
         self.collapsed ^= {key}
-        if self.active:
-            self._build(self.order, scene=False)
+        self._build(self.order, scene=False)
 
     def toggle_target(self, key: str) -> None:
         """Группа цели: «только подключённые» ↔ «все» (с пересортировкой)."""
@@ -629,8 +711,7 @@ class CableEditor(QWidget):
     def toggle_alias(self, key: str, in_pool: bool) -> None:
         """Раскрыть/свернуть алиасы: перестраивается только своя колонка (порядок тот же)."""
         self.expanded ^= {key}
-        if self.active:
-            self._build(self.order, pool=in_pool, scene=not in_pool)
+        self._build(self.order, pool=in_pool, scene=not in_pool)
 
     def selected_notes(self) -> list[int]:
         return sorted(self.selection)
@@ -680,6 +761,8 @@ class CableEditor(QWidget):
 
     def _item_at(self, view: _ColumnView, pos: QPoint):
         for item in view.items(pos):
+            if isinstance(item, _CableItem) and item.cable.suggested:
+                continue
             if isinstance(item, (_Row, _HeaderItem, _CableItem)):
                 return item
         return None
@@ -687,6 +770,11 @@ class CableEditor(QWidget):
     def view_press(self, view: _ColumnView, event) -> bool:
         """Нажатие в одной из view. True — обработано здесь (элементам сцены не передавать)."""
         pos = event.position()
+        if event.button() == Qt.MouseButton.LeftButton and self._drag is None:
+            edge = self._boundary_at(view, pos.x())
+            if edge is not None:
+                self._resize = (edge, self._column_px(view.width_px(SCENE_MIN)), pos.x())
+                return True
         item = self._item_at(view, pos.toPoint())
         if event.button() == Qt.MouseButton.RightButton:
             self.right_click(item)
@@ -742,6 +830,16 @@ class CableEditor(QWidget):
 
     def view_move(self, view: _ColumnView, event) -> bool:
         pos = event.position()
+        if self._resize is not None:
+            self._resize_to(pos.x())
+            return True
+        if self._drag is None and self._press is None and view is self.view:
+            edge = self._boundary_at(view, pos.x())
+            view.set_guide(None if edge is None else self._boundaries(view.width_px(SCENE_MIN))[edge])
+            if edge is not None:
+                view.viewport().setCursor(Qt.CursorShape.SplitHCursor)
+            else:
+                view.viewport().unsetCursor()
         if self._drag is not None:
             self.drag_to(QPointF(view.viewport().mapTo(self, pos.toPoint())))
             return True
@@ -760,6 +858,11 @@ class CableEditor(QWidget):
     def view_release(self, view: _ColumnView, event) -> bool:
         if event.button() != Qt.MouseButton.LeftButton:
             return self._drag is not None
+        if self._resize is not None:
+            self._resize = None
+            self.view.set_guide(None)
+            self._save_columns()
+            return True
         if self._drag is not None:
             self.end_drag(drop=True)
             return True
@@ -807,6 +910,12 @@ class CableEditor(QWidget):
             v.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
         self._frame.start()
         self._tick()
+
+    def _preview_width(self, d: _Drag) -> float:
+        """Тянут только неназначенные ноты (без правила map) — тонкий кабель-превью, иначе обычный."""
+        rules = self.profile.rules if self.profile is not None else {}
+        mapped = any(rules.get(n) is not None and rules[n].action == "map" for n in d.notes)
+        return CABLE_W if mapped else CABLE_THIN_W
 
     def drag_to(self, at: QPointF) -> None:
         if self._drag is not None:
@@ -894,7 +1003,7 @@ class CableEditor(QWidget):
         d.step()
         self._autoscroll(d.cursor)
         self._update_hover()
-        self.overlay.show_preview(self._drag_anchors(d), d.pos, self._droppable(d.hover))
+        self.overlay.show_preview(self._drag_anchors(d), d.pos, self._droppable(d.hover), self._preview_width(d))
 
     def _drag_anchors(self, d: _Drag) -> list[QPointF]:
         if d.header is not None:
@@ -949,7 +1058,7 @@ class CableEditor(QWidget):
     # --- построение ---
 
     def _build(self, snapshot: OrderSnapshot | None, *, pool: bool = True, scene: bool = True) -> None:
-        lay = build_layout(self.profile, self.collapsed, snapshot, self.show_all, self.expanded)
+        lay = build_layout(self.profile, self.collapsed, snapshot, self.show_all, self.expanded, self.suggested)
         if self.current is not None:  # порядок тот же — нетронутая колонка остаётся как есть
             if not pool:
                 lay.pool = self.current.pool
@@ -961,7 +1070,7 @@ class CableEditor(QWidget):
         if self.profile is not None:
             for i in validate_profile(self.profile):
                 if i.code != NO_RULE:
-                    self._issues.setdefault(i.note, []).append(i)
+                    self._issues.setdefault(i.note, []).append(i.message[:1].upper() + i.message[1:])
         if self._drag is not None and self._drag.hover is not None:
             self._drag.hover = None  # элементы сейчас пересоздадутся
         if pool:
@@ -984,11 +1093,13 @@ class CableEditor(QWidget):
             if h.level == 1:
                 tip += f"\n{GROUP_HINT}"
             item = _HeaderItem(QRectF(PAD, PAD + h.y * ROW, col, ROW), h, self.toggle_pool, tip)
+            self._full_label(item, self.pool)
             self.pool_headers[h.key] = item
             scene.addItem(item)
         for r in lay.pool.rows:
             indent = INDENT if r.child else 0
             item = self._source_item(QRectF(PAD + indent, PAD + r.y * ROW, col - indent, ROW), r, POOL)
+            self._full_name(item, self.pool)
             self._register(item, self.pool_items, self.pool_rows)
             scene.addItem(item)
         self.pool.end()
@@ -1003,25 +1114,94 @@ class CableEditor(QWidget):
             for n in item.notes:
                 by_note[n] = item
 
-    def _scene_columns(self, width: float) -> tuple[float, float, float]:
-        """x колонки 2, x колонки 3, ширина колонки."""
-        gap = min(220.0, max(90.0, width * 0.22))
-        col = (width - 2 * PAD - gap) / 2
-        return PAD, PAD + col + gap, col
+    # --- ширины колонок сцены ---
+
+    def _column_px(self, width: float) -> tuple[float, float, float]:
+        """Ширины колонки 2, промежутка и колонки 3 в px при ширине сцены width."""
+        avail = width - 2 * PAD
+        if self.columns is None:  # по умолчанию: промежуток ~22 %, колонки поровну
+            gap = min(220.0, max(90.0, width * 0.22))
+            return (avail - gap) / 2, gap, (avail - gap) / 2
+        c2, gap, c3 = (f * avail for f in self.columns)
+        gap = max(MIN_GAP, gap)
+        c2 = max(MIN_COL, min(c2, avail - gap - MIN_COL))
+        c3 = max(MIN_COL, min(c3, avail - c2 - gap))
+        return c2, gap, c3
+
+    def _boundaries(self, width: float) -> tuple[float, float, float]:
+        """x границ: правый край колонки 2, левый и правый края колонки 3."""
+        c2, gap, c3 = self._column_px(width)
+        return PAD + c2, PAD + c2 + gap, PAD + c2 + gap + c3
+
+    def _boundary_at(self, view: _ColumnView, x: float) -> int | None:
+        """Индекс границы колонок сцены под x (координаты viewport = сцены: горизонтальной прокрутки нет).
+        Зона — со стороны промежутка, чтобы не мешать точкам кабелей."""
+        if view is not self.view or self.current is None:
+            return None
+        b2, b3, b_end = self._boundaries(view.width_px(SCENE_MIN))
+        zones = ((b2 + PORT + 1, b2 + PORT + 1 + GRIP), (b3 - PORT - 1 - GRIP, b3 - PORT - 1),
+                 (b_end + 1, b_end + 1 + GRIP))
+        return next((i for i, (a, b) in enumerate(zones) if a <= x <= b), None)
+
+    def _resize_to(self, x: float) -> None:
+        """Тянут границу колонок: меняются две соседние части (колонка / промежуток / свободное место справа)."""
+        edge, (c2, gap, c3), start = self._resize
+        dx = x - start  # граница сдвигается на смещение мыши (не прыгает к курсору)
+        width = self.view.width_px(SCENE_MIN)
+        avail = width - 2 * PAD
+        if edge == 0:
+            new = max(MIN_COL, min(c2 + dx, c2 + gap - MIN_GAP))
+            c2, gap = new, c2 + gap - new
+        elif edge == 1:
+            new = max(MIN_GAP, min(gap + dx, gap + c3 - MIN_COL))
+            gap, c3 = new, gap + c3 - new
+        else:
+            c3 = max(MIN_COL, min(c3 + dx, avail - c2 - gap))
+        self.columns = (c2 / avail, gap / avail, c3 / avail)
+        self._draw_scene()
+        self.view.set_guide(self._boundaries(width)[edge])
+
+    def _save_columns(self) -> None:
+        if self.settings is not None and self.columns is not None:
+            self.settings.setValue(COLUMNS_KEY, ",".join(f"{f:.4f}" for f in self.columns))
+
+    def _save_pool_width(self, *_) -> None:
+        if self.settings is not None:
+            self.settings.setValue(POOL_KEY, self.splitter.sizes()[0])
+
+    def _scene_columns(self, width: float) -> tuple[float, float, float, float]:
+        """x колонки 2, x колонки 3, ширины колонок 2 и 3."""
+        c2, gap, c3 = self._column_px(width)
+        return PAD, PAD + c2 + gap, c2, c3
+
+    # --- полные имена в подсказках ---
+
+    @staticmethod
+    def _full_name(item: _Row, view: _ColumnView) -> None:
+        """Имя не помещается в строку — полное имя первой строкой подсказки."""
+        font = _font(view.font(), strike=item.strike, italic=item.italic)
+        if item.name and QFontMetrics(font).horizontalAdvance(item.name) > item.name_room():
+            item.setToolTip(f"{item.name}\n{item.toolTip()}".strip())
+
+    @staticmethod
+    def _full_label(item: _HeaderItem, view: _ColumnView) -> None:
+        if QFontMetrics(item.label_font(view.font())).horizontalAdvance(item.header.label) > item.label_room():
+            item.setToolTip(f"{item.header.label}\n{item.toolTip()}")
 
     def _draw_scene(self) -> None:
         lay = self.current
         self.cable_items, self.source_items, self.scene_rows, self.target_items = [], {}, [], {}
+        self.suggestion_items = []
         self.hovered = None
         if lay is None:
             return
         sc = lay.scene
-        width = self.view.begin(sc.height, 460)
-        lx, rx, col = self._scene_columns(width)
+        width = self.view.begin(sc.height, SCENE_MIN)
+        lx, rx, col2, col3 = self._scene_columns(width)
         scene = self.view.scene()
 
         def rect(x: float, y: int, h: int = 1) -> QRectF:
-            return QRectF(x, PAD + y * ROW, col, h * ROW)
+            return QRectF(x, PAD + y * ROW, col2 if x == lx else col3, h * ROW)
 
         for h in sc.target_headers:
             if h.key in self.show_all:
@@ -1032,10 +1212,14 @@ class CableEditor(QWidget):
                 tip = f"{h.shown} of {h.count} connected\n{tip}"
             if h.notes:
                 tip += f"\n{TARGET_GROUP_HINT}"
-            scene.addItem(_HeaderItem(rect(rx, h.y), h, self.toggle_target, tip))
-        connected_slots = {c.target.slot for c in sc.cables}
+            item = _HeaderItem(rect(rx, h.y), h, self.toggle_target, tip)
+            self._full_label(item, self.view)
+            scene.addItem(item)
+        solid = {c.target.slot for c in sc.cables if not c.suggested}
+        dashed = {c.target.slot for c in sc.cables if c.suggested} - solid
         for t in sc.target_rows:
-            item = self._target_item(rect(rx, t.y, t.height), t, t.slot in connected_slots)
+            item = self._target_item(rect(rx, t.y, t.height), t, t.slot in solid | dashed, t.slot in dashed)
+            self._full_name(item, self.view)
             self.target_items[t.slot] = item
             scene.addItem(item)
             if t.height > 1:
@@ -1043,19 +1227,20 @@ class CableEditor(QWidget):
         for r in sc.source_rows:
             indent = INDENT if r.child else 0
             item = self._source_item(rect(lx, r.y).adjusted(indent, 0, 0, 0), r, SOURCE)
+            self._full_name(item, self.view)
             if r.stale:
                 item.setOpacity(STALE)
             self._register(item, self.source_items, self.scene_rows)
             scene.addItem(item)
         rows_by_y = {item.model.y: item for item in self.scene_rows}
-        x1, x2 = lx + col, rx
+        x1, x2 = lx + col2, rx
         for c in sc.cables:
             a = QPointF(x1, PAD + c.src_y * ROW + ROW / 2)
             b = QPointF(x2, PAD + (c.dst_y + 0.5) * ROW)  # на свой номер в строке цели
             item = _CableItem(cable_path(a, b), c, self, rows_by_y[c.src_y], self.target_items[c.target.slot],
-                              self._cable_tip(c.notes, c.dst))
+                              self._cable_tip(c.notes, c.dst) if c.dst is not None else "")
             scene.addItem(item)
-            self.cable_items.append(item)
+            (self.suggestion_items if c.suggested else self.cable_items).append(item)
         self.view.end()
 
     def _source_item(self, r: QRectF, row: SourceRow, role: str) -> _Row:
@@ -1063,6 +1248,11 @@ class CableEditor(QWidget):
         tgt = p.target_map
         if row.connected and not row.expanded:
             tip = f"{self._cable_tip(row.notes, p.rules[row.note].dst)}\n{CONNECTED_HINT}"
+        elif row.suggested and not row.expanded:
+            cable = next(c for c in self.current.scene.cables if c.src_y == row.y)
+            name = cable.target.label
+            tip = (f"Suggested: {name} · {cable.dst}\n{SUGGESTED_HINT}" if cable.dst is not None
+                   else f"Suggested: {name}\n{SUGGESTED_WRITE_TO_HINT}")
         else:
             tip = STATE_TIPS.get(row.state, "")
             if row.state == KEEP and tgt is not None:
@@ -1072,32 +1262,35 @@ class CableEditor(QWidget):
             tip = f"Notes {', '.join(map(str, row.notes))}\n{tip}\n{MIXED_HINT if row.mixed else ALIAS_HINT}"
         issues = [i for n in row.notes for i in self._issues.get(n, [])]
         if issues:
-            tip = "\n".join([i.message for i in issues] + [tip])
+            tip = "\n".join(issues + [tip])
         chevron = None
         if row.alias is not None:
             chevron = "fixed" if row.mixed else "expanded" if row.expanded else "collapsed"
-        return _Row(r, role, row, str(row.note), pitch_name(row.note), row.name or "—",
+        n = row.shown
+        cabled = (row.connected or row.suggested) and not row.expanded
+        return _Row(r, role, row, str(n), pitch_name(n), row.name or "—",
                     name_color="text_faint" if row.state == DELETE or row.name is None else "text",
-                    strike=row.state == DELETE, marker="=" if row.state == KEEP else "", count=len(row.notes),
-                    chevron=chevron, port="right" if row.connected and not row.expanded else None,
-                    warn=bool(issues), tooltip=tip)
+                    strike=row.state == DELETE, marker="=" if row.state == KEEP else "",
+                    pill=f"+{len(row.notes) - 1}" if len(row.notes) > 1 and not row.expanded else "",
+                    chevron=chevron, port="right" if cabled else None, dashed=row.suggested,
+                    warn=bool(issues), tooltip=tip, lines=[(0, str(n), pitch_name(n), ACCENT_SAME_NUMBER and row.accent)])
 
-    def _target_item(self, r: QRectF, t: TargetRow, connected: bool) -> _Row:
+    def _target_item(self, r: QRectF, t: TargetRow, connected: bool, dashed: bool = False) -> _Row:
         tgt = self.profile.target_map
         port = "left" if connected else None
         if not t.in_map:
             tip = f"Note {t.notes[0]} is not in the target map" if tgt is not None else "No target map"
             return _Row(r, TARGET, t, str(t.notes[0]), pitch_name(t.notes[0]), "—", name_color="text_faint",
-                        italic=True, port=port, tooltip=tip)
+                        italic=True, port=port, dashed=dashed, tooltip=tip)
         many = len(t.notes) > 1
-        lines = [(off, str(n), pitch_name(n), many and n == t.write_to) for off, n in t.numbers]
+        lines = [(off, str(n), pitch_name(n), False) for off, n in t.numbers]  # у цели акцента нет (Write to — в меню «+N»)
         tip = ""
         if many:
             wt = WRITE_TO_HINT.format(n=t.write_to) if t.write_to is not None else "Write to: not chosen"
             tip = f"On notes {', '.join(map(str, t.notes))}\n{wt}\n{BADGE_HINT}"
         _, number, pitch, _ = lines[0]
-        return _Row(r, TARGET, t, number, pitch, t.label, marker=(f"+{t.hidden}" if t.hidden else "…") if many else "",
-                    badge=many, port=port, tooltip=tip, lines=lines)
+        return _Row(r, TARGET, t, number, pitch, t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
+                    badge=many, port=port, dashed=dashed, tooltip=tip, lines=lines)
 
     def _cable_tip(self, notes: tuple[int, ...], dst: int) -> str:
         p = self.profile

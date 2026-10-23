@@ -8,18 +8,18 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from midiremap.core.notemap import articulations, normalize_name  # noqa: E402
-from midiremap.core.profile import Rule, legacy_profile  # noqa: E402
+from midiremap.core.notemap import NoteMap, articulations, normalize_name  # noqa: E402
+from midiremap.core.profile import RemapProfile, Rule, legacy_profile  # noqa: E402
 from midiremap.core.suggest import suggest_rules  # noqa: E402
 from midiremap.storage import Storage, sanitize_id  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
+from midiremap.ui import cable_view  # noqa: E402
 from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow  # noqa: E402
 from midiremap.ui.maps_page import REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
-from midiremap.ui.profiles_page import COL_TARGET, DELETED_GROUP, Pick  # noqa: E402
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
@@ -39,15 +39,13 @@ def storage(tmp_path):
 
 
 def stub_dialogs(page):
-    page.answers = {"text": [], "confirm": True, "save_changes": "discard", "pick": None, "write_to": [],
-                    "unassigned": set(), "number": None, "asked": []}
+    page.answers = {"text": [], "confirm": True, "save_changes": "discard", "write_to": [],
+                    "unassigned": set(), "asked": []}
     a = page.answers
     page.ask_text = lambda *args: a["text"].pop(0) if a["text"] else None
     page.confirm = lambda *args: a["confirm"]
     page.ask_save_changes = lambda: a["asked"].append("save_changes") or a["save_changes"]
     page.show_error = lambda text: a.setdefault("errors", []).append(text)
-    page.pick_target = lambda notes: a["pick"]
-    page.ask_note_number = lambda notes: a["number"]
 
     def write_to(name, notes, preselect=None):
         a["asked"].append(("write_to", name, tuple(notes)))
@@ -176,58 +174,102 @@ def test_create_profile_with_two_templates(window, storage):
     w = page.work
     assert w.source_map.name == "EZdrummer 3" and w.target_map.name == "Superior Drummer 3"
     assert w.source_map.meta.source == load_map_template("EZdrummer 3").meta.source
-    # по строке на каждую ноту исходной карты, под заголовками групп
-    notes = [r.note for r in page.model.rows if not r.is_header]
-    assert sorted(notes) == sorted(w.source_map.names)
-    assert any(r.is_header for r in page.model.rows)
-    n = next(iter(w.source_map.names))
-    assert page.model.data(page.model.note_index(n, COL_TARGET)) == "kept as is"
+    # каждая нота исходной карты — в пуле или напротив цели (подсказки), таблицы больше нет
+    lay = page.cables.current
+    shown = {n for r in lay.pool.rows + lay.scene.source_rows for n in r.notes}
+    assert shown == set(w.source_map.names) and lay.pool.headers
+    assert not hasattr(page, "table") and not hasattr(page, "accept_btn") and not hasattr(page, "assign_btn")
     assert page.dirty and "●" in window.nav_profiles.text()
 
 
-def test_accept_suggestions_counts(window):
+def test_suggestion_bar_and_apply(window, app):
+    from midiremap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
     page = window.profiles_page
     new_profile(page)
-    sugg = suggest_rules(load_map_template("EZdrummer 3"), load_map_template("Superior Drummer 3"))
-    expected = (sum(s.kind in ("exact", "probable") for s in sugg),
-                sum(s.kind == "ambiguous" for s in sugg), sum(s.kind == "none" for s in sugg))
-    assert page.accept_suggestions() == expected
-    assert page.status.text() == f"{expected[0]} mapped, {expected[1]} need a Write to choice, " \
-                                 f"{expected[2]} without a match."
-    assert len(page.work.rules) == expected[0]
-    amb = next(s for s in sugg if s.kind == "ambiguous")
-    assert page.model.status_text(amb.src) == "Needs a Write to choice"
-    # повторно — ничего не перезаписывает
-    custom = next(iter(page.work.rules))
-    page.work.rules[custom] = Rule.delete()
-    assert page.accept_suggestions()[0] == 0 and page.work.rules[custom] == Rule.delete()
+    ed = page.cables
+    st = suggestion_targets(page.work.source_map, page.work.target_map)
+    planned = plan_suggestions(page.work, st)
+    need = sum(v is None for v in planned.values())
+    assert need > 0 and len(planned) > need
+    # обе карты заданы — пунктир и панель, правил ещё нет, вопросов нет
+    assert page.work.rules == {} and page.answers["asked"] == []
+    assert not page.suggest_bar.isHidden() and page.suggest_label.text() == f"{len(planned)} matches"
+    assert f"{need} need a Write to choice" in page.suggest_bar.toolTip()
+    assert ed.suggestion_items and not ed.cable_items
+    assert all(i.pen().style() != Qt.PenStyle.SolidLine for i in ed.suggestion_items)
+    rows = [r for r in ed.current.scene.source_rows if r.suggested]
+    assert {n for r in rows for n in r.notes} == set(planned)
+    row = next(r for r in rows if not r.expanded)
+    assert ed.source_items[row.note].opacity() == 1.0 and "Suggested:" in ed.source_items[row.note].toolTip()
+
+    expected, done = apply_suggested(page.work, st)
+    assert page.apply_suggestions() == len(done) == len(planned) - need
+    assert page.work.rules == expected.rules and page.work.target_map.primary == expected.target_map.primary
+    assert page.status.text() == f"{len(done)} notes connected."
+    # нужен выбор Write to — остаются пунктиром, Apply больше нечего применить
+    assert len(ed.suggestion_items) > 0 and ed.cable_items
+    assert page.suggest_label.text() == f"{need} matches" and not page.apply_btn.isEnabled()
+    # Apply — один шаг отмены, подсказки возвращаются
+    assert page.undo() and page.work.rules == {} and page.suggest_label.text() == f"{len(planned)} matches"
+    assert page.redo() and page.work.rules == expected.rules
 
 
-def test_accept_disabled_without_maps(window):
+def test_suggestions_follow_map_changes_and_dismiss(window):
+    page = window.profiles_page
+    pid = new_profile(page)
+    page.answers["asked"].clear()
+    assert not page.suggest_bar.isHidden()
+    assert page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))  # совпадений нет — панели нет
+    assert page.suggest_bar.isHidden() and not page.cables.suggestion_items
+    assert page.choose_map("target", SD3)  # снова есть
+    assert not page.suggest_bar.isHidden() and page.answers["asked"] == []  # ни одного диалога
+    # ✕ — скрыть для этой пары карт (до повторного открытия профиля)
+    page.dismiss_suggestions()
+    assert page.suggest_bar.isHidden() and not page.cables.suggestion_items
+    assert not page.cables.current.scene.source_rows  # строки вернулись в пул
+    page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))
+    page.choose_map("target", SD3)
+    assert page.suggest_bar.isHidden()
+    # нота, получившая правило, из подсказок выбывает: снятое правило подсказку не возвращает
+    page.choose_map("source", MapRef(TEMPLATE, "Guitar Pro 8"))
+    page.choose_map("source", EZD3)
+    assert page.suggest_bar.isHidden()  # пара EZD3 → SD3 всё ещё скрыта
+    page.answers["unassigned"] = set()
+    page.save()
+    page.open(pid)  # открытие существующего профиля панель не показывает
+    assert page.suggest_bar.isHidden() and not page.cables.suggestion_items
+
+
+def test_rule_removes_note_from_suggestions(window):
+    page = window.profiles_page
+    new_profile(page)
+    n = next(r.note for r in page.cables.current.scene.source_rows if r.suggested and len(r.notes) == 1)
+    page.delete_notes([n])
+    assert n not in page.cables.suggested
+    page.clear_rules([n])
+    assert n not in page.cables.suggested and n not in page.work.rules
+
+
+def test_profile_without_maps(window):
     page = window.profiles_page
     page.select(LEGACY_ID)
-    assert not page.accept_btn.isEnabled()
-    # без исходной карты — строка на правило, без групп
-    assert not any(r.is_header and r.group != DELETED_GROUP for r in page.model.rows)
-    assert {r.note for r in page.model.rows if not r.is_header} == {
-        n for n, r in legacy_profile().rules.items() if r != Rule.delete()}
-    # без целевой карты цель — номер ноты
-    n = next(n for n, r in page.work.rules.items() if r.action == "map")
-    page.select_notes([n])
-    page.answers["number"] = 99
-    assert page.assign_selected() and page.work.rules[n] == Rule.map_to(99)
-    assert page.model.data(page.model.note_index(n, COL_TARGET)) == "→ 99"
+    assert page.suggest_bar.isHidden()
+    lay = page.cables.current
+    # без исходной карты — строка на правило, без групп; без целевой — цель по номерам
+    shown = {n for r in lay.pool.rows + lay.scene.source_rows for n in r.notes}
+    assert shown == {n for n, r in legacy_profile().rules.items() if r != Rule.delete()}  # Delete свёрнут
+    assert lay.scene.target_rows and all(t.slot.startswith("n:") for t in lay.scene.target_rows)
+    n, dst = next((n, r.dst) for n, r in sorted(page.work.rules.items()) if r.action == "map")
+    other = next(t.notes[0] for t in lay.scene.target_rows if t.notes[0] != dst)
+    assert page.connect_to([n], f"n:{other}") and page.work.rules[n] == Rule.map_to(other)
 
 
-def test_multi_select_assign_many_to_one(window):
+def test_many_to_one_single_note_target(window):
     page = window.profiles_page
     new_profile(page)
     key, dst = single_note_articulation(page.work.target_map)
-    srcs = sorted(page.work.source_map.names)[:5]
-    page.select_notes(srcs)
-    assert page.selected_notes() == srcs
-    page.answers["pick"] = Pick(articulation=key)
-    assert page.assign_selected()
+    srcs = [n for n in sorted(page.work.source_map.names) if n != dst][:5]
+    assert page.connect_to(srcs, "a:" + key)
     assert all(page.work.rules[n] == Rule.map_to(dst) for n in srcs)
     assert page.answers["asked"] == []  # одна нота — ничего не спрашиваем
 
@@ -239,20 +281,16 @@ def test_write_to_asked_once_and_stored_in_profile_copy(window, storage):
     new_profile(page, target=MapRef(USER, sanitize_id(sd3.name)))
     key, notes = multi_note_articulation(page.work.target_map)
     a, b = notes_off(page.work, notes, 2)
-    page.answers["pick"] = Pick(articulation=key)
     page.answers["write_to"] = [notes[1]]
-    page.select_notes([a])
-    assert page.assign_selected()
+    assert page.connect_to([a], "a:" + key)
     assert page.work.rules[a] == Rule.map_to(notes[1])
     assert page.work.target_map.primary & set(notes) == {notes[1]}
-    page.select_notes([b])
-    assert page.assign_selected()  # второй раз не спрашивает
+    assert page.connect_to([b], "a:" + key)  # второй раз не спрашивает
     assert page.work.rules[b] == Rule.map_to(notes[1])
     assert [x for x in page.answers["asked"] if x[0] == "write_to"] == [
         ("write_to", page.work.target_map.names[notes[0]], tuple(notes))]
     # отдельная нота артикуляции (не Write to) — допустимо
-    page.answers["pick"] = Pick(note=notes[0])
-    assert page.assign_selected() and page.work.rules[b] == Rule.map_to(notes[0])
+    assert page.assign_note([b], notes[0]) and page.work.rules[b] == Rule.map_to(notes[0])
     assert page.save()
     assert storage.load_map(sanitize_id(sd3.name))[0].primary == set()
     assert notes[1] in storage.load_profile(page.current).target_map.primary
@@ -263,60 +301,60 @@ def test_cancel_write_to_choice_keeps_rule(window):
     new_profile(page)
     key, notes = multi_note_articulation(page.work.target_map)
     (n,) = notes_off(page.work, notes, 1)
-    page.select_notes([n])
-    page.answers["pick"] = Pick(articulation=key)
-    assert not page.assign_selected()
+    assert not page.connect_to([n], "a:" + key)
     assert n not in page.work.rules and not page.work.target_map.primary
 
 
 def test_delete_and_clear_rules(window):
+    from midiremap.ui.cable_layout import DELETE
     page = window.profiles_page
     new_profile(page)
+    page.dismiss_suggestions()
     a, b = sorted(page.work.source_map.names)[:2]
     page.delete_notes([a, b])
-    assert page.work.rules[a] == Rule.delete()
-    deleted_header = next(r for r in page.model.rows if r.group == DELETED_GROUP)
-    assert deleted_header.label.endswith("Deleted (2)")
-    assert not page.model.has_row(a)  # секция свёрнута
-    page.model.toggle_deleted()
-    assert page.model.has_row(a) and page.model.row_at(page.model.note_index(a, 0).row()).group == DELETED_GROUP
-    assert page.model.data(page.model.note_index(a, 0), Qt.ItemDataRole.ForegroundRole) is not None  # приглушено
+    assert page.work.rules[a] == Rule.delete() and page.cables.pool_items[a].strike
+    page.refresh_btn.click()
+    head = page.cables.current.header(DELETE)
+    assert head.count == 2 and head.collapsed and page.cables.current.source_row(a) is None
     page.clear_rules([a])
     assert a not in page.work.rules
-    assert page.model.row_at(page.model.note_index(a, 0).row()).group != DELETED_GROUP
 
 
-def test_issues_highlighted_and_listed(window):
+def test_issues_highlighted_in_rows(window):
     page = window.profiles_page
     new_profile(page)
+    page.dismiss_suggestions()
     n = sorted(page.work.source_map.names)[0]
     missing = next(x for x in range(128) if x not in page.work.target_map.names)
-    page.select_notes([n])
-    page.answers["number"] = None
     page.assign_note([n], missing)
-    assert page.model.data(page.model.note_index(n, 0), Qt.ItemDataRole.BackgroundRole) is not None
-    assert page.model.status_text(n).startswith("⚠")
-    assert "not in the target map" in page.issues_label.text()
-    assert "has no rule" not in page.issues_label.text()  # NO_RULE в панели не показываем
+    item = page.cables.source_items[n]
+    assert item.warn and f"Note {n} is mapped to {missing}, which is not in the target map" in item.toolTip()
+    assert not hasattr(page, "issues_label")  # панели замечаний под редактором нет
+    # delete для ноты вне исходной карты — не замечание
+    outside = next(x for x in range(128) if x not in page.work.source_map.names)
+    page.delete_notes([outside])
+    assert outside not in page.cables._issues
+    assert sum(i.warn for i in page.cables.pool_rows + page.cables.scene_rows) == 1
 
 
 def test_change_map_with_rules_confirms_and_keeps_rules(window):
     page = window.profiles_page
     new_profile(page)
-    page.accept_suggestions()
+    page.apply_suggestions()
     rules = dict(page.work.rules)
     page.answers["confirm"] = False
     assert not page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))
     assert page.work.target_map.name == "Superior Drummer 3"
     page.answers["confirm"] = True
     assert page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))
-    assert page.work.rules == rules and page.model.issues
+    assert page.work.rules == rules
+    assert any(i.warn for i in page.cables.scene_rows)  # замечания — подсветкой строк
 
 
 def test_save_dialog_paths(window, storage):
     page = window.profiles_page
     pid = new_profile(page)
-    page.accept_suggestions()
+    page.apply_suggestions()
     w = page.work
     old_keep = next(n for n in sorted(w.source_map.names) if n not in w.rules)
     w.rules[old_keep] = Rule.keep()  # явный keep старого профиля — не спрашиваем
@@ -393,18 +431,22 @@ def test_profiles_tab_disables_convert_shortcuts(window):
     assert nav == ["Convert", "Profiles", "Maps"]
 
 
-def test_ambiguous_suggestion_tooltip(window):
+def test_suggestion_needing_write_to_tooltip(window):
+    from midiremap.ui.cable_view import SUGGESTED_WRITE_TO_HINT
     page = window.profiles_page
     new_profile(page)
-    amb = next(s for s in page.model.suggestions.values() if s.kind == "ambiguous")
-    tip = page.model.data(page.model.note_index(amb.src, 0), Qt.ItemDataRole.ToolTipRole)
-    assert normalize_name(amb.target_name) in normalize_name(tip)
+    ed = page.cables
+    cable = next(c for c in ed.current.scene.cables if c.suggested and c.dst is None)
+    item = next(i for i in ed.scene_rows if i.model.y == cable.src_y)
+    assert item.dashed and SUGGESTED_WRITE_TO_HINT in item.toolTip()
+    assert normalize_name(cable.target.label) in normalize_name(item.toolTip())
 
 
 def test_new_profile_without_maps_has_no_rows(window):
     page = window.profiles_page
     new_profile(page, "Empty", None, None)
-    assert page.model.rows == [] and not page.accept_btn.isEnabled()
+    lay = page.cables.current
+    assert lay.pool.rows == [] and lay.scene.source_rows == [] and page.suggest_bar.isHidden()
 
 
 def test_unassigned_dialog_checkboxes(window):
@@ -509,53 +551,41 @@ def unique_mapped_note(p):
                 if r.action == "map" and names.count(normalize_name(p.source_map.names[n])) == 1)
 
 
-def test_cables_view_toggle_keeps_edits(window):
+def test_cables_frozen_order_and_resort(window):
     from midiremap.ui.cable_layout import DELETE
-    from midiremap.ui.profiles_page import CABLES_VIEW, TABLE_VIEW
     page = window.profiles_page
     new_profile(page)
-    page.accept_suggestions()
-    rules = dict(page.work.rules)
-    page.set_view(CABLES_VIEW)
-    assert page.view == CABLES_VIEW and page.cables.active
+    page.apply_suggestions()
+    page.dismiss_suggestions()
     assert cabled_note_count(page.cables) == map_rule_count(page.work) > 0
     assert len(page.cables.cable_items) < map_rule_count(page.work)  # алиасы EZD3 — по кабелю на строку
-    assert page.work.rules == rules and page.dirty
-    # правка при показанных кабелях: строка без кабеля остаётся на месте до пересортировки
+    # правка: строка без кабеля остаётся на месте до пересортировки
     n = unique_mapped_note(page.work)
     y = page.cables.current.source_row(n).y
     page.delete_notes([n])
     row = page.cables.current.source_row(n)
     assert row.y == y and row.block is None and not row.connected
     assert cabled_note_count(page.cables) == map_rule_count(page.work)
-    page.set_view(TABLE_VIEW)
-    assert page.work.rules[n] == Rule.delete() and page.dirty and not page.cables.active
-    page.set_view(CABLES_VIEW)  # показ — пересортировка
+    page.refresh_btn.click()
     assert page.cables.current.source_row(n) is None  # блок Delete свёрнут по умолчанию
     assert page.cables.current.header(DELETE).count == 1
 
 
-def test_cables_view_toolbar(window):
-    from midiremap.ui.profiles_page import CABLES_VIEW, REFRESH_TIP, TABLE_VIEW
+def test_cables_toolbar(window):
+    from midiremap.ui.profiles_page import REFRESH_TIP
     page = window.profiles_page
     new_profile(page)
-    assert page.refresh_btn.isHidden() and page.assign_btn.isEnabled()
-    page.set_view(CABLES_VIEW)
     assert not page.refresh_btn.isHidden() and page.refresh_btn.toolTip() == REFRESH_TIP == "Refresh layout"
     assert page.refresh_btn.text() == "↻"
-    assert page.assign_btn.isEnabled()  # Assign target — для выделенных строк «кабелей»
-    assert page.cables_view_btn.isChecked() and not page.table_view_btn.isChecked()
-    page.table_view_btn.click()
-    assert page.view == TABLE_VIEW and page.assign_btn.isEnabled()
+    for gone in ("table_view_btn", "cables_view_btn", "assign_btn", "accept_btn", "views", "model"):
+        assert not hasattr(page, gone)
 
 
 def test_cables_resort_button_reflows(window):
     from midiremap.ui.cable_layout import UNASSIGNED
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     new_profile(page)
-    page.accept_suggestions()
-    page.set_view(CABLES_VIEW)
+    page.apply_suggestions()
     n = unique_mapped_note(page.work)
     page.clear_rules([n])
     assert page.cables.current.source_row(n).block is None
@@ -567,12 +597,11 @@ def test_cables_header_click_collapses(window, app):
     from PySide6.QtCore import QPointF
     from midiremap.ui.cable_layout import UNASSIGNED
     from midiremap.ui.cable_view import PAD, ROW
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     window.resize(1200, 800)
     window.show()
     new_profile(page)
-    page.set_view(CABLES_VIEW)
+    page.dismiss_suggestions()
     head = page.cables.current.header(UNASSIGNED)
     assert head.y == 0 and not head.collapsed
     pool = page.cables.pool
@@ -586,11 +615,9 @@ def test_cables_header_click_collapses(window, app):
 
 def test_cables_view_saves_with_same_dialog(window, storage):
     from midiremap.ui.cable_layout import DELETE
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     pid = new_profile(page)
-    page.set_view(CABLES_VIEW)
-    page.accept_suggestions()
+    page.apply_suggestions()
     assert cabled_note_count(page.cables) == map_rule_count(page.work)
     page.answers["unassigned"] = set()
     assert page.save() and page.answers["asked"][-1][0] == "unassigned"
@@ -600,13 +627,11 @@ def test_cables_view_saves_with_same_dialog(window, storage):
 
 
 def test_cables_pool_is_separate_column(window):
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     window.resize(1300, 900)
     window.show()
     new_profile(page)
-    page.accept_suggestions()
-    page.set_view(CABLES_VIEW)
+    page.apply_suggestions()
     ed = page.cables
     lay = ed.current
     # пул — своя view со своей прокруткой; сцена начинается сверху
@@ -629,11 +654,9 @@ def test_cables_pool_is_separate_column(window):
 
 def test_cable_hover_highlights_and_dims(window):
     from midiremap.ui.cable_view import DIMMED
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     new_profile(page)
-    page.accept_suggestions()
-    page.set_view(CABLES_VIEW)
+    page.apply_suggestions()
     ed = page.cables
     cable = ed.cable_items[0]
     ed.hover_cable(cable)
@@ -649,11 +672,9 @@ def test_cable_hover_highlights_and_dims(window):
 
 def test_removed_cable_row_dimmed_in_scene(window):
     from midiremap.ui.cable_view import STALE
-    from midiremap.ui.profiles_page import CABLES_VIEW
     page = window.profiles_page
     new_profile(page)
-    page.accept_suggestions()
-    page.set_view(CABLES_VIEW)
+    page.apply_suggestions()
     n = unique_mapped_note(page.work)
     pool_count = len(page.cables.pool_items)
     page.clear_rules([n])
@@ -666,14 +687,14 @@ def test_removed_cable_row_dimmed_in_scene(window):
 # --- вид «кабелями»: правка (8b2b) ---
 
 def cables_page(window, accept=True, size=(1300, 900)):
-    from midiremap.ui.profiles_page import CABLES_VIEW
+    """Новый профиль EZD3 → SD3; accept — применить подсказки; подсказки затем скрыты (✕)."""
     page = window.profiles_page
     window.resize(*size)
     window.show()
     new_profile(page)
     if accept:
-        page.accept_suggestions()
-    page.set_view(CABLES_VIEW)
+        page.apply_suggestions()
+    page.dismiss_suggestions()
     QApplication.processEvents()  # отложенные resize окна перерисовывают колонки
     return page, page.cables
 
@@ -719,7 +740,7 @@ def test_drag_pool_alias_row_onto_target_maps_all_its_notes(window, app):
     page, ed = cables_page(window, accept=False)
     ezd = page.work.source_map
     row = pool_row(ed, lambda i: len(i.notes) > 1)  # строка алиасов EZD3
-    assert row.model.alias and row.count == len(row.notes)
+    assert row.model.alias and row.pill == f"+{len(row.notes) - 1}"
     assert len({normalize_name(ezd.names[n]) for n in row.notes}) == 1
     slot, dst = single_note_articulation(page.work.target_map)
     show_target_group(ed, "a:" + slot)
@@ -887,7 +908,7 @@ def test_right_click_pool_row_and_group_toggle_strike(window, app):
 
 
 def test_write_to_badge_repoints_rules(window, app, storage):
-    page, ed = cables_page(window)
+    page, ed = cables_page(window, accept=False)
     key, notes = multi_note_articulation(page.work.target_map)
     slot = "a:" + key
     srcs = [n for n in sorted(page.work.source_map.names) if n not in page.work.rules and n not in notes][:2]
@@ -895,7 +916,7 @@ def test_write_to_badge_repoints_rules(window, app, storage):
     assert page.connect_to(srcs, slot)
     assert all(page.work.rules[n] == Rule.map_to(notes[0]) for n in srcs)
     item = ed.target_items[slot]
-    assert item.badge and item.marker == f"+{len(notes) - 1}"
+    assert item.badge and item.pill == f"+{len(notes) - 1}"
     ed.pick_write_to = lambda t, at: notes[-1]
     QTest.mouseClick(ed.view.viewport(), Qt.MouseButton.LeftButton,
                      pos=ed.view.mapFromScene(item.badge_rect().center()))
@@ -921,7 +942,7 @@ def test_target_groups_connected_only_and_toggle(window, app):
     assert head.key in ed.show_all and not ed.current.header(head.key).collapsed
     assert len(ed.current.scene.target_rows) == head.count
     # без режима «все» видны только подключённые артикуляции
-    page.accept_suggestions()
+    page.group_drop(sorted(page.work.source_map.names), sorted(page.work.target_map.names))
     ed.show_all.clear()
     page.refresh_btn.click()
     lay = ed.current.scene
@@ -971,14 +992,7 @@ def test_pool_collapse_rebuilds_only_pool(window, app):
     assert ed.current.header(UNASSIGNED).collapsed and ed.scene_rows == scene_items
 
 
-def test_assign_target_uses_cable_selection(window, app):
-    page, ed = cables_page(window, accept=False)
-    slot, dst = single_note_articulation(page.work.target_map)
-    row = ed.pool_rows[0]
-    ed.set_selection(set(row.notes))
-    page.answers["pick"] = Pick(note=dst)
-    assert page.assign_selected()
-    assert all(page.work.rules[n] == Rule.map_to(dst) for n in row.notes)
+
 
 
 # --- назначение по номерам, группа, номера цели, отмена (8b2c) ---
@@ -1003,7 +1017,7 @@ def test_drop_same_numbers_need_no_question(window, app):
             assert c.cable.dst_y == c.cable.src_y
     item = ed.target_items["a:" + key]
     assert [line[1] for line in item.lines] == [str(n) for _, n in t.lines]
-    assert item.marker == f"+{len(notes) - 2}"
+    assert item.pill == f"+{len(notes) - 2}"
 
 
 def test_drop_single_match_becomes_write_to_silently(window, app):
@@ -1014,8 +1028,8 @@ def test_drop_single_match_becomes_write_to_silently(window, app):
     assert page.work.rules == {other: Rule.map_to(notes[1]), notes[1]: Rule.map_to(notes[1])}
     assert page.work.target_map.primary & set(notes) == {notes[1]} and page.answers["asked"] == []
     item = ed.target_items["a:" + key]
-    assert [(line[1], line[3]) for line in item.lines] == [(str(notes[1]), True)]  # Write to отмечен
-    assert f"Write to: {notes[1]}" in item.toolTip()
+    assert [(line[1], line[3]) for line in item.lines] == [(str(notes[1]), False)]  # у цели акцента нет
+    assert f"Write to: {notes[1]}" in item.toolTip()  # Write to — в подсказке (и галочкой в меню «+N»)
 
 
 def test_drop_several_matches_asks_once_with_preselect(window, app):
@@ -1096,12 +1110,12 @@ def test_undo_redo_stack(window, app, storage):
     assert page.undo() and page.undo() and page.work.rules == {} and len(page._undo) == 2
     assert page.undo() and page.work.target_map is None  # до выбора целевой карты
     assert page.redo() and page.redo() and page.work.rules == {notes[0]: Rule.map_to(notes[0])}
-    assert ed.profile is page.work and page.model.profile is page.work
+    assert ed.profile is page.work
     # новое действие сбрасывает повтор
     page.clear_rules(notes[:1])
     assert not page.redo()
     # горячие клавиши (в подсказках) — на странице
-    assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.cables_view_btn.toolTip()
+    assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.summary.toolTip()
     ed.view.setFocus()
     QTest.keyClick(ed.view, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert page.work.rules == {notes[0]: Rule.map_to(notes[0])}
@@ -1115,3 +1129,167 @@ def test_undo_redo_stack(window, app, storage):
     page.answers["save_changes"] = "discard"
     page.select(LEGACY_ID)
     assert not page.undo() and not page.redo()
+
+
+# --- полировка (8b2d): «+N» у алиасов, список профилей, ширины колонок, полные имена ---
+
+def test_alias_row_badge_and_same_number_highlight(window, app):
+    page, ed = cables_page(window)
+    accent = lambda item: item.lines[0][3]
+    # свёрнутая строка алиасов: показан номер n → n, но обычным цветом
+    item = next((i for i in ed.scene_rows if len(i.notes) > 1 and not i.model.expanded and i.model.same), None)
+    assert item is not None
+    row = item.model
+    assert item.pill == f"+{len(row.notes) - 1}" and not item.badge  # бейдж источника не кликабелен
+    assert item.number == str(row.shown) and not accent(item)
+    assert all(str(n) in item.toolTip() for n in row.notes)  # номера — в подсказке
+    # одиночная строка n → n — без подсветки
+    single = next(i for i in ed.scene_rows if len(i.notes) == 1 and not i.model.child and i.model.same)
+    assert not accent(single)
+    # раскрытые алиасы: строка ноты n → n — кандидат на акцент, но подсветка выключена (ACCENT_SAME_NUMBER)
+    child = next(i for i in ed.scene_rows if i.model.child and i.model.same)
+    assert child.model.accent and not accent(child)
+    head = next(i for i in ed.scene_rows if i.model.expanded and child.notes[0] in i.notes)
+    assert not accent(head)
+    assert all(not accent(i) for i in ed.scene_rows if i.model.child and not i.model.same)
+    pool = next(i for i in ed.pool_rows if len(i.notes) > 1 and not i.model.expanded)
+    assert pool.number == str(min(pool.notes)) and not accent(pool)
+
+
+def test_sidebar_collapses_and_persists(app, storage):
+    from midiremap.ui.profiles_page import STRIP_WIDTH
+    w = MainWindow(storage)
+    w.show_page(PAGE_PROFILES)
+    page = w.profiles_page
+    stub_dialogs(page)
+    new_profile(page, "Kit")
+    assert not page.sidebar_collapsed and page.list.isVisibleTo(page)
+    page.sidebar_btn.click()
+    assert page.sidebar_collapsed and not page.list.isVisibleTo(page)
+    assert page.sidebar.maximumWidth() == STRIP_WIDTH and page.sidebar_btn.toolTip() == "Show the profile list"
+    assert page.title.text() == "Kit" and page.dirty_label.isVisibleTo(page)  # имя и «●» — в заголовке
+    page.answers["save_changes"] = "discard"
+    w.close()
+    w2 = MainWindow(storage)  # состояние — между запусками
+    assert w2.profiles_page.sidebar_collapsed
+    w2.profiles_page.sidebar_btn.click()
+    assert not w2.profiles_page.sidebar_collapsed
+    w2.close()
+    assert not MainWindow(storage).profiles_page.sidebar_collapsed
+
+
+def test_scene_columns_resize_and_persist(window, app, storage):
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, PORT, SCENE_MIN
+    page, ed = cables_page(window)
+    vp = ed.view.viewport()
+    width = ed.view.width_px(SCENE_MIN)
+
+    def send(kind, x, buttons):
+        pos = QPointF(x, 40)
+        QApplication.sendEvent(vp, QMouseEvent(kind, pos, QPointF(vp.mapToGlobal(pos.toPoint())),
+                                               Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier))
+
+    def drag_edge(edge, dx):
+        x = ed._boundaries(width)[edge] + (PORT + 3 if edge != 1 else -PORT - 3)
+        send(QEvent.Type.MouseMove, x, Qt.MouseButton.NoButton)
+        assert ed.view.guide_x is not None and vp.cursor().shape() == Qt.CursorShape.SplitHCursor
+        send(QEvent.Type.MouseButtonPress, x, Qt.MouseButton.LeftButton)
+        send(QEvent.Type.MouseMove, x + dx, Qt.MouseButton.LeftButton)
+        send(QEvent.Type.MouseButtonRelease, x + dx, Qt.MouseButton.NoButton)
+
+    b2, b3, end = ed._boundaries(width)
+    rules = dict(page.work.rules)
+    drag_edge(0, -60)  # колонка 2 уже, промежуток шире, цель на месте
+    nb2, nb3, nend = ed._boundaries(width)
+    assert abs(nb2 - (b2 - 60)) < 1 and abs(nb3 - b3) < 1 and abs(nend - end) < 1
+    drag_edge(1, 40)  # промежуток шире, колонка 3 уже (правый край на месте)
+    drag_edge(2, -30)  # колонка 3 ещё уже, справа — свободное место
+    nb2, nb3, nend = ed._boundaries(width)
+    assert abs(nb3 - (b3 + 40)) < 1 and abs(nend - (end - 30)) < 1
+    t = next(iter(ed.target_items.values()))
+    assert abs(t.rect.left() - nb3) < 1 and abs(t.rect.right() - nend) < 1
+    assert page.work.rules == rules and not ed.dragging  # граница — не перетаскивание кабеля
+    assert page.settings.value(COLUMNS_KEY)
+    ed.splitter.setSizes([340, 900])
+    ed.splitter.splitterMoved.emit(340, 1)
+    assert int(page.settings.value(POOL_KEY)) == ed.splitter.sizes()[0]
+    w2 = MainWindow(storage)  # ширины — между запусками
+    assert w2.profiles_page.cables.columns == pytest.approx(ed.columns, abs=1e-3)
+    w2.close()
+
+
+def test_truncated_names_in_tooltips(window, app):
+    page, ed = cables_page(window, size=(900, 700))
+    ed.columns = (0.2, 0.6, 0.2)  # узкие колонки — длинные имена обрезаются
+    ed.refresh()
+    from midiremap.ui.cable_view import _font
+    from PySide6.QtGui import QFontMetrics
+    fm = QFontMetrics(_font(ed.view.font()))
+    cut = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) > i.name_room()]
+    fits = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) <= i.name_room()]
+    assert cut and all(i.toolTip().startswith(i.name) for i in cut)
+    assert all(not i.toolTip().startswith(i.name) for i in fits if i.toolTip())
+
+
+def accented(item):
+    return [number for _, number, _, accent in item.lines if accent]
+
+
+def test_number_accent_only_on_expanded_alias_note(window, monkeypatch):
+    monkeypatch.setattr(cable_view, "ACCENT_SAME_NUMBER", True)  # подсветка выключена, правило — на случай включения
+    src = NoteMap("S", {35: "Kick", 36: "Kick", 37: "Kick", 38: "Snare", 42: "Hat", 44: "Hat"})
+    tgt = NoteMap("T", {36: "Kick", 38: "Snare", 42: "Hat", 44: "Hat", 46: "Open"}, primary={42})
+    rules = {35: Rule.map_to(36), 36: Rule.map_to(36), 37: Rule.map_to(36), 38: Rule.map_to(38),
+             42: Rule.map_to(42), 44: Rule.map_to(44)}
+    ed = window.profiles_page.cables
+    ed.set_profile(RemapProfile("p", src, tgt, rules))
+    rows = {item.notes: item for item in ed.scene_rows}
+    # свёрнутые алиасы и одиночная строка — без акцента, хотя идут n -> n
+    assert accented(rows[(35, 36, 37)]) == [] and accented(rows[(38,)]) == []
+    # алиасы с разными правилами (42 -> 42, 44 -> 44) раскрыты всегда: акцент у нот, заголовок — без
+    assert accented(rows[(42, 44)]) == [] and accented(rows[(42,)]) == ["42"] and accented(rows[(44,)]) == ["44"]
+    ed.toggle_alias("a:kick|kick", in_pool=False)
+    rows = {item.notes: item for item in ed.scene_rows}
+    assert accented(rows[(35, 36, 37)]) == []
+    assert [accented(rows[(n,)]) for n in (35, 36, 37)] == [[], ["36"], []]
+    # цель: ни с Write to (Hat, 42), ни без него, ни у одиночной — акцента нет
+    assert all(accented(item) == [] for item in ed.target_items.values())
+    assert "Write to" in ed.target_items["a:hat"].toolTip()
+
+
+def test_number_accent_disabled_by_default(window):
+    src = NoteMap("S", {35: "Kick", 36: "Kick"})
+    tgt = NoteMap("T", {36: "Kick"})
+    ed = window.profiles_page.cables
+    ed.set_profile(RemapProfile("p", src, tgt, {35: Rule.map_to(36), 36: Rule.map_to(36)}))
+    ed.toggle_alias("a:kick|kick", in_pool=False)
+    assert any(item.model.accent for item in ed.scene_rows)
+    assert not any(accented(item) for item in ed.scene_rows + list(ed.target_items.values()))
+
+
+def test_primary_cable_thicker_others_thinner(window):
+    src = NoteMap("S", {12: "Hat", 13: "Hat", 15: "Hat", 20: "Tom"})
+    tgt = NoteMap("T", {12: "Hat", 45: "Hat", 78: "Hat", 30: "Tom"}, primary={12})
+    rules = {n: Rule.map_to(12) for n in (13, 15)} | {12: Rule.map_to(12), 20: Rule.map_to(30)}
+    ed = window.profiles_page.cables
+    ed.set_profile(RemapProfile("p", src, tgt, rules))
+    ed.toggle_alias("a:hat|hat", in_pool=False)
+    width = {item.cable.notes: item.pen().widthF() for item in ed.cable_items}
+    assert width == {(12,): cable_view.CABLE_PRIMARY_W, (13,): cable_view.CABLE_THIN_W,
+                     (15,): cable_view.CABLE_THIN_W, (20,): cable_view.CABLE_PRIMARY_W}
+    assert cable_view.CABLE_PRIMARY_W == cable_view.CABLE_W and cable_view.CABLE_THIN_W == cable_view.CABLE_W / 1.5
+
+
+def test_drag_preview_thin_from_unassigned_notes(window):
+    src = NoteMap("S", {36: "Kick", 38: "Snare"})
+    tgt = NoteMap("T", {36: "Kick", 38: "Snare"})
+    ed = window.profiles_page.cables
+    ed.set_profile(RemapProfile("p", src, tgt, {36: Rule.map_to(36)}))
+    ed.begin_drag({38}, QPointF(0, 0))
+    assert ed.overlay.width == cable_view.CABLE_THIN_W
+    ed.cancel_drag()
+    ed.begin_drag({36}, QPointF(0, 0))  # подключённая строка — обычный кабель
+    assert ed.overlay.width == cable_view.CABLE_W
+    ed.cancel_drag()

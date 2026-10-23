@@ -404,3 +404,123 @@ def test_target_group_header_lists_its_notes():
     assert lay.header(TARGET_PREFIX + "snare").notes == (38, 39)
     assert lay.header(TARGET_PREFIX + "hat").notes == (42, 46)
     assert lay.header(TARGET_PREFIX + "\0missing").notes == ()  # номера вне карты — не цель для drop
+
+
+# --- подсказки и номер строки алиасов (8b2d) ---
+
+def test_suggestions_placed_opposite_target_with_dashed_cables():
+    p = profile({49: Rule.delete()})
+    sugg = {36: "kick: hit", 38: "snare: center", 40: "snare: center", 49: "crash: hit"}
+    lay = build_layout(p, no_collapse(), suggested=sugg)
+    rows = rows_by_note(lay)
+    assert all(rows[n].block is None and rows[n].suggested and not rows[n].stale for n in (36, 38, 40))
+    assert rows[49].block == DELETE and not rows[49].suggested  # у 49 есть правило — не подсказка
+    cables = {c.src: c for c in lay.scene.cables}
+    assert all(c.suggested for c in cables.values())
+    assert (cables[36].dst, cables[38].dst, cables[40].dst) == (36, 38, 38)  # 40 — на Write to (38)
+    assert lay.target_row("a:snare: center").lines == ((0, 38),)
+    # подсказки скрыли — строки на местах, приглушены до пересортировки
+    hidden = build_layout(p, no_collapse(), lay.order)
+    assert rows_by_note(hidden)[36].stale and rows_by_note(hidden)[36].y == rows[36].y
+    assert not hidden.scene.cables and rows_by_note(build_layout(p, no_collapse()))[36].block == UNASSIGNED
+    # применили — те же места, кабели сплошные
+    p.rules.update({36: Rule.map_to(36), 38: Rule.map_to(38), 40: Rule.map_to(38)})
+    applied = build_layout(p, no_collapse(), lay.order, suggested=sugg)
+    assert [(r.note, r.y) for r in applied.scene.source_rows] == [(r.note, r.y) for r in lay.scene.source_rows]
+    assert all(c.dst is not None and not c.suggested for c in applied.scene.cables)
+
+
+def test_suggestion_needing_write_to_points_at_row():
+    p = profile(tgt=NoteMap("T", {38: "Snare: Center", 39: "Snare: Center"}))
+    lay = build_layout(p, no_collapse(), suggested={40: "snare: center"})
+    (cable,) = lay.scene.cables
+    assert cable.suggested and cable.dst is None and cable.dst_y == lay.target_row("a:snare: center").y
+
+
+def test_alias_row_shows_same_number_or_lowest():
+    src = NoteMap("S", {35: "Kick", 36: "Kick", 37: "Kick"})
+    tgt = NoteMap("T", {36: "Kick", 50: "Tom"})
+    pool_row = build_layout(profile(src=src, tgt=tgt), no_collapse()).pool.rows[0]
+    assert pool_row.notes == (35, 36, 37) and pool_row.shown == 35 and not pool_row.same
+    mapped = profile({n: Rule.map_to(36) for n in (35, 36, 37)}, src=src, tgt=tgt)
+    row = build_layout(mapped, no_collapse()).scene.source_rows[0]
+    assert row.notes == (35, 36, 37) and row.shown == 36 and row.same  # показан 36: 36 → 36
+    elsewhere = profile({n: Rule.map_to(50) for n in (35, 36, 37)}, src=src, tgt=tgt)
+    row = build_layout(elsewhere, no_collapse()).scene.source_rows[0]
+    assert row.shown == 35 and not row.same
+    # подсказка: та же логика (36 совпала по номеру, остальные — на Write to 36)
+    sugg = build_layout(profile(src=src, tgt=tgt), no_collapse(), suggested={n: "kick" for n in (35, 36, 37)})
+    row = sugg.scene.source_rows[0]
+    assert row.suggested and row.notes == (35, 36, 37) and row.shown == 36 and row.same
+
+
+# --- акцент на номере: единственное правило ---
+
+def test_accent_only_on_expanded_alias_note_going_to_itself():
+    src = NoteMap("S", {35: "Kick", 36: "Kick", 37: "Kick", 38: "Snare"})
+    tgt = NoteMap("T", {36: "Kick", 38: "Snare"})
+    p = profile({35: Rule.map_to(36), 36: Rule.map_to(36), 37: Rule.map_to(36), 38: Rule.map_to(38)},
+                src=src, tgt=tgt)
+    # свёрнутые алиасы («+N»), даже если показан номер n -> n; одиночная строка n -> n — без акцента
+    collapsed, single = build_layout(p, no_collapse()).scene.source_rows
+    assert collapsed.notes == (35, 36, 37) and collapsed.same and not collapsed.accent
+    assert single.notes == (38,) and single.same and not single.accent
+    # раскрытые: заголовок — без акцента, акцент — только у ноты 36 (36 -> 36)
+    rows = build_layout(p, no_collapse(), expanded={"a:kick|kick"}).scene.source_rows
+    head, *children = rows[:4]
+    assert head.expanded and not head.accent
+    assert {c.note: c.accent for c in children} == {35: False, 36: True, 37: False}
+    # в пуле (правил нет) акцента нет нигде, даже раскрытом
+    pool = build_layout(profile(src=src, tgt=tgt), no_collapse(), expanded={"unassigned|kick"}).pool.rows
+    assert not any(r.accent for r in pool)
+
+
+# --- основной кабель: ровно один на ноту цели (Cable.primary) ---
+
+def primary_cables(p, expanded=frozenset()):
+    lay = build_layout(p, no_collapse(), expanded=set(expanded))
+    return {c.notes: c.primary for c in lay.scene.cables if not c.suggested}
+
+
+def test_primary_cable_same_number_wins():
+    # 12, 13, 15 -> артикуляция 12, 45, 78: основной — 12 -> 12, остальные — тоньше
+    src = NoteMap("S", {12: "Hat", 13: "Hat", 15: "Hat"})
+    tgt = NoteMap("T", {12: "Hat", 45: "Hat", 78: "Hat"}, primary={12})
+    p = profile({n: Rule.map_to(12) for n in (12, 13, 15)}, src=src, tgt=tgt)
+    assert primary_cables(p, {"a:hat|hat"}) == {(12,): True, (13,): False, (15,): False}
+    assert primary_cables(p) == {(12, 13, 15): True}  # свёрнутая строка содержит основную ноту
+
+
+def test_primary_cable_without_same_number_lowest_source():
+    # 12, 45 -> 34 (номера не совпали): основной — наименьшая нота, 12 -> 34
+    src = NoteMap("S", {12: "Ride", 45: "Ride"})
+    tgt = NoteMap("T", {34: "Ride", 56: "Ride"}, primary={34})
+    p = profile({12: Rule.map_to(34), 45: Rule.map_to(34)}, src=src, tgt=tgt)
+    assert primary_cables(p, {"a:ride|ride"}) == {(12,): True, (45,): False}
+    # на разные ноты цели — у каждой ноты свой основной
+    p = profile({12: Rule.map_to(56), 45: Rule.map_to(34)}, src=src, tgt=NoteMap("T", tgt.names))
+    lay = build_layout(p, no_collapse())
+    assert {c.notes: c.primary for c in lay.scene.cables} == {(12,): True, (45,): True}
+
+
+def test_many_into_one_single_primary_across_different_names():
+    # «многие в одну»: 60, 121 (алиасы) и 124 (другое имя, не дубликат) -> 60: основной только 60 -> 60
+    src = NoteMap("S", {60: "Hat: Edge 4", 121: "Hat: Edge 4", 124: "Hat: Edge 5", 70: "Hat: Edge 5"})
+    tgt = NoteMap("T", {60: "Hat: Edge 4"})
+    p = profile({60: Rule.map_to(60), 121: Rule.map_to(60), 124: Rule.map_to(60), 70: Rule.map_to(60)},
+                src=src, tgt=tgt)
+    lay = build_layout(p, no_collapse(), expanded={"a:hat: edge 4|hat: edge 4", "a:hat: edge 4|hat: edge 5"})
+    assert {c.notes: c.primary for c in lay.scene.cables} == {(60,): True, (121,): False, (124,): False,
+                                                              (70,): False}
+    assert sum(c.primary for c in build_layout(p, no_collapse()).scene.cables) == 1  # и в свёрнутом виде
+    # без n -> n — наименьшая нота источника, тоже одна
+    p = profile({121: Rule.map_to(60), 124: Rule.map_to(60), 70: Rule.map_to(60)}, src=src, tgt=tgt)
+    lay = build_layout(p, no_collapse(), expanded={"a:hat: edge 4|hat: edge 5"})
+    assert [c.notes for c in lay.scene.cables if c.primary] == [(70,)]
+
+
+def test_single_cable_is_primary_and_suggestions_are_not():
+    p = profile({36: Rule.map_to(36), 38: Rule.map_to(39)})
+    assert all(primary_cables(p).values())
+    sugg = build_layout(profile(), no_collapse(), suggested={36: "kick: hit"})
+    assert [c.primary for c in sugg.scene.cables] == [False]

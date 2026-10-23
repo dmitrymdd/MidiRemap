@@ -26,8 +26,8 @@ def test_clean_profile():
 
 def test_src_not_in_source_map():
     p = RemapProfile('p', SRC, None, {36: Rule.delete(), 37: Rule.delete(), 40: Rule.map_to(36)})
-    assert codes(validate_profile(p)) == [(SRC_NOT_IN_SOURCE, 37), (NO_RULE, 38), (SRC_NOT_IN_SOURCE, 40),
-                                          (NO_RULE, 42), (NO_RULE, 51)]
+    # delete для ноты вне исходной карты (37) — не замечание
+    assert codes(validate_profile(p)) == [(NO_RULE, 38), (SRC_NOT_IN_SOURCE, 40), (NO_RULE, 42), (NO_RULE, 51)]
 
 
 def test_dst_not_in_target_map():

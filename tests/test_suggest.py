@@ -119,3 +119,27 @@ def test_templates_ezd3_to_sd3_consistent_with_data():
     assert {'exact', 'ambiguous', 'none'} <= kinds  # в этой паре есть все три случая
     profile = apply_suggestions(RemapProfile('EZD3 → SD3', ezd, sd3), result)
     assert profile.rules == {s.src: Rule.map_to(s.dst) for s in result if s.kind in ('exact', 'probable')}
+
+
+# --- подсказки в редакторе профиля (8b2d): логика назначения 8b2c ---
+
+def test_plan_and_apply_suggested_follow_assignment_logic():
+    from midiremap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
+    src, tgt = maps()
+    src.names.update({44: 'Hat Closed', 59: 'Ride', 126: 'Ride', 80: 'Ride'})
+    p = RemapProfile('p', src, tgt, {51: Rule.delete()})
+    st = suggestion_targets(src, tgt)
+    assert st == {36: 'kick', 60: 'kick', 38: 'snare center', 42: 'hat closed', 44: 'hat closed',
+                  51: 'ride', 59: 'ride', 126: 'ride', 80: 'ride'}  # 49 без совпадения, 70 — пустое имя
+    # Kick — одна нота цели; Hat Closed: 42 совпала по номеру и молча стала Write to для 44;
+    # Ride: совпали две (59, 126) — для 80 нужен вопрос о Write to; у 51 уже есть правило
+    assert plan_suggestions(p, st) == {36: 35, 60: 35, 38: 38, 42: 42, 44: 42, 59: 59, 126: 126, 80: None}
+    new, done = apply_suggested(p, st)
+    assert done == [36, 38, 42, 44, 59, 60, 126]
+    assert new.rules[44] == Rule.map_to(42) and 42 in new.target_map.primary
+    assert new.rules[59] == Rule.map_to(59) and new.rules[126] == Rule.map_to(126)
+    assert 80 not in new.rules and new.rules[51] == Rule.delete()
+    assert not new.target_map.primary & {51, 59, 126}  # Write to Ride не выбирали
+    assert p.rules == {51: Rule.delete()} and not p.target_map.primary  # вход не меняется
+    # артикуляции, которой нет в цели, и ноты с правилом пропускаются
+    assert plan_suggestions(p, {36: 'nope', 51: 'ride'}) == {}

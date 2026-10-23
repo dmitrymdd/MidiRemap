@@ -1,49 +1,49 @@
-"""Менеджер и редактор профилей ремапа (PySide6): список профилей слева, справа — карты профиля
-и таблица правил «исходная нота → цель».
+"""Менеджер и редактор профилей ремапа (PySide6): список профилей слева (сворачивается в узкую полосу), справа —
+карты профиля и вид «кабелями» (cable_view.py).
 
-Логики профилей здесь нет — только вызовы midiremap.core (suggest_rules, apply_suggestions, validate_profile,
+Логики профилей здесь нет — только вызовы midiremap.core (suggestion_targets, plan_suggestions, apply_suggested,
 assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и midiremap.storage. Диалоги вынесены
-в методы ask_*/pick_*/confirm/show_error, чтобы тесты могли их подменить. Два вида одной рабочей копии: таблица
-правил и «кабели» (cable_view.py, этап 8b2); переключение видов правок не теряет.
+в методы ask_*/confirm/show_error, чтобы тесты могли их подменить.
 
-Отмена/повтор (Ctrl+Z / Ctrl+Y) — стек снимков рабочей копии (профили маленькие): каждое действие, изменившее
-профиль, кладёт снимок «до» (декоратор _undoable; вложенные вызовы — один шаг). Стек очищается при открытии
-другого профиля, Save его не очищает (шаг сохранения тоже отменяется).
+Подсказки (8b2d): когда пользователь задал обе карты (новый профиль или смена карты), ноты без правила, чьё имя
+совпало с целевой картой, показываются пунктирными кабелями, над сценой — панель «N matches · Apply · ✕» (не
+диалог). Apply — по логике назначения 8b2c (одним шагом отмены); подсказки, которым нужен выбор Write to,
+пропускаются и остаются пунктиром. ✕ скрывает подсказки для этой пары карт до повторного открытия профиля.
+Открытие существующего профиля панель не показывает. Нота, получившая правило, из подсказок выбывает.
+
+Отмена/повтор (Ctrl+Z / Ctrl+Y) — стек снимков рабочей копии (профили маленькие) вместе с подсказками: каждое
+действие, изменившее профиль, кладёт снимок «до» (декоратор _undoable; вложенные вызовы — один шаг). Стек
+очищается при открытии другого профиля, Save его не очищает (шаг сохранения тоже отменяется).
 """
 from __future__ import annotations
 
 import copy
 import functools
-from dataclasses import dataclass
 
-from PySide6.QtCore import (
-    QAbstractTableModel, QEvent, QItemSelection, QItemSelectionModel, QModelIndex, Qt, Signal,
-)
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QGridLayout, QTableWidget, QTableWidgetItem, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton,
-    QStackedWidget, QTableView, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..core.notemap import NoteMap, articulations, duplicate_map, instrument_group, normalize_name
+from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
-    NO_RULE, ProfileIssue, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
-    validate_profile, with_write_to,
+    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, with_write_to,
 )
-from ..core.suggest import Suggestion, apply_suggestions, suggest_rules
+from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
 from .cable_view import CableEditor
 from .maps_page import (
-    HEADER_ROLE, REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, LayoutRow, MapListDelegate, MapRef, group_rows,
-    header_data, update_spans, wrapped_tooltip,
+    HEADER_ROLE, REF_ROLE, SUBTITLE_ROLE, TEMPLATE, USER, MapListDelegate, MapRef, wrapped_tooltip,
 )
+from .settings import setting_bool, ui_settings
 from .theme import TOKENS, repolish
 
 SOURCE, TARGET = "source", "target"
-TABLE_VIEW, CABLES_VIEW = "table", "cables"
 REFRESH_TIP = "Refresh layout"
 
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3  # имя профиля без пометки «•»
@@ -52,6 +52,15 @@ UNDO_LIMIT = 200
 UNDO_KEYS, REDO_KEYS = ("Ctrl+Z",), ("Ctrl+Y", "Ctrl+Shift+Z")
 UNDO_TIP = "Undo (Ctrl+Z) · Redo (Ctrl+Y)"
 
+SIDEBAR_WIDTH, STRIP_WIDTH = 290, 34
+SIDEBAR_KEY = "profiles/sidebar_collapsed"
+COLLAPSE_TIP, EXPAND_TIP = "Hide the profile list", "Show the profile list"
+
+SUGGEST_TIP = ("Notes whose names match the target map, shown as dashed cables.\n"
+               "Apply connects them: a note whose number is in the target stays on it, "
+               "the others go to the Write to note.")
+DISMISS_TIP = "Hide the suggestions for these maps"
+
 
 def _undoable(fn):
     """Действие страницы над рабочей копией — один шаг отмены (если профиль изменился)."""
@@ -59,7 +68,7 @@ def _undoable(fn):
     def wrapper(self, *args, **kwargs):
         if self.work is None or self._in_edit:
             return fn(self, *args, **kwargs)
-        before = copy.deepcopy(self.work)
+        before = (copy.deepcopy(self.work), dict(self._suggest))
         self._in_edit = True
         try:
             return fn(self, *args, **kwargs)
@@ -67,24 +76,6 @@ def _undoable(fn):
             self._in_edit = False
             self._record(before)
     return wrapper
-
-COL_NOTE, COL_PITCH, COL_SOURCE, COL_TARGET, COL_STATUS = range(5)
-COLUMNS = ("NOTE", "PITCH", "SOURCE NAME", "TARGET", "STATUS")
-COLUMN_TIPS = ("Source MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
-               "Name of the note in the source map",
-               "Where the note goes. Double-click or press Enter to choose; Ctrl/Shift+click to choose "
-               "for several notes at once; right-click to delete a note or clear its rule",
-               "Suggestion or rule state")
-
-DELETED_GROUP = "\0deleted"
-
-ACCEPT_TIP = ("Map notes whose names match the target map exactly or after ignoring case and spaces. "
-              "Existing rules are never changed")
-
-STATUS_TEXT = {
-    "exact": "Suggested: exact", "probable": "Suggested: probable",
-    "ambiguous": "Needs a Write to choice", "none": "No match",
-}
 
 
 def map_summary(m: NoteMap | None) -> str:
@@ -100,286 +91,9 @@ def profile_summary(p: RemapProfile) -> str:
     return f"{map_summary(p.source_map)} → {map_summary(p.target_map)} · {rules}"
 
 
-@dataclass(frozen=True)
-class Pick:
-    """Выбор в окне цели: артикуляция целевой карты (по нормализованному имени) или конкретная нота."""
-    articulation: str | None = None
-    note: int | None = None
-
-
-# --- таблица правил ---
-
-class RulesModel(QAbstractTableModel):
-    """Строки таблицы правил над рабочей копией профиля (правит её на месте).
-
-    С исходной картой — по строке на каждую её ноту, по группам instrument_group(); правила для нот вне
-    исходной карты — в группе «Not in the source map». Без исходной карты — по строке на правило, без групп.
-    Удалённые ноты — в сворачиваемой секции «Deleted» внизу.
-    """
-
-    edited = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.profile: RemapProfile | None = None
-        self.suggestions: dict[int, Suggestion] = {}
-        self.issues: dict[int, list[ProfileIssue]] = {}
-        self.deleted_collapsed = True
-        self.rows: list[LayoutRow] = []
-        self._note_rows: dict[int, int] = {}
-
-    def set_profile(self, p: RemapProfile | None) -> None:
-        self.profile = p
-        self.recompute()
-        self.relayout()
-
-    def recompute(self) -> None:
-        """Подсказки и замечания (после смены карт или правил)."""
-        p = self.profile
-        self.suggestions = ({s.src: s for s in suggest_rules(p.source_map, p.target_map)}
-                            if p is not None and p.source_map is not None and p.target_map is not None else {})
-        self.issues = {}
-        if p is not None:
-            for i in validate_profile(p):
-                if i.code != NO_RULE:
-                    self.issues.setdefault(i.note, []).append(i)
-
-    def relayout(self) -> None:
-        """Перестроить строки (после удаления/возврата нот и смены карт): строки переходят между секциями."""
-        self.beginResetModel()
-        self.rows = self._layout()
-        self._note_rows = {r.note: i for i, r in enumerate(self.rows) if not r.is_header}
-        self.endResetModel()
-
-    def _layout(self) -> list[LayoutRow]:
-        p = self.profile
-        if p is None:
-            return []
-        src = p.source_map
-        notes = sorted(src.names) + sorted(n for n in p.rules if n not in src.names) if src else sorted(p.rules)
-        deleted = [n for n in notes if self.rule(n) == Rule.delete()]
-        active = [n for n in notes if self.rule(n) != Rule.delete()]
-        rows = group_rows(src.names, active, "Not in the source map") if src else [LayoutRow(None, n) for n in active]
-        if deleted:
-            arrow = "▸" if self.deleted_collapsed else "▾"
-            rows.append(LayoutRow(DELETED_GROUP, None, f"{arrow} Deleted ({len(deleted)})"))
-            if not self.deleted_collapsed:
-                rows.extend(LayoutRow(DELETED_GROUP, n) for n in deleted)
-        return rows
-
-    def toggle_deleted(self) -> None:
-        self.deleted_collapsed = not self.deleted_collapsed
-        self.relayout()
-
-    def refresh(self) -> None:
-        """Правила изменились без переходов между секциями — пересчитать и перерисовать."""
-        self.recompute()
-        if self.rows:
-            self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, len(COLUMNS) - 1))
-
-    # --- доступ ---
-
-    def rule(self, n: int) -> Rule | None:
-        return self.profile.rules.get(n) if self.profile is not None else None
-
-    def row_at(self, row: int) -> LayoutRow:
-        return self.rows[row]
-
-    def note_at(self, row: int) -> int | None:
-        return self.rows[row].note if 0 <= row < len(self.rows) else None
-
-    def note_index(self, note: int, col: int) -> QModelIndex:
-        return self.index(self._note_rows[note], col)
-
-    def has_row(self, note: int) -> bool:
-        return note in self._note_rows
-
-    def source_name(self, n: int) -> str | None:
-        src = self.profile.source_map
-        return src.names.get(n) if src is not None else None
-
-    def target_text(self, n: int) -> str:
-        rule, tgt = self.rule(n), self.profile.target_map
-        if rule is None:
-            return "kept as is"
-        if rule.action == "delete":
-            return "deleted"
-        if rule.action == "keep":
-            name = tgt.names.get(n) if tgt is not None else None
-            return f"same number · {name}" if name else "same number"
-        if tgt is None:
-            return f"→ {rule.dst}"
-        name = tgt.names.get(rule.dst)
-        return f"{name} · {rule.dst}" if name else f"{rule.dst} — not in the target map"
-
-    def status_text(self, n: int) -> str:
-        rule, s = self.rule(n), self.suggestions.get(n)
-        if rule is None:
-            text = STATUS_TEXT[s.kind] if s is not None else "Unassigned"
-        elif rule.action == "delete":
-            text = "Deleted"
-        elif rule.action == "keep":
-            text = "Kept"
-        elif s is not None and s.dst == rule.dst and s.kind in ("exact", "probable"):
-            text = f"Mapped · {s.kind}"
-        else:
-            text = "Mapped"
-        return f"⚠ {text}" if n in self.issues else text
-
-    # --- Qt ---
-
-    def rowCount(self, parent=QModelIndex()) -> int:
-        return 0 if parent.isValid() else len(self.rows)
-
-    def columnCount(self, parent=QModelIndex()) -> int:
-        return 0 if parent.isValid() else len(COLUMNS)
-
-    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        if orientation == Qt.Orientation.Horizontal:
-            if role == Qt.ItemDataRole.DisplayRole:
-                return COLUMNS[section]
-            if role == Qt.ItemDataRole.ToolTipRole:
-                return COLUMN_TIPS[section]
-        return None
-
-    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid() or self.profile is None:
-            return None
-        row = self.rows[index.row()]
-        if row.is_header:
-            if role == Qt.ItemDataRole.ToolTipRole and row.group == DELETED_GROUP:
-                return "Click to show or hide deleted notes"
-            return header_data(row, index.column(), role)
-        n, col = row.note, index.column()
-        rule = self.rule(n)
-        if role == Qt.ItemDataRole.DisplayRole:
-            if col == COL_NOTE:
-                return str(n)
-            if col == COL_PITCH:
-                return pitch_name(n)
-            if col == COL_SOURCE:
-                return self.source_name(n) or ("—" if self.profile.source_map is None else "")
-            if col == COL_TARGET:
-                return self.target_text(n)
-            return self.status_text(n)
-        if role == Qt.ItemDataRole.ForegroundRole:
-            if rule == Rule.delete():
-                return QColor(TOKENS["text_faint"])
-            if col == COL_TARGET and rule is None:
-                return QColor(TOKENS["text_faint"])
-            if col == COL_STATUS and rule is None:
-                s = self.suggestions.get(n)
-                return QColor(TOKENS["warning"] if s is not None and s.kind == "ambiguous" else TOKENS["text_muted"])
-            return None
-        if role == Qt.ItemDataRole.BackgroundRole and n in self.issues:
-            return QColor(TOKENS["warning_bg"])
-        if role == Qt.ItemDataRole.FontRole and col == COL_TARGET and rule is None:
-            f = QFont()
-            f.setItalic(True)
-            return f
-        if role == Qt.ItemDataRole.TextAlignmentRole and col in (COL_NOTE, COL_PITCH):
-            return int(Qt.AlignmentFlag.AlignCenter)
-        if role == Qt.ItemDataRole.ToolTipRole:
-            lines = [i.message for i in self.issues.get(n, [])]
-            s = self.suggestions.get(n)
-            if rule is None and s is not None and s.kind == "ambiguous":
-                lines.append(f'"{s.target_name}" is on several notes in the target map: choose it in Target '
-                             "and pick the note to write to")
-            return "\n".join(lines) or None
-        return None
-
-    def flags(self, index):
-        if not index.isValid() or self.profile is None:
-            return Qt.ItemFlag.NoItemFlags
-        if self.rows[index.row()].is_header:
-            return Qt.ItemFlag.ItemIsEnabled
-        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-
-
-# --- выбор цели ---
-
-class TargetPicker(QDialog):
-    """Окно выбора цели: поиск по целевой карте, группы инструментов, по строке на артикуляцию
-    (с номерами её нот). У артикуляции на нескольких нотах можно раскрыть ноты и выбрать конкретную."""
-
-    def __init__(self, parent, target: NoteMap, count: int) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Choose target")
-        self.resize(460, 560)
-        self.result_pick: Pick | None = None
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search the target map: name or note number")
-        self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._filter)
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        self.tree.itemActivated.connect(lambda *_: self._accept())
-        self.tree.setToolTip(f"{count} source note(s) will be mapped. Expand an articulation on several notes "
-                             "to pick a specific note instead of its Write to note (*)")
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        box = QVBoxLayout(self)
-        box.addWidget(self.search)
-        box.addWidget(self.tree, stretch=1)
-        box.addWidget(buttons)
-        self._fill(target)
-        self.search.setFocus()
-
-    def _fill(self, target: NoteMap) -> None:
-        groups: dict[str, QTreeWidgetItem] = {}
-        for key, notes in sorted(articulations(target).items(), key=lambda kv: kv[1][0]):
-            label = target.names[notes[0]]
-            g = instrument_group(label)
-            parent = self.tree.invisibleRootItem()
-            if g:
-                gkey = normalize_name(g)
-                if gkey not in groups:
-                    groups[gkey] = QTreeWidgetItem(self.tree, [g.upper()])
-                    groups[gkey].setFlags(Qt.ItemFlag.ItemIsEnabled)
-                    groups[gkey].setExpanded(True)
-                parent = groups[gkey]
-            wt = [n for n in notes if n in target.primary]
-            marks = ", ".join(f"{n}*" if n in wt else str(n) for n in notes)
-            item = QTreeWidgetItem(parent, [f"{label}    {marks}"])
-            item.setData(0, Qt.ItemDataRole.UserRole, Pick(articulation=key))
-            item.setData(0, Qt.ItemDataRole.UserRole + 1, f"{normalize_name(label)} {' '.join(map(str, notes))}")
-            if len(notes) > 1:
-                item.setToolTip(0, "Several notes. * = Write to note. Expand to pick a specific note")
-                for n in notes:
-                    child = QTreeWidgetItem(item, [f"{n} ({pitch_name(n)})" + ("  · Write to" if n in wt else "")])
-                    child.setData(0, Qt.ItemDataRole.UserRole, Pick(note=n))
-
-    def _filter(self, text: str) -> None:
-        q = normalize_name(text)
-        root = self.tree.invisibleRootItem()
-        for i in range(root.childCount()):
-            top = root.child(i)
-            if top.data(0, Qt.ItemDataRole.UserRole) is not None:  # плоский список (нет групп)
-                top.setHidden(not self._match(top, q))
-                continue
-            any_visible = False
-            for j in range(top.childCount()):
-                item = top.child(j)
-                visible = self._match(item, q)
-                item.setHidden(not visible)
-                any_visible |= visible
-            top.setHidden(not any_visible)
-
-    @staticmethod
-    def _match(item: QTreeWidgetItem, q: str) -> bool:
-        if not q:
-            return True
-        hay = item.data(0, Qt.ItemDataRole.UserRole + 1) or ""
-        return q in hay.split() if q.isdigit() else q in hay
-
-    def _accept(self) -> None:
-        item = self.tree.currentItem()
-        pick = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
-        if pick is None:
-            return
-        self.result_pick = pick
-        self.accept()
+def _pair_key(p: RemapProfile) -> tuple:
+    """Пара карт профиля (для «скрыть подсказки для этих карт»)."""
+    return tuple((m.name, tuple(sorted(m.names.items()))) for m in (p.source_map, p.target_map))
 
 
 class UnassignedDialog(QDialog):
@@ -459,15 +173,19 @@ class ProfilesPage(QWidget):
     def __init__(self, storage: Storage) -> None:
         super().__init__()
         self.storage = storage
+        self.settings = ui_settings(storage)
         self.current: str | None = None        # ID профиля в хранилище
         self.base: RemapProfile | None = None  # последнее сохранённое состояние
-        self.work: RemapProfile | None = None  # рабочая копия, её правит таблица
+        self.work: RemapProfile | None = None  # рабочая копия, её правит вид «кабелями» (через страницу)
         self._ids: list[str] = []
         self._dirty = False
-        self._undo: list[RemapProfile] = []  # снимки рабочей копии «до» действия
-        self._redo: list[RemapProfile] = []
+        self._undo: list[tuple[RemapProfile, dict[int, str]]] = []  # снимки «до» действия: профиль, подсказки
+        self._redo: list[tuple[RemapProfile, dict[int, str]]] = []
         self._in_edit = False
+        self._suggest: dict[int, str] = {}  # подсказки: нота без правила -> артикуляция цели
+        self._dismissed: set[tuple] = set()  # пары карт, для которых подсказки скрыты (до открытия профиля)
         self._build_ui()
+        self.set_sidebar_collapsed(setting_bool(self.settings, SIDEBAR_KEY))
         self.reload_list()
         self._update_state()
 
@@ -478,7 +196,23 @@ class ProfilesPage(QWidget):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(16)
 
-        left = QVBoxLayout()
+        self.sidebar = QWidget()
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(8)
+        self.sidebar_btn = QPushButton()
+        self.sidebar_btn.setObjectName("iconButton")
+        self.sidebar_btn.clicked.connect(lambda: self.set_sidebar_collapsed(not self.sidebar_collapsed))
+        self.sidebar_caption = QLabel("PROFILES")
+        self.sidebar_caption.setObjectName("section")
+        side_head = QHBoxLayout()
+        side_head.setSpacing(4)
+        side_head.addWidget(self.sidebar_caption, stretch=1)
+        side_head.addWidget(self.sidebar_btn)
+        side.addLayout(side_head)
+        self.sidebar_body = QWidget()
+        left = QVBoxLayout(self.sidebar_body)
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(8)
         self.list = QListWidget()
         self.list.setItemDelegate(MapListDelegate(self.list))
@@ -498,10 +232,9 @@ class ProfilesPage(QWidget):
         for i, b in enumerate((self.new_btn, self.duplicate_btn, self.rename_btn, self.delete_btn)):
             grid.addWidget(b, i // 2, i % 2)
         left.addLayout(grid)
-        left_box = QWidget()
-        left_box.setLayout(left)
-        left_box.setFixedWidth(290)
-        root.addWidget(left_box)
+        side.addWidget(self.sidebar_body, stretch=1)
+        side.addStretch(0)  # свёрнуто — кнопка остаётся вверху
+        root.addWidget(self.sidebar)
 
         right = QVBoxLayout()
         right.setSpacing(6)
@@ -517,9 +250,10 @@ class ProfilesPage(QWidget):
         self.source_btn = QPushButton()
         self.target_btn = QPushButton()
         maps_row = QHBoxLayout()
-        for side, btn, caption in ((SOURCE, self.source_btn, "SOURCE MAP"), (TARGET, self.target_btn, "TARGET MAP")):
+        for side_name, btn, caption in ((SOURCE, self.source_btn, "SOURCE MAP"),
+                                        (TARGET, self.target_btn, "TARGET MAP")):
             menu = QMenu(btn)
-            menu.aboutToShow.connect(lambda m=menu, s=side: self._fill_map_menu(m, s))
+            menu.aboutToShow.connect(lambda m=menu, s=side_name: self._fill_map_menu(m, s))
             btn.setMenu(menu)
             col = QVBoxLayout()
             col.setSpacing(2)
@@ -528,7 +262,7 @@ class ProfilesPage(QWidget):
             col.addWidget(label)
             col.addWidget(btn)
             maps_row.addLayout(col, stretch=1)
-            if side == SOURCE:
+            if side_name == SOURCE:
                 arrow = QLabel("→")
                 arrow.setObjectName("icon")
                 maps_row.addWidget(arrow, alignment=Qt.AlignmentFlag.AlignBottom)
@@ -536,76 +270,48 @@ class ProfilesPage(QWidget):
         self.target_btn.setToolTip("The layout of the plugin the converted file is for")
         right.addLayout(maps_row)
 
-        self.accept_btn = QPushButton("Accept suggestions")
-        self.accept_btn.clicked.connect(self.accept_suggestions)
-        self.assign_btn = QPushButton("Assign target…")
-        self.assign_btn.setToolTip("Choose a target for all selected rows (many-to-one)")
-        self.assign_btn.clicked.connect(self.assign_selected)
         self.summary = QLabel()
         self.summary.setObjectName("muted")
-        self.view_buttons = QButtonGroup(self)
-        tools = QHBoxLayout()
-        tools.setSpacing(6)
-        for view, text, tip in ((TABLE_VIEW, "Table", f"Rules as a table\n{UNDO_TIP}"),
-                                (CABLES_VIEW, "Cables",
-                                 f"Rules as cables from source notes to target articulations\n{UNDO_TIP}")):
-            btn = QPushButton(text)
-            btn.setObjectName("segment")
-            btn.setCheckable(True)
-            btn.setToolTip(tip)
-            btn.clicked.connect(lambda _=False, v=view: self.set_view(v))
-            self.view_buttons.addButton(btn)
-            tools.addWidget(btn)
-            setattr(self, f"{view}_view_btn", btn)
-        self.table_view_btn.setChecked(True)
         self.refresh_btn = QPushButton("↻")
         self.refresh_btn.setToolTip(REFRESH_TIP)
         self.refresh_btn.setObjectName("iconButton")
         self.refresh_btn.clicked.connect(lambda: self.cables.resort())
-        tools.addSpacing(10)
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
         tools.addWidget(self.summary, stretch=1)
         tools.addWidget(self.refresh_btn)
-        tools.addWidget(self.assign_btn)
-        tools.addWidget(self.accept_btn)
         right.addLayout(tools)
 
-        self.model = RulesModel()
-        self.table = QTableView()
-        self.table.setModel(self.model)
-        self.table.verticalHeader().hide()
-        self.table.verticalHeader().setDefaultSectionSize(26)
-        self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._context_menu)
-        self.table.doubleClicked.connect(lambda idx: self._on_activated(idx))
-        self.table.clicked.connect(self._on_clicked)
-        self.table.installEventFilter(self)
-        header = self.table.horizontalHeader()
-        header.setHighlightSections(False)
-        for col, width in ((COL_NOTE, 56), (COL_PITCH, 56), (COL_STATUS, 170)):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(col, width)
-        header.setSectionResizeMode(COL_SOURCE, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(COL_TARGET, QHeaderView.ResizeMode.Stretch)
-        self.model.modelReset.connect(lambda: update_spans(self.table, len(COLUMNS)))
-        self.cables = CableEditor()
+        # панель подсказок: «N matches · Apply · ✕» (не диалог, ничего не блокирует)
+        self.suggest_bar = QFrame()
+        self.suggest_bar.setObjectName("suggestBar")
+        self.suggest_label = QLabel()
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setObjectName("link")
+        self.apply_btn.clicked.connect(self.apply_suggestions)
+        self.dismiss_btn = QPushButton("✕")
+        self.dismiss_btn.setObjectName("link")
+        self.dismiss_btn.setToolTip(DISMISS_TIP)
+        self.dismiss_btn.clicked.connect(self.dismiss_suggestions)
+        bar = QHBoxLayout(self.suggest_bar)
+        bar.setContentsMargins(10, 2, 4, 2)
+        bar.setSpacing(4)
+        dot = QLabel("·")
+        dot.setObjectName("muted")
+        bar.addWidget(self.suggest_label)
+        bar.addWidget(dot)
+        bar.addWidget(self.apply_btn)
+        bar.addStretch(1)
+        bar.addWidget(self.dismiss_btn)
+        right.addWidget(self.suggest_bar)
+
+        self.cables = CableEditor(self.settings)
         self.cables.connect_requested.connect(self.connect_to)
         self.cables.group_drop_requested.connect(self.group_drop)
         self.cables.disconnect_requested.connect(self.clear_rules)
         self.cables.strike_requested.connect(self.toggle_strike)
         self.cables.write_to_requested.connect(self.set_write_to)
-        self.views = QStackedWidget()
-        self.views.addWidget(self.table)
-        self.views.addWidget(self.cables)
-        right.addWidget(self.views, stretch=1)
-
-        self.issues_label = QLabel()
-        self.issues_label.setObjectName("issues")
-        self.issues_label.setWordWrap(True)
-        right.addWidget(self.issues_label)
+        right.addWidget(self.cables, stretch=1)
 
         self.revert_btn = QPushButton("Revert")
         self.revert_btn.setToolTip(f"Discard unsaved changes\n{UNDO_TIP}")
@@ -628,15 +334,20 @@ class ProfilesPage(QWidget):
             for k in keys:
                 QShortcut(QKeySequence(k), self, activated=slot, context=context)
 
-    def eventFilter(self, obj, event) -> bool:
-        if obj is self.table and event.type() == QEvent.Type.KeyPress and self.work is not None:
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self.assign_selected()
-                return True
-            if event.key() == Qt.Key.Key_Delete:
-                self.delete_notes(self.selected_notes())
-                return True
-        return super().eventFilter(obj, event)
+    # --- список профилей: свернуть в полосу ---
+
+    @property
+    def sidebar_collapsed(self) -> bool:
+        return self.sidebar_body.isHidden()
+
+    def set_sidebar_collapsed(self, collapsed: bool) -> None:
+        """Свернуть список профилей в узкую полосу (имя профиля и «●» остаются в заголовке редактора)."""
+        self.sidebar_body.setHidden(collapsed)
+        self.sidebar_caption.setHidden(collapsed)
+        self.sidebar.setFixedWidth(STRIP_WIDTH if collapsed else SIDEBAR_WIDTH)
+        self.sidebar_btn.setText("»" if collapsed else "«")
+        self.sidebar_btn.setToolTip(EXPAND_TIP if collapsed else COLLAPSE_TIP)
+        self.settings.setValue(SIDEBAR_KEY, collapsed)
 
     # --- диалоги (тесты подменяют эти методы) ---
 
@@ -660,18 +371,6 @@ class ProfilesPage(QWidget):
             QMessageBox.StandardButton.Save)
         return {QMessageBox.StandardButton.Save: "save",
                 QMessageBox.StandardButton.Discard: "discard"}.get(answer, "cancel")
-
-    def pick_target(self, notes: list[int]) -> Pick | None:
-        dlg = TargetPicker(self, self.work.target_map, len(notes))
-        return dlg.result_pick if dlg.exec() == QDialog.DialogCode.Accepted else None
-
-    def ask_note_number(self, notes: list[int]) -> int | None:
-        """Цель без целевой карты — просто номер ноты 0–127."""
-        rule = self.work.rules.get(notes[0])
-        default = rule.dst if rule is not None and rule.action == "map" else notes[0]
-        value, ok = QInputDialog.getInt(self, "Target note", f"Map {len(notes)} note(s) to note number (0–127):",
-                                        default, 0, 127)
-        return value if ok else None
 
     def ask_write_to(self, name: str, notes: list[int], preselect: int | None = None) -> int | None:
         """Артикуляция на нескольких нотах без Write to: на какую ноту писать (ответ запомнится в профиле).
@@ -786,8 +485,9 @@ class ProfilesPage(QWidget):
         self.work = copy.deepcopy(p)
         self._undo.clear()
         self._redo.clear()
-        self.model.deleted_collapsed = True
-        self.model.set_profile(self.work)
+        self._suggest = {}  # открытие профиля подсказок не показывает
+        self._dismissed.clear()
+        self._sync_suggestions()
         self.cables.set_profile(self.work)
         self._update_state()
         self.set_status("")
@@ -797,7 +497,8 @@ class ProfilesPage(QWidget):
         self.current = self.base = self.work = None
         self._undo.clear()
         self._redo.clear()
-        self.model.set_profile(None)
+        self._suggest = {}
+        self._sync_suggestions()
         self.cables.set_profile(None)
         self._update_state()
 
@@ -818,40 +519,45 @@ class ProfilesPage(QWidget):
         if self.base is None:
             return
         self.work = copy.deepcopy(self.base)
-        self.model.set_profile(self.work)
+        self._sync_suggestions()
         self.cables.set_profile(self.work, reset_collapsed=False)
         self._update_state()
 
     # --- отмена / повтор ---
 
-    def _record(self, before: RemapProfile) -> None:
+    def _record(self, before: tuple[RemapProfile, dict[int, str]]) -> None:
         """После действия: профиль изменился — снимок «до» в стек отмены, повтор сбрасывается."""
-        if self.work is None or before.to_dict() == self.work.to_dict():
+        if self.work is None or before[0].to_dict() == self.work.to_dict():
             return
         self._undo.append(before)
         del self._undo[:-UNDO_LIMIT]
         self._redo.clear()
 
-    def _restore(self, snap: RemapProfile) -> None:
-        """Вернуть рабочую копию к снимку (на месте: таблица и «кабели» держат тот же объект)."""
+    def _snapshot(self) -> tuple[RemapProfile, dict[int, str]]:
+        return copy.deepcopy(self.work), dict(self._suggest)
+
+    def _restore(self, snap: tuple[RemapProfile, dict[int, str]]) -> None:
+        """Вернуть рабочую копию к снимку (на месте: «кабели» держат тот же объект) и подсказки."""
+        profile, self._suggest = snap
         w = self.work
-        maps_changed = (w.source_map, w.target_map) != (snap.source_map, snap.target_map)
-        w.name, w.source_map, w.target_map, w.rules = snap.name, snap.source_map, snap.target_map, snap.rules
-        self._changed(relayout=True)
+        maps_changed = (w.source_map, w.target_map) != (profile.source_map, profile.target_map)
+        w.name, w.source_map, w.target_map, w.rules = profile.name, profile.source_map, profile.target_map, \
+            profile.rules
+        self._changed()
         if maps_changed:
             self.cables.resort()
 
     def undo(self) -> bool:
         if self.work is None or not self._undo:
             return False
-        self._redo.append(copy.deepcopy(self.work))
+        self._redo.append(self._snapshot())
         self._restore(self._undo.pop())
         return True
 
     def redo(self) -> bool:
         if self.work is None or not self._redo:
             return False
-        self._undo.append(copy.deepcopy(self.work))
+        self._undo.append(self._snapshot())
         self._restore(self._redo.pop())
         return True
 
@@ -881,9 +587,7 @@ class ProfilesPage(QWidget):
             return False
         self.base = out
         self.work = copy.deepcopy(out)
-        self.model.profile = self.work
-        self.model.recompute()
-        self.model.relayout()
+        self._sync_suggestions()
         self.cables.set_profile(self.work, reset_collapsed=False)
         self.reload_list()
         self._update_state()
@@ -891,12 +595,8 @@ class ProfilesPage(QWidget):
         self.set_status(f'Saved "{out.name}".', "ok")
         return True
 
-    def _changed(self, relayout: bool = False) -> None:
-        if relayout:
-            self.model.recompute()
-            self.model.relayout()
-        else:
-            self.model.refresh()
+    def _changed(self) -> None:
+        self._sync_suggestions()
         self.cables.refresh()
         self._update_state()
 
@@ -913,18 +613,14 @@ class ProfilesPage(QWidget):
         self.duplicate_btn.setEnabled(has)
         self.rename_btn.setEnabled(has)
         self.delete_btn.setEnabled(has)
-        for btn in (self.source_btn, self.target_btn, self.refresh_btn, self.assign_btn):
+        for btn in (self.source_btn, self.target_btn, self.refresh_btn):
             btn.setEnabled(has)
-        self.refresh_btn.setVisible(self.view == CABLES_VIEW)
-        both = has and self.work.source_map is not None and self.work.target_map is not None
-        self.accept_btn.setEnabled(both)
-        self.accept_btn.setToolTip(ACCEPT_TIP if both else "Needs both a source and a target map")
+        self._update_suggest_bar()
         if not has:
             self.title.setText("No profile selected")
             self.source_btn.setText("—")
             self.target_btn.setText("—")
             self.summary.setText("")
-            self.issues_label.setText("")
             return
         self.title.setText(self.work.name)
         self.source_btn.setText(map_summary(self.work.source_map))
@@ -934,31 +630,71 @@ class ProfilesPage(QWidget):
         if self.work.source_map is not None:
             parts.append(f"{len(self.unassigned())} unassigned")
         self.summary.setText(" · ".join(parts))
-        self.summary.setToolTip("" if self.work.source_map is not None else
-                                "No source map: the table shows one row per rule")
-        issues = [i for lst in self.model.issues.values() for i in lst]
-        if issues:
-            shown = [f"{i.message}" for i in issues[:6]]
-            more = f"\n… and {len(issues) - 6} more" if len(issues) > 6 else ""
-            self.issues_label.setText(f"{len(issues)} issue(s):\n" + "\n".join(shown) + more)
-            self.issues_label.setToolTip("\n".join(i.message for i in issues))
+        self.summary.setToolTip(UNDO_TIP if self.work.source_map is not None else
+                                f"No source map: one row per rule\n{UNDO_TIP}")
+
+    # --- подсказки ---
+
+    def _sync_suggestions(self) -> None:
+        """Нота, получившая правило, из подсказок выбывает навсегда (для этой пары карт); передать в «кабели»."""
+        if self.work is None:
+            self._suggest = {}
         else:
-            self.issues_label.setText("")
-            self.issues_label.setToolTip("")
-        repolish(self.issues_label, "state", "")
+            self._suggest = {n: a for n, a in self._suggest.items() if n not in self.work.rules}
+        self.cables.set_suggestions(self._suggest)
 
-    # --- виды ---
+    def _compute_suggestions(self) -> None:
+        """Обе карты заданы пользователем: подсказки для нот без правила (если для пары не скрыты ✕)."""
+        w = self.work
+        if w.source_map is None or w.target_map is None or _pair_key(w) in self._dismissed:
+            self._suggest = {}
+        else:
+            self._suggest = {n: a for n, a in suggestion_targets(w.source_map, w.target_map).items()
+                             if n not in w.rules}
 
-    @property
-    def view(self) -> str:
-        return CABLES_VIEW if self.views.currentWidget() is self.cables else TABLE_VIEW
+    def suggestion_counts(self) -> tuple[int, int]:
+        """(подсказок показано, из них применится по Apply)."""
+        if self.work is None or not self._suggest:
+            return 0, 0
+        planned = plan_suggestions(self.work, self._suggest)
+        return len(planned), sum(dst is not None for dst in planned.values())
 
-    def set_view(self, view: str) -> None:
-        """Таблица или «кабели» — оба вида над одной рабочей копией. Показ кабелей — пересортировка."""
-        cables = view == CABLES_VIEW
-        self.views.setCurrentWidget(self.cables if cables else self.table)
-        (self.cables_view_btn if cables else self.table_view_btn).setChecked(True)
-        self.cables.set_active(cables)
+    def _update_suggest_bar(self) -> None:
+        total, ready = self.suggestion_counts()
+        self.suggest_bar.setVisible(total > 0)
+        if not total:
+            return
+        self.suggest_label.setText(f"{total} match" + ("" if total == 1 else "es"))
+        need = total - ready
+        tip = SUGGEST_TIP
+        if need:
+            tip += (f"\n{need} need{'s' if need == 1 else ''} a Write to choice and stay dashed: "
+                    "drag them onto the target.")
+        self.suggest_bar.setToolTip(tip)
+        self.apply_btn.setEnabled(ready > 0)
+        self.apply_btn.setToolTip(f"Connect {ready} note{'' if ready == 1 else 's'} (one undo step)")
+
+    @_undoable
+    def apply_suggestions(self) -> int:
+        """Применить подсказки по логике назначения 8b2c (core apply_suggested); нужен выбор Write to —
+        пропускаются и остаются пунктиром. Возвращает число подключённых нот."""
+        if self.work is None or not self._suggest:
+            return 0
+        new, done = apply_suggested(self.work, self._suggest)
+        self.work.target_map, self.work.rules = new.target_map, new.rules
+        self._changed()
+        n = len(done)
+        self.set_status(f"{n} note{'' if n == 1 else 's'} connected.", "ok")
+        return n
+
+    def dismiss_suggestions(self) -> None:
+        """✕: скрыть подсказки для этой пары карт до повторного открытия профиля."""
+        if self.work is None:
+            return
+        self._dismissed.add(_pair_key(self.work))
+        self._suggest = {}
+        self._sync_suggestions()
+        self.cables.resort()
         self._update_state()
 
     # --- карты профиля ---
@@ -981,7 +717,8 @@ class ProfilesPage(QWidget):
 
     @_undoable
     def choose_map(self, side: str, ref: MapRef | None) -> bool:
-        """Встроить в профиль копию карты (или убрать карту). Правила сохраняются; если они есть — спросить."""
+        """Встроить в профиль копию карты (или убрать карту). Правила сохраняются; если они есть — спросить.
+        Обе карты заданы — подсказки пересчитываются (пунктир и панель)."""
         if self.work is None:
             return False
         m: NoteMap | None = None
@@ -995,73 +732,20 @@ class ProfilesPage(QWidget):
         what = "source" if side == SOURCE else "target"
         if self.work.rules and not self.confirm(
                 f"Change {what} map", f"The profile has {len(self.work.rules)} rule(s). Change the {what} map?",
-                "The rules are kept. Problems with them will be shown under the table."):
+                "The rules are kept. Problems with them are highlighted in the editor."):
             return False
         if side == SOURCE:
             self.work.source_map = m
         else:
             self.work.target_map = m
-        self._changed(relayout=True)
-        self.cables.resort()
+        self._compute_suggestions()
+        self._sync_suggestions()
+        self.cables.resort()  # смена карты — пересортировка
+        self._update_state()
         self.set_status(f"{what.capitalize()} map: {map_summary(m)}.")
         return True
 
     # --- правила ---
-
-    def selected_notes(self) -> list[int]:
-        """Выделенные ноты текущего вида (строки таблицы или строки «кабелей»)."""
-        if self.view == CABLES_VIEW:
-            return self.cables.selected_notes()
-        rows = {i.row() for i in self.table.selectionModel().selectedRows()}
-        return sorted(n for n in map(self.model.note_at, rows) if n is not None)
-
-    def select_notes(self, notes: list[int]) -> None:
-        """Выделить строки нот (для тестов и после перестройки таблицы)."""
-        sel = self.table.selectionModel()
-        sel.clearSelection()
-        selection = QItemSelection()
-        for n in notes:
-            if self.model.has_row(n):
-                idx = self.model.note_index(n, 0)
-                selection.select(idx, self.model.note_index(n, len(COLUMNS) - 1))
-        sel.select(selection, QItemSelectionModel.SelectionFlag.Select)
-
-    def _on_clicked(self, idx: QModelIndex) -> None:
-        row = self.model.row_at(idx.row()) if idx.isValid() else None
-        if row is not None and row.is_header and row.group == DELETED_GROUP:
-            self.model.toggle_deleted()
-
-    def _on_activated(self, idx: QModelIndex) -> None:
-        if idx.isValid() and not self.model.row_at(idx.row()).is_header:
-            self.assign_selected()
-
-    def _context_menu(self, pos) -> None:
-        notes = self.selected_notes()
-        if not notes:
-            return
-        menu = QMenu(self.table)
-        menu.addAction("Assign target…", self.assign_selected)
-        menu.addSeparator()
-        menu.addAction("Delete note" if len(notes) == 1 else f"Delete {len(notes)} notes",
-                       lambda: self.delete_notes(notes))
-        menu.addAction("Clear rule" if len(notes) == 1 else f"Clear {len(notes)} rules",
-                       lambda: self.clear_rules(notes))
-        menu.exec(self.table.viewport().mapToGlobal(pos))
-
-    @_undoable
-    def assign_selected(self) -> bool:
-        notes = self.selected_notes()
-        if self.work is None or not notes:
-            return False
-        if self.work.target_map is None:
-            dst = self.ask_note_number(notes)
-            return dst is not None and self.assign_note(notes, dst)
-        pick = self.pick_target(notes)
-        if pick is None:
-            return False
-        if pick.note is not None:
-            return self.assign_note(notes, pick.note)
-        return self.assign_articulation(notes, pick.articulation)
 
     @_undoable
     def assign_articulation(self, notes: list[int], articulation: str) -> bool:
@@ -1080,11 +764,8 @@ class ProfilesPage(QWidget):
             if write_to is None:
                 return False
         new = assign_to_articulation(self.work, notes, articulation, write_to)
-        was_deleted = any(self.work.rules.get(n) == Rule.delete() for n in notes)
         self.work.target_map, self.work.rules = new.target_map, new.rules
-        self._changed(relayout=was_deleted)
-        if was_deleted:
-            self.select_notes(notes)
+        self._changed()
         self.set_status(f"{len(plan.same) + len(plan.others)} note(s) → {plan.name}.")
         return True
 
@@ -1097,18 +778,15 @@ class ProfilesPage(QWidget):
         new, done = connect_same_numbers(self.work, notes, targets)
         if done:
             self.work.rules = new.rules
-            self._changed(relayout=True)
+            self._changed()
         self.set_status(f"{len(done)} of {len(set(notes))} connected")
         return len(done)
 
     @_undoable
     def assign_note(self, notes: list[int], dst: int) -> bool:
-        was_deleted = any(self.work.rules.get(n) == Rule.delete() for n in notes)
         for n in notes:
             self.work.rules[n] = Rule.map_to(dst)
-        self._changed(relayout=was_deleted)
-        if was_deleted:
-            self.select_notes(notes)
+        self._changed()
         self.set_status(f"{len(notes)} note(s) → {dst}.")
         return True
 
@@ -1118,24 +796,22 @@ class ProfilesPage(QWidget):
             return
         for n in notes:
             self.work.rules[n] = Rule.delete()
-        self._changed(relayout=True)
+        self._changed()
         self.set_status(f"Deleted {len(notes)} note(s).")
 
     @_undoable
     def clear_rules(self, notes: list[int]) -> None:
         if self.work is None or not notes:
             return
-        was_deleted = any(self.work.rules.get(n) == Rule.delete() for n in notes)
         for n in notes:
             self.work.rules.pop(n, None)
-        # без исходной карты строка существует только пока есть правило
-        self._changed(relayout=was_deleted or self.work.source_map is None)
+        self._changed()
         self.set_status(f"Cleared {len(notes)} rule(s).")
 
     @_undoable
     def connect_to(self, notes: list[int], slot: str) -> bool:
-        """Кабель отпустили на строке цели (вид «кабелями»): та же логика, что у выбора цели в таблице.
-        slot — «a:<артикуляция>» (Write to спросят один раз, если нужно) или «n:<номер>» (нота вне целевой карты)."""
+        """Кабель отпустили на строке цели. slot — «a:<артикуляция>» (Write to спросят один раз, если нужно)
+        или «n:<номер>» (нота вне целевой карты)."""
         if self.work is None or not notes:
             return False
         if slot.startswith("a:"):
@@ -1164,24 +840,6 @@ class ProfilesPage(QWidget):
         self._changed()
         self.set_status(f"Write to: {note} ({pitch_name(note)}) · {moved} rule(s) moved.")
         return True
-
-    @_undoable
-    def accept_suggestions(self) -> tuple[int, int, int] | None:
-        """Правила из точных и вероятных подсказок (существующие не меняются).
-        Возвращает (добавлено, нужен выбор Write to, без совпадения) — среди нот без правила."""
-        w = self.work
-        if w is None or w.source_map is None or w.target_map is None:
-            return None
-        suggestions = suggest_rules(w.source_map, w.target_map)
-        new = apply_suggestions(w, suggestions)
-        added = len(new.rules) - len(w.rules)
-        rest = [s for s in suggestions if s.src not in new.rules]
-        ambiguous = sum(1 for s in rest if s.kind == "ambiguous")
-        none = sum(1 for s in rest if s.kind == "none")
-        w.rules = new.rules
-        self._changed()
-        self.set_status(f"{added} mapped, {ambiguous} need a Write to choice, {none} without a match.", "ok")
-        return added, ambiguous, none
 
     # --- действия со списком ---
 
