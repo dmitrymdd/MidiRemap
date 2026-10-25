@@ -340,6 +340,7 @@ class ProfilesPage(QWidget):
         self.cables.write_to_requested.connect(self.set_write_to)
         self.cables.primary_requested.connect(self.make_primary)
         self.cables.same_number_requested.connect(self.connect_same_number)
+        self.cables.note_drop_requested.connect(self.assign_note)
         root.addWidget(self.cables, stretch=1)
 
         # над внешними колонками — карты: источник над левым пулом, цель над правым
@@ -920,7 +921,10 @@ class ProfilesPage(QWidget):
 
     @_undoable
     def assign_note(self, notes: list[int], dst: int) -> bool:
-        """Номер вне карты стороны цели (или карты нет): правило map на него."""
+        """Правило map ровно на ноту dst: номер вне карты стороны цели (или карты нет), drop на номер строки цели,
+        выбор в меню бейджа (логики Write to и вопросов нет). Прежние правила нот заменяются."""
+        if self.work is None or not notes:
+            return False
         q = self._oriented()
         for n in notes:
             q.rules[n] = Rule.map_to(dst)

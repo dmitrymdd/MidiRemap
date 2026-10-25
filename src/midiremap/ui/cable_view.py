@@ -120,6 +120,7 @@ REVERSE_UNASSIGNED_TIP = "No rule in this direction: kept on the same number whe
 PRIMARY_HINT = "Double-click to make primary"
 SAME_NUMBER_HINT = "Double-click to connect to the same number"
 STALE_TIP = "Its cable was removed. Refresh the layout to return it to the pool"
+NUMBER_DROP_HINT = "Drop on a number to connect to that note"
 ROW_HINT = "Drag onto a target to map · Ctrl/Shift+click to select several · Right-click to delete or restore"
 CONNECTED_HINT = "Drag onto another target to remap · Right-click to remove the cable"
 ALIAS_HINT = "Click the arrow to show the notes one by one"
@@ -252,6 +253,7 @@ class _Row(QGraphicsItem):
         self.port, self.dashed, self.warn, self.tone = port, dashed, warn, tone
         self.highlighted = False
         self.selected = False
+        self.drop_zone: tuple | None = None  # строка цели под кабелем-превью: зона (см. zone_at)
         self._hover = False
         self.setZValue(1)
         self.setAcceptHoverEvents(True)
@@ -261,6 +263,27 @@ class _Row(QGraphicsItem):
     @property
     def notes(self) -> tuple[int, ...]:
         return self.model.notes
+
+    def number_rect(self, off: int) -> QRectF:
+        """Зона номера на строке off блока (номер и высота ноты) — цель drop «ровно на эту ноту»."""
+        return QRectF(self.rect.left(), self.rect.top() + off * ROW, 6 + NUM_W + 8 + PITCH_W, ROW)
+
+    def zone_at(self, pt: QPointF) -> tuple:
+        """Зона drop строки цели под точкой сцены: ("badge",) — бейдж «+N» / «…» (меню нот артикуляции);
+        ("line", смещение, нота) — номер на строке (ровно на эту ноту); ("row",) — остальное (логика 8b2c)."""
+        badge = self.badge_rect()
+        if badge is not None and badge.contains(pt):
+            return ("badge",)
+        if self.role == TARGET:
+            for off, n in self.model.numbers:
+                if self.number_rect(off).contains(pt):
+                    return ("line", off, n)
+        return ("row",)
+
+    def set_drop_zone(self, zone: tuple | None) -> None:
+        if zone != self.drop_zone:
+            self.drop_zone = zone
+            self.update()
 
     def set_highlighted(self, on: bool) -> None:
         if on != self.highlighted:
@@ -315,12 +338,19 @@ class _Row(QGraphicsItem):
     def paint(self, p: QPainter, option, widget=None) -> None:
         base = widget.font() if widget is not None else p.font()
         r = self.rect.adjusted(0, ROW_INSET, 0, -ROW_INSET)
+        zone = self.drop_zone[0] if self.drop_zone else None
+        outline = self.highlighted or zone == "row"
         bg = ("selection" if self.selected else "warning_bg" if self.warn
-              else "surface_hover" if self._hover or self.highlighted else "surface")
+              else "surface_hover" if self._hover or outline or zone else "surface")
         # подсветка (кабель под курсором, цель при перетаскивании) — тонкая обводка цветом направления
-        p.setPen(QPen(_color(self.tone[0], 0.8), 1) if self.highlighted else Qt.PenStyle.NoPen)
+        p.setPen(QPen(_color(self.tone[0], 0.8), 1) if outline else Qt.PenStyle.NoPen)
         p.setBrush(_color(bg))
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+        if zone == "line":  # drop ровно на ноту: обведён только номер этой строки (уже обводки строки)
+            p.setPen(QPen(_color(self.tone[1]), 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(self.number_rect(self.drop_zone[1]).adjusted(1.5, ROW_INSET + 1, -1.5, -ROW_INSET - 1),
+                              RADIUS - 1, RADIUS - 1)
         line = QRectF(r.left(), r.top(), r.width(), ROW - 2 * ROW_INSET)  # первая строка блока
         x = r.left() + 6
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -343,11 +373,12 @@ class _Row(QGraphicsItem):
         p.drawText(QRectF(x, line.top(), name_w, line.height()), left_mid, text)
         if self.pill:
             pill = QRectF(self._pill_right() - BADGE_W, line.top() + 4, BADGE_W - 6, line.height() - 8)
-            p.setPen(QPen(_color("border"), 1))
-            p.setBrush(_color("bg"))
+            hot = zone == "badge"  # drop на бейдж — меню нот артикуляции
+            p.setPen(QPen(_color(self.tone[1] if hot else "border"), 1.2 if hot else 1))
+            p.setBrush(_color("surface_hover" if hot else "bg"))
             p.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
             p.setFont(_font(base, size_delta=-1.5, bold=True))
-            p.setPen(_color("text_muted"))
+            p.setPen(_color(self.tone[1] if hot else "text_muted"))
             p.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.pill)
         if self.marker:
             p.setFont(_font(base, size_delta=-1.5, bold=True))
@@ -638,6 +669,7 @@ class _Drag:
     vel: QPointF
     hover: _Row | _HeaderItem | None = None
     header: str | None = None    # тащат заголовок пула: кабель-превью — от него
+    zone: tuple | None = None    # зона строки цели под курсором (_Row.zone_at)
 
     def step(self) -> None:
         """Шаг пружины с затуханием: конец кабеля догоняет курсор с лёгким запаздыванием."""
@@ -679,6 +711,7 @@ class CableEditor(QWidget):
     write_to_requested = Signal(int)        # нота цели: сделать Write to и перенаправить правила
     primary_requested = Signal(int, int)    # двойной клик: кабель (нота строки, нота цели) — сделать основным
     same_number_requested = Signal(list)    # двойной клик по строке Unassigned: ноты — на те же номера
+    note_drop_requested = Signal(list, int)  # drop на номер строки цели (или выбор в меню бейджа): ровно на ноту
 
     def __init__(self, settings: QSettings | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -1129,15 +1162,23 @@ class CableEditor(QWidget):
         self._spring.stop()
         self._spring_key = None
         self.overlay.clear_preview()
-        if d.hover is not None:
+        if isinstance(d.hover, _Row):
+            d.hover.set_drop_zone(None)
+        elif d.hover is not None:
             d.hover.set_highlighted(False)
         for v in (self.active_pool, self.view):
             v.viewport().unsetCursor()
         if drop and isinstance(d.hover, _Row):
-            notes, slot = list(d.notes), d.hover.model.slot
+            notes, slot, zone = list(d.notes), d.hover.model.slot, d.zone or ("row",)
             self.set_selection(set())
-            # вопрос о Write to (модальный) — после того, как превью исчезло
-            QTimer.singleShot(0, lambda: self.connect_requested.emit(notes, slot))
+            if zone[0] == "line":  # ровно на эту ноту: без логики Write to и вопросов
+                QTimer.singleShot(0, lambda: self.note_drop_requested.emit(notes, zone[2]))
+            elif zone[0] == "badge":  # меню всех нот артикуляции — куда пойдёт кабель (Write to не меняется)
+                t, at = d.hover.model, self._global(d.cursor)
+                QTimer.singleShot(0, lambda: self._destination_menu(notes, t, at))
+            else:
+                # вопрос о Write to (модальный) — после того, как превью исчезло
+                QTimer.singleShot(0, lambda: self.connect_requested.emit(notes, slot))
         elif drop and self._droppable(d.hover):
             notes, targets = list(d.notes), list(d.hover.header.notes)
             self.set_selection(set())
@@ -1169,11 +1210,17 @@ class CableEditor(QWidget):
         d = self._drag
         target = self._drop_target_at(d.cursor)
         if target is not d.hover:
-            if d.hover is not None:
+            if isinstance(d.hover, _Row):
+                d.hover.set_drop_zone(None)
+            elif d.hover is not None:
                 d.hover.set_highlighted(False)
             d.hover = target
-            if target is not None:
+            if isinstance(target, _HeaderItem):
                 target.set_highlighted(True)
+        # строка цели: зона под курсором — номер строки, бейдж или вся строка
+        d.zone = target.zone_at(self._scene_point(d.cursor)) if isinstance(target, _Row) else None
+        if isinstance(target, _Row):
+            target.set_drop_zone(d.zone)
         # заголовок группы со скрытыми артикуляциями: подержать курсор — показать все
         key = target.header.key if isinstance(target, _HeaderItem) and target.header.collapsed else None
         if key != self._spring_key:
@@ -1236,16 +1283,41 @@ class CableEditor(QWidget):
 
     # --- Write to ---
 
+    def _scene_point(self, at: QPointF) -> QPointF:
+        """Точка CableEditor -> координаты сцены колонок 2–3."""
+        return self.view.mapToScene(self.view.viewport().mapFrom(self, at.toPoint()))
+
+    def _global(self, at: QPointF) -> QPoint:
+        return self.mapToGlobal(at.toPoint())
+
+    def pick_destination(self, t: TargetRow, at: QPoint) -> int | None:
+        """Меню ВСЕХ нот артикуляции (номер, высота; текущий Write to отмечен, как в меню Write to): куда пойдёт
+        кабель. Write to не меняется. None — Esc или клик мимо."""
+        return self._notes_menu("Connect to", t, at)
+
+    def _destination_menu(self, notes: list[int], t: TargetRow, at: QPoint) -> None:
+        n = self.pick_destination(t, at)
+        if n is not None:
+            self.note_drop_requested.emit(notes, n)
+
     def pick_write_to(self, t: TargetRow, at: QPoint) -> int | None:
         """Меню нот артикуляции (номер, высота), текущий Write to отмечен. None — ничего не выбрали."""
+        return self._notes_menu("Write to", t, at)
+
+    def notes_menu(self, title: str, t: TargetRow) -> QMenu:
+        """Меню нот артикуляции t (номер, высота) под заголовком title; текущий Write to отмечен галочкой.
+        Общее для «Write to» (клик по бейджу) и «Connect to» (drop на бейдж)."""
         menu = QMenu(self)
-        menu.addSection("Write to")
+        menu.addSection(title)
         for n in t.notes:
             action = menu.addAction(f"{n}   {pitch_name(n)}")
             action.setCheckable(True)
             action.setChecked(n == t.write_to)
             action.setData(n)
-        chosen = menu.exec(at)
+        return menu
+
+    def _notes_menu(self, title: str, t: TargetRow, at: QPoint) -> int | None:
+        chosen = self.notes_menu(title, t).exec(at)
         return chosen.data() if chosen is not None and chosen.data() is not None else None
 
     def _write_to_menu(self, t: TargetRow, at: QPoint) -> None:
@@ -1537,6 +1609,7 @@ class CableEditor(QWidget):
         if many:
             wt = WRITE_TO_HINT.format(n=t.write_to) if t.write_to is not None else "Write to: not chosen"
             tip = f"On notes {', '.join(map(str, t.notes))}\n{wt}\n{BADGE_HINT}"
+        tip = f"{tip}\n{NUMBER_DROP_HINT}".lstrip("\n")
         _, number, pitch = lines[0]
         return _Row(r, TARGET, t, number, pitch, t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
                     badge=many, port=port, dashed=dashed, tooltip=tip, lines=lines, tone=self.tone)

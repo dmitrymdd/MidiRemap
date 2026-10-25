@@ -781,7 +781,7 @@ def test_drag_with_real_mouse_events(window, app):
     at = QPointF(ed.pool.viewport().mapFrom(ed, target_point(ed, "a:" + slot).toPoint()))
     send(QEvent.Type.MouseMove, at, Qt.MouseButton.LeftButton)
     ed._tick()
-    assert tgt.highlighted and ed.overlay.preview and ed.overlay.valid
+    assert tgt.drop_zone == ("row",) and ed.overlay.preview and ed.overlay.valid  # середина строки — зона 8b2c
     send(QEvent.Type.MouseButtonRelease, at, Qt.MouseButton.NoButton)
     app.processEvents()
     assert not ed.dragging and ed.overlay.preview is None
@@ -1881,3 +1881,208 @@ def test_comboboxes_draw_own_arrow_and_style_popup(window, app):
     assert "background" in page.combo.view().window().styleSheet()  # без белых полей у списка
     page.combo.hidePopup()
 
+
+# --- drop ровно на ноту строки цели (номер / бейдж / остальное) ---
+
+def line_point(ed, slot, note):
+    """Точка номера note на строке цели slot (координаты CableEditor)."""
+    item = ed.target_items[slot]
+    off = next(o for o, n in item.model.numbers if n == note)
+    ed.view.ensureVisible(item.number_rect(off))  # drop засчитывается только в видимой части сцены
+    return editor_point(ed, ed.view, item.number_rect(off).center())
+
+
+def badge_point(ed, slot):
+    ed.view.ensureVisible(ed.target_items[slot].badge_rect())
+    return editor_point(ed, ed.view, ed.target_items[slot].badge_rect().center())
+
+
+def test_drop_zones_feedback_and_tooltip(window, app):
+    from midiremap.ui.cable_view import NUMBER_DROP_HINT
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    slot = "a:" + key
+    assert page.connect_to(notes[:2], slot)
+    item = ed.target_items[slot]
+    assert NUMBER_DROP_HINT in item.toolTip()
+    (x,) = notes_off(page.work, notes, 1)
+    ed.begin_drag({x}, line_point(ed, slot, notes[1]))
+    item = ed.target_items[slot]
+    off = next(o for o, n in item.model.numbers if n == notes[1])
+    assert item.drop_zone == ("line", off, notes[1]) and ed._drag.zone == item.drop_zone
+    ed.drag_to(badge_point(ed, slot))
+    assert item.drop_zone == ("badge",)
+    ed.drag_to(target_point(ed, slot))
+    assert item.drop_zone == ("row",)
+    ed.cancel_drag()
+    assert item.drop_zone is None
+
+
+def test_drop_on_number_line_maps_exactly_forward(window, app):
+    from midiremap.core.profile import primary_pairs
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    slot = "a:" + key
+    assert page.connect_to(notes[:2], slot)  # n -> n: на строке цели номера notes[0] и notes[1]
+    primary = set(page.work.target_map.primary)
+    pairs = primary_pairs(page.work)
+    x, y = notes_off(page.work, notes, 2)
+    steps = len(page._undo)
+    drop(app, ed, [x], line_point(ed, slot, notes[1]))
+    drop(app, ed, [y], line_point(ed, slot, notes[0]))
+    w = page.work
+    assert w.rules[x] == Rule.map_to(notes[1]) and w.rules[y] == Rule.map_to(notes[0])
+    assert page.answers["asked"] == [] and w.target_map.primary == primary  # ни вопроса, ни Write to
+    assert primary_pairs(w) == pairs  # основные — n -> n, новые кабели неосновные
+    assert len(page._undo) == steps + 2
+    # тот же ряд — на другой номер той же артикуляции: перенацелен, основной не тронут
+    drop(app, ed, [x], line_point(ed, slot, notes[0]))
+    assert w.rules[x] == Rule.map_to(notes[0]) and primary_pairs(w) == pairs
+    assert page.undo() and page.work.rules[x] == Rule.map_to(notes[1])
+
+
+def test_drop_alias_row_on_number_line_sends_all_notes(window, app):
+    page, ed = cables_page(window, accept=False)
+    row = pool_row(ed, lambda i: len(i.notes) > 1)
+    key, notes = three_note_articulation(page.work)
+    slot = "a:" + key
+    show_target_group(ed, slot)
+    target = ed.target_items[slot].model.numbers[0][1]  # без кабелей — Write to или первая нота
+    drop(app, ed, row.notes, line_point(ed, slot, target))
+    assert all(page.work.rules[n] == Rule.map_to(target) for n in row.notes)
+    assert page.answers["asked"] == []
+
+
+def test_drop_on_badge_menu_pick_and_cancel(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    slot = "a:" + key
+    show_target_group(ed, slot)
+    (x,) = notes_off(page.work, notes, 1)
+    primary = set(page.work.target_map.primary)
+    shown = []
+    ed.pick_destination = lambda t, at: shown.append(t.notes) or None  # Esc / клик мимо
+    steps = len(page._undo)
+    drop(app, ed, [x], badge_point(ed, slot))
+    app.processEvents()
+    assert shown == [tuple(notes)] and x not in page.work.rules and len(page._undo) == steps
+    ed.pick_destination = lambda t, at: notes[2]
+    drop(app, ed, [x], badge_point(ed, slot))
+    app.processEvents()
+    assert page.work.rules[x] == Rule.map_to(notes[2]) and page.work.target_map.primary == primary
+    assert page.answers["asked"] == []
+    # меню — то же оформление, что у Write to: все ноты, текущий Write to отмечен
+    t = ed.current.target_row(slot)
+    menu = ed.notes_menu("Connect to", t)
+    actions = menu.actions()
+    assert actions[0].text() == "Connect to" and [a.data() for a in actions[1:]] == list(notes)
+    assert [a.isChecked() for a in actions[1:]] == [n == t.write_to for n in notes]
+
+
+def test_zone3_row_drop_unchanged(window, app):
+    page, ed = cables_page(window, accept=False)
+    key, notes = three_note_articulation(page.work)
+    slot = "a:" + key
+    show_target_group(ed, slot)
+    (x,) = notes_off(page.work, notes, 1)
+    page.answers["write_to"] = [notes[1]]
+    drop(app, ed, [x], target_point(ed, slot))  # имя / пустое место — логика 8b2c: вопрос о Write to
+    assert [a[0] for a in page.answers["asked"]] == ["write_to"]
+    assert page.work.rules[x] == Rule.map_to(notes[1]) and notes[1] in page.work.target_map.primary
+
+
+def test_crash_bow_case_exact_notes_in_reverse(window, app):
+    """← : EZD3 «Crash 1: Bow» на 84 и 87; SD3 84 и 87 подключены n -> n (номера 84 и 87 на строке).
+    SD3 88 и 85 через логику 8b2c легли бы оба на Write to (87); drop на номер — 88 -> 84, 85 -> 87."""
+    page, ed = reverse_page(window, accept=False)
+    ezd = page.work.source_map
+    slot = "a:" + normalize_name(ezd.names[84])
+    assert sorted(n for n in ezd.names if "a:" + normalize_name(ezd.names[n]) == slot) == [84, 87]
+    show_target_group(ed, slot)
+    assert page.connect_to([84, 87], slot) and page.answers["asked"] == []
+    assert sorted(n for _, n in ed.current.target_row(slot).lines) == [84, 87]
+    drop(app, ed, [88], line_point(ed, slot, 84))
+    drop(app, ed, [85], line_point(ed, slot, 87))
+    rev = page.work.effective_reverse()
+    assert rev[88] == Rule.map_to(84) and rev[85] == Rule.map_to(87)
+    assert page.work.rules == {} and page.answers["asked"] == []  # прямые не тронуты, вопросов нет
+    assert not page.work.source_map.primary & {84, 87}  # Write to исходной карты не выбирался
+    # для сравнения — зона 3 (строка): прежняя логика, обе ноты на Write to
+    assert page.undo() and page.undo()
+    page.answers["write_to"] = [87]
+    drop(app, ed, [85, 88], target_point(ed, slot))
+    rev = page.work.effective_reverse()
+    assert rev[85] == rev[88] == Rule.map_to(87)
+
+
+# --- drop ровно на ноту: номер Write to, первая строка, артикуляция из одной ноты (оба направления) ---
+
+def oriented_page(window, direction):
+    """EZD3 → SD3 без подсказок (скрыты в обоих направлениях); вид — в направлении direction."""
+    if direction == "forward":
+        return cables_page(window, accept=False)
+    page, ed = reverse_page(window, accept=False)
+    page.dismiss_suggestions()
+    return page, ed
+
+
+def drop_articulation(q):
+    """Артикуляция цели вида на трёх+ нотах, все номера которых есть в карте источника вида, причём у первой и
+    последней ноты в карте источника разные имена (строки напротив — не алиасы, номер на первой строке)."""
+    src = q.source_map.names
+    return next((k, v) for k, v in articulations(q.target_map).items()
+                if len(v) > 2 and all(n in src for n in v) and normalize_name(src[v[0]]) != normalize_name(src[v[-1]]))
+
+
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+def test_drop_on_write_to_number_without_cables(window, app, direction):
+    page, ed = oriented_page(window, direction)
+    key, notes = drop_articulation(page._oriented())
+    slot, wt = "a:" + key, notes[-1]
+    show_target_group(ed, slot)
+    assert page.set_write_to(wt)
+    assert ed.current.target_row(slot).numbers == ((0, wt),)  # Write to — на первой строке, без кабелей
+    x = notes[0]  # номер x есть среди нот артикуляции: логика 8b2c дала бы x -> x
+    ed.begin_drag({x}, line_point(ed, slot, wt))
+    assert ed._drag.zone == ("line", 0, wt)
+    ed.cancel_drag()
+    steps = len(page._undo)
+    drop(app, ed, [x], line_point(ed, slot, wt))
+    q = page._oriented()
+    assert q.rules[x] == Rule.map_to(wt) and q.target_map.primary & set(notes) == {wt}
+    assert page.answers["asked"] == [] and len(page._undo) == steps + 1
+
+
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+def test_drop_on_write_to_number_with_cables_and_on_first_line(window, app, direction):
+    page, ed = oriented_page(window, direction)
+    key, notes = drop_articulation(page._oriented())
+    slot, wt = "a:" + key, notes[-1]
+    show_target_group(ed, slot)
+    assert page.set_write_to(wt)
+    assert page.connect_to([notes[0], wt], slot)  # n -> n: кабели на notes[0] и на Write to
+    ed.resort()
+    lines = ed.current.target_row(slot).lines
+    assert lines[0] == (0, notes[0]) and wt in [n for _, n in lines] and lines[-1][0] > 0
+    (y,) = notes_off(page._oriented(), notes, 1)
+    drop(app, ed, [y], line_point(ed, slot, wt))  # номер Write to, к нему уже идёт кабель
+    assert page._oriented().rules[y] == Rule.map_to(wt)
+    drop(app, ed, [y], line_point(ed, slot, notes[0]))  # номер на первой строке (рядом с именем)
+    q = page._oriented()
+    assert q.rules[y] == Rule.map_to(notes[0]) and q.target_map.primary & set(notes) == {wt}
+    assert page.answers["asked"] == []
+
+
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+def test_drop_on_single_note_articulation_number(window, app, direction):
+    page, ed = oriented_page(window, direction)
+    q = page._oriented()
+    key, n = single_note_articulation(q.target_map)
+    slot = "a:" + key
+    show_target_group(ed, slot)
+    (x,) = notes_off(q, [n], 1)
+    ed.begin_drag({x}, line_point(ed, slot, n))
+    assert ed._drag.zone == ("line", 0, n) and ed.target_items[slot].badge_rect() is None
+    ed.cancel_drag()
+    drop(app, ed, [x], line_point(ed, slot, n))
+    assert page._oriented().rules[x] == Rule.map_to(n) and page.answers["asked"] == []
