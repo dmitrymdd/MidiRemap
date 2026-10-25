@@ -719,7 +719,7 @@ def show_target_group(ed, slot):
     from midiremap.ui.cable_layout import TARGET_PREFIX
     if slot in ed.target_items:
         return
-    tgt = ed.profile.target_map
+    tgt = ed.shown.target_map  # в ← — исходная карта (цель обратного профиля)
     name = next(v for v in tgt.names.values() if "a:" + normalize_name(v) == slot)
     ed.toggle_target(TARGET_PREFIX + normalize_name(instrument_group(name)))
     assert slot in ed.target_items
@@ -1163,10 +1163,11 @@ def test_single_row_header_and_more_menu(window, app, storage):
     assert page.rename_action.isEnabled() and page.duplicate_action.isEnabled() and page.delete_action.isEnabled()
     menu = page.more_btn.menu()
     assert [a.text() for a in menu.actions() if not a.isSeparator()] == ["New", "Rename", "Duplicate", "Delete"]
-    assert page.more_btn.toolTip() == MORE_TIP and page.direction_slot.count() == 0  # слот 8b3b2 пуст
+    assert page.more_btn.toolTip() == MORE_TIP and page.direction_slot.count() == 2  # сегменты → / ←
     assert page.more_btn.text() == ""  # точки рисуются, не глиф шрифта
     # всё в одной строке: те же координаты по вертикали, Save — правее всех
-    widgets = (page.combo, page.more_btn, page.status, page.refresh_btn, page.revert_btn, page.save_btn)
+    widgets = (page.combo, page.more_btn, *page.direction_btns.values(), page.status, page.refresh_btn,
+               page.revert_btn, page.save_btn)
     window.resize(1300, 900)
     window.show()
     QApplication.processEvents()
@@ -1205,29 +1206,6 @@ def test_switching_profile_in_combo_asks_about_unsaved(window, app):
     page.combo.setCurrentIndex(page.combo.findData(LEGACY_ID, ID_ROLE))
     assert page.current == LEGACY_ID and page.combo.currentData(ID_ROLE) == LEGACY_ID and not page.dirty
     assert page.answers["asked"].count("save_changes") == 2
-
-
-def test_right_pool_is_empty_placeholder(window, app):
-    from midiremap.ui.cable_view import RIGHT_POOL_TIP
-    page, ed = cables_page(window)
-    assert ed.pool_right.scene().items() == [] and ed.pool_right.toolTip() == RIGHT_POOL_TIP
-    assert ed.pool_right.objectName() == "cablesPlaceholder" and ed.pool_right.handler is None
-    assert ed.pool_right.verticalScrollBar() is not ed.pool.verticalScrollBar()
-    # симметрия: правый пул той же минимальной ширины, что и левый
-    assert ed.pool_right.minimumWidth() == ed.pool.minimumWidth()
-    # кабель, отпущенный над правым пулом, ничего не меняет
-    from PySide6.QtCore import QPointF
-    rules = dict(page.work.rules)
-    note = next(iter(ed.pool_items))
-    vp = ed.pool_right.viewport()
-    at = QPointF(vp.mapTo(ed, vp.rect().center()))
-    ed.begin_drag({note}, at)
-    ed.drag_to(at)
-    ed._tick()
-    assert ed._drag.hover is None
-    ed.end_drag(drop=True)
-    QApplication.processEvents()
-    assert page.work.rules == rules
 
 
 def test_old_sidebar_key_is_ignored(app, storage):
@@ -1313,7 +1291,7 @@ def test_primary_cable_thicker_others_thinner(window):
     width = {item.cable.notes: item.pen().widthF() for item in ed.cable_items}
     assert width == {(12,): cable_view.CABLE_PRIMARY_W, (13,): cable_view.CABLE_THIN_W,
                      (15,): cable_view.CABLE_THIN_W, (20,): cable_view.CABLE_PRIMARY_W}
-    assert cable_view.CABLE_PRIMARY_W == cable_view.CABLE_W and cable_view.CABLE_THIN_W == cable_view.CABLE_W / 1.5
+    assert cable_view.CABLE_PRIMARY_W == cable_view.CABLE_W and cable_view.CABLE_THIN_W == cable_view.CABLE_W / 2
 
 
 def test_drag_preview_thin_from_unassigned_notes(window):
@@ -1339,12 +1317,14 @@ def test_reverse_rules_follow_connect_with_undo_redo(window, app):
     n = notes[0]
     assert n not in page.work.reverse_rules
     assert page.connect_to([n], "a:" + key)
-    assert page.work.reverse_rules[n] == Rule.map_to(n)
-    assert all(page.work.reverse_rules[m] == Rule.map_to(n) for m in notes)  # алиасы цели — туда же
+    rev = page.work.effective_reverse()
+    assert rev[n] == Rule.map_to(n)
+    assert all(rev[m] == Rule.map_to(n) for m in notes)  # алиасы цели — туда же
+    assert page.work.reverse_rules is None  # следуют за прямыми и равны выведенным — хранятся как None
     assert page.undo()
-    assert not set(notes) & set(page.work.reverse_rules)
+    assert not set(notes) & set(page.work.effective_reverse())
     assert page.redo()
-    assert page.work.reverse_rules[n] == Rule.map_to(n)
+    assert page.work.effective_reverse()[n] == Rule.map_to(n)
 
 
 def test_map_change_resets_reverse_rules_in_one_undo_step(window, app):
@@ -1389,3 +1369,312 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     w2.direction_btn.click()
     w2.close()
     assert MainWindow(storage).direction_btn.text() == "→"
+
+
+# --- обратное направление в редакторе (8b3b2) ---
+
+def reverse_page(window, accept=True):
+    """EZD3 → SD3 (подсказки применены, если accept), вид — в ←."""
+    from midiremap.core.profile import REVERSE
+    page, ed = cables_page(window, accept=accept)
+    page.set_direction(REVERSE)
+    QApplication.processEvents()
+    return page, ed
+
+
+def send_mouse(view, kind, scene_pt, button=Qt.MouseButton.LeftButton):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+    vp = view.viewport()
+    pos = QPointF(view.mapFromScene(scene_pt))
+    buttons = Qt.MouseButton.NoButton if kind == QEvent.Type.MouseButtonRelease else button
+    QApplication.sendEvent(vp, QMouseEvent(kind, pos, QPointF(vp.mapToGlobal(pos.toPoint())), button, buttons,
+                                           Qt.KeyboardModifier.NoModifier))
+
+
+def double_click(app, view, scene_pt):
+    from PySide6.QtCore import QEvent
+    for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick,
+                 QEvent.Type.MouseButtonRelease):
+        send_mouse(view, kind, scene_pt)
+    app.processEvents()
+
+
+def secondary_cable(ed):
+    """Неосновной кабель: раскрыть подключённую строку алиасов (её ноты идут на одну ноту цели)."""
+    row = next(r for r in ed.current.scene.source_rows if r.connected and r.alias and len(r.notes) > 1)
+    ed.toggle_alias(row.alias, in_pool=False)
+    return next(c for c in ed.cable_items if not c.cable.primary)
+
+
+def test_mirrored_layout_columns_and_pools(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE, missing_rules
+    from midiremap.ui.cable_view import INACTIVE, INACTIVE_POOL_TIPS, _Bundle, _HeaderItem
+    from midiremap.ui.cable_layout import BLOCK_LABELS, UNASSIGNED
+    page, ed = cables_page(window)
+    w = page.work
+    # →: активен левый пул, правый — только заголовки блоков обратного направления, приглушены
+    assert ed.active_pool is ed.pool and ed.inactive_pool is ed.pool_right
+    inert = ed.pool_right.scene().items()
+    assert inert and all(isinstance(i, _HeaderItem) and i.inert and i.header.level == 0 for i in inert)
+    assert all(i.opacity() == INACTIVE and i.toolTip() == INACTIVE_POOL_TIPS[REVERSE] for i in inert)
+    unassigned = next(i for i in inert if i.header.key == UNASSIGNED)
+    assert unassigned.header.label == BLOCK_LABELS[UNASSIGNED]
+    assert unassigned.header.count == len(missing_rules(w, REVERSE))
+    assert ed.pool_right.toolTip() == INACTIVE_POOL_TIPS[REVERSE]
+    src_x = {i.rect.left() for i in ed.scene_rows if not i.model.child}
+    tgt_x = {i.rect.left() for i in ed.target_items.values()}
+    assert max(src_x) < min(tgt_x)  # источник слева, цель справа
+
+    page.set_direction(REVERSE)
+    assert ed.direction == REVERSE and ed.active_pool is ed.pool_right and ed.inactive_pool is ed.pool
+    # активный правый пул — ноты цели без обратного правила (Delete свёрнут, пустой — не показан)
+    pool_notes = {n for r in ed.current.pool.rows for n in r.notes}
+    assert pool_notes == set(missing_rules(w, REVERSE)) and pool_notes <= set(w.target_map.names)
+    assert ed.pool_rows and ed.pool_rows[0].scene() is ed.pool_right.scene()
+    # неактивный левый пул — заголовки блоков прямого направления
+    inert = ed.pool.scene().items()
+    assert inert and all(isinstance(i, _HeaderItem) and i.inert for i in inert)
+    assert next(i for i in inert if i.header.key == UNASSIGNED).header.count == len(missing_rules(w, FORWARD))
+    assert all(i.toolTip() == INACTIVE_POOL_TIPS[FORWARD] for i in inert)
+    # сцена зеркальна: слева артикуляции исходной карты (точка справа), справа — ноты цели (точка слева)
+    ezd = {"a:" + normalize_name(v) for v in w.source_map.names.values()}
+    assert set(ed.target_items) <= ezd
+    assert {n for i in ed.scene_rows for n in i.notes} <= set(w.target_map.names)
+    lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
+    assert all(i.rect.left() == lx and i.rect.width() == col2 for i in ed.target_items.values())
+    assert all(i.rect.right() == rx + col3 for i in ed.scene_rows)
+    assert {i.port for i in ed.target_items.values() if i.port} == {"right"}
+    assert {i.port for i in ed.scene_rows if i.port} == {"left"}
+    bundles = [i for i in ed.view.scene().items() if isinstance(i, _Bundle)]
+    assert bundles and all(b.rect.left() >= rx - 4 for b in bundles)  # рамка связки — справа
+    # кабели — цветом ← ; от точки артикуляции к точке ноты
+    c = ed.cable_items[0]
+    assert c.pen().color().name().upper() == cable_view.TOKENS["reverse"].upper()
+    path = c.path()
+    assert path.pointAtPercent(0).x() == lx + col2 and path.pointAtPercent(1).x() == c.src.rect.left()
+    # неактивный пул на мышь не реагирует
+    from PySide6.QtCore import QEvent
+    header = inert[0]
+    send_mouse(ed.pool, QEvent.Type.MouseButtonPress, header.rect.center())
+    app.processEvents()
+    assert ed._press is None and header.header.collapsed
+
+
+def test_direction_toggle_counters_and_not_an_undo_step(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE, missing_rules
+    page = window.profiles_page
+    assert not page.direction_btns[FORWARD].isEnabled()  # профиля нет
+    new_profile(page, "Bare", None, None)
+    assert page.direction_btns[FORWARD].text() == "→" and "No source map" in page.direction_btns[FORWARD].toolTip()
+    page, ed = cables_page(window)
+    w = page.work
+    fwd, rev = len(missing_rules(w, FORWARD)), len(missing_rules(w, REVERSE))
+    assert page.direction_btns[FORWARD].text() == f"→ {fwd}" and page.direction_btns[REVERSE].text() == f"← {rev}"
+    assert page.direction_btns[REVERSE].toolTip() == f"{rev} target notes have no rule in this direction"
+    assert page.direction_btns[FORWARD].isChecked() and page.direction == FORWARD
+    steps = len(page._undo)
+    page.direction_btns[REVERSE].click()
+    assert page.direction == REVERSE and ed.direction == REVERSE and len(page._undo) == steps and not page.redo()
+    assert page.summary.text().startswith(f"{len(w.effective_reverse())} rules · {rev} unassigned")
+    # правка в ← обновляет числа
+    note = ed.pool_rows[0].notes[0]
+    page.toggle_strike([note])
+    assert page.direction_btns[REVERSE].text() == f"← {rev - 1}"
+    # открытие профиля — снова в →
+    page.answers["unassigned"] = set()
+    assert page.save() and page.direction == REVERSE
+    page.select(LEGACY_ID)
+    assert page.direction == FORWARD and page.direction_btns[FORWARD].isChecked() and ed.direction == FORWARD
+
+
+def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
+    from midiremap.core.profile import REVERSE
+    page, ed = reverse_page(window, accept=False)
+    rp = page.work.reversed()
+    key, notes = three_note_articulation(rp)  # артикуляция EZD3, все номера которой есть в SD3
+    (other,) = notes_off(rp, notes, 1)
+    sd3_primary = set(page.work.target_map.primary)
+    page.answers["write_to"] = [notes[2]]
+    assert page.connect_to([other, notes[0], notes[1]], "a:" + key)
+    assert [x[0] for x in page.answers["asked"]] == ["write_to"] and page.answers["preselect"] == notes[0]
+    assert page.work.reverse_rules == {notes[0]: Rule.map_to(notes[0]), notes[1]: Rule.map_to(notes[1]),
+                                       other: Rule.map_to(notes[2])}
+    assert page.work.rules == {}  # прямые не тронуты
+    assert page.work.source_map.primary & set(notes) == {notes[2]}  # Write to — в копии ИСХОДНОЙ карты
+    assert page.work.target_map.primary == sd3_primary
+    assert not load_map_template("EZdrummer 3").primary  # шаблон не меняется
+    # «+N» на строке источника (в ← — строка цели вида): Write to переводит обратные правила
+    item = ed.target_items["a:" + key]
+    assert item.badge and item.port == "right"
+    assert page.set_write_to(notes[1])
+    assert page.work.reverse_rules[other] == Rule.map_to(notes[1])
+    assert page.work.source_map.primary & set(notes) == {notes[1]}
+    # перетаскивание справа налево — тот же путь; превью — цветом ← и с развёрнутыми касательными
+    single = next(n for n in sorted(page.work.target_map.names)
+                  if n not in page.work.effective_reverse() and n in ed.pool_items)
+    slot, dst = single_note_articulation(page.work.source_map)
+    show_target_group(ed, "a:" + slot)
+    ed.begin_drag({single}, target_point(ed, "a:" + slot))
+    assert ed.overlay.tone == cable_view.TONES[REVERSE] and ed.overlay.preview
+    ed.end_drag(drop=True)
+    app.processEvents()
+    assert page.work.effective_reverse()[single] == Rule.map_to(dst) and single not in page.work.rules
+
+
+def test_reverse_right_click_strike_and_group_drop(window, app):
+    from midiremap.ui.cable_layout import TARGET_PREFIX
+    page, ed = reverse_page(window)
+    w = page.work
+    # правый клик по подключённой строке (нота цели) — обратное правило снято, строка приглушена
+    row = next(i for i in ed.scene_rows if i.model.connected and len(i.notes) == 1)
+    note = row.notes[0]
+    ed.right_click(row)
+    app.processEvents()
+    assert note not in w.effective_reverse() and ed.current.source_row(note).stale
+    assert w.reverse_rules is not None  # отличается от выведенных — ручное
+    # правый клик по строке пула — зачеркнуть (delete) / вернуть
+    pool = ed.pool_rows[0]
+    n = pool.notes[0]
+    ed.right_click(pool)
+    assert w.effective_reverse()[n] == Rule.delete()
+    ed.right_click(ed.pool_items[n])
+    assert n not in w.effective_reverse()
+    # drop на заголовок группы (группы исходной карты): n → n для совпавших номеров
+    ed.resort()
+    header = next(h for h in ed.current.scene.target_headers if h.notes)
+    free = [m for m in header.notes if m in w.target_map.names and m not in w.effective_reverse()]
+    assert free
+    assert page.group_drop(free, list(header.notes)) == len(free)
+    assert all(w.effective_reverse()[m] == Rule.map_to(m) for m in free)
+    assert header.key.startswith(TARGET_PREFIX)
+
+
+def test_reverse_suggestions_bar(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    page = window.profiles_page
+    new_profile(page)
+    fwd = dict(page._suggest[FORWARD])
+    assert fwd and page._suggest[REVERSE]
+    page.set_direction(REVERSE)
+    assert page.cables.suggested == page._suggest[REVERSE] and page.suggest_bar.isVisibleTo(page)
+    total, ready = page.suggestion_counts()
+    assert total == len(page._suggest[REVERSE]) and ready
+    assert page.apply_suggestions() == ready
+    rev = page.work.effective_reverse()
+    assert ready == sum(1 for n in rev if rev[n].action == "map") and page.work.rules == {}
+    # ✕ — только для этого направления
+    page.dismiss_suggestions()
+    assert page._suggest[REVERSE] == {} and page._suggest[FORWARD] == fwd
+    page.set_direction(FORWARD)
+    assert page.cables.suggested == fwd and page.suggest_bar.isVisibleTo(page)
+    # снимок отмены хранит подсказки обоих направлений
+    assert page.undo()  # Apply в ←
+    assert page.direction == REVERSE and page._suggest[REVERSE] and page.work.reverse_rules is None
+
+
+def test_double_click_forward_makes_cable_primary(window, app):
+    from midiremap.core.profile import FORWARD, primary_pairs
+    from midiremap.ui.cable_view import PRIMARY_HINT
+    page, ed = cables_page(window)
+    item = secondary_cable(ed)
+    primary = next(c for c in ed.cable_items if c.cable.primary)
+    assert PRIMARY_HINT in item.toolTip() and PRIMARY_HINT not in primary.toolTip()
+    a, b = item.ends
+    old = page.work.effective_reverse()[b]
+    sel = set(ed.selection)
+    point = item.path().pointAtPercent(0.5)
+    double_click(app, ed.view, point)
+    assert not ed.dragging and ed.selection == sel  # первое нажатие ничего не делает
+    assert (a, b) in primary_pairs(page.work) and page.work.effective_reverse()[b] == Rule.map_to(a)
+    assert page.status.text() == f"Reverse: {b} → {a} (was {b} → {old.dst})"
+    assert any(c.cable.primary and c.ends == (a, b) for c in ed.cable_items)
+    # уже основной — ничего (не шаг отмены)
+    steps = len(page._undo)
+    assert not page.make_primary(a, b) and len(page._undo) == steps
+    assert page.undo() and page.work.effective_reverse()[b] == old and page.direction == FORWARD
+
+
+def test_double_click_reverse_sets_forward_rule(window, app):
+    from midiremap.core.profile import REVERSE, primary_pairs
+    page, ed = reverse_page(window)
+    item = secondary_cable(ed)
+    b, a = item.ends  # в ←: нота цели b ведёт назад на исходную a
+    old = page.work.rules[a]
+    assert old != Rule.map_to(b)
+    double_click(app, ed.view, item.path().pointAtPercent(0.5))
+    w = page.work
+    assert w.rules[a] == Rule.map_to(b) and (a, b) in primary_pairs(w)
+    assert page.status.text() == f"Forward: {a} → {b} (was {a} → {old.dst})"
+    assert any(c.cable.primary and c.ends == (b, a) for c in ed.cable_items)
+    # было без правила — «was unassigned»
+    assert page.undo()
+    p = page.work
+    p.rules.pop(a)
+    p.reverse_rules = {b: Rule.map_to(a)}
+    page._changed()
+    assert page.make_primary(b, a)
+    assert page.status.text() == f"Forward: {a} → {b} (was unassigned)" and (a, b) in primary_pairs(page.work)
+    assert page.direction == REVERSE
+
+
+def test_undo_redo_switch_to_direction_of_the_step(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    page, ed = reverse_page(window)
+    note = ed.pool_rows[0].notes[0]
+    page.toggle_strike([note])  # шаг в ←
+    assert page.work.effective_reverse()[note] == Rule.delete()
+    page.set_direction(FORWARD)
+    src = min(page.work.rules)
+    page.clear_rules([src])  # шаг в →
+    page.set_direction(REVERSE)
+    assert page.undo() and page.direction == FORWARD and ed.direction == FORWARD and src in page.work.rules
+    assert page.undo() and page.direction == REVERSE and ed.direction == REVERSE
+    assert note not in page.work.effective_reverse()
+    assert page.direction_btns[REVERSE].isChecked()
+    page.set_direction(FORWARD)
+    assert page.redo() and page.direction == REVERSE and page.work.effective_reverse()[note] == Rule.delete()
+    assert page.redo() and page.direction == FORWARD and src not in page.work.rules
+
+
+def test_reverse_edits_normalize_to_none(window, app):
+    page, ed = reverse_page(window)
+    w = page.work
+    assert w.reverse_rules is None
+    row = next(i for i in ed.scene_rows if i.model.connected and len(i.notes) == 1)
+    note, dst = row.notes[0], w.effective_reverse()[row.notes[0]].dst
+    page.clear_rules([note])
+    assert w.reverse_rules is not None and note not in w.reverse_rules
+    page.assign_note([note], dst)  # вернули то же — снова равно выведенным
+    assert w.reverse_rules is None
+
+
+def test_save_dialog_forward_only_in_reverse(window, app, storage):
+    page, ed = reverse_page(window)
+    forward_missing = [n for n in sorted(page.work.source_map.names) if n not in page.work.rules]
+    assert ed.current.pool.rows  # в ← есть ноты цели без обратного правила — о них не спрашивают
+    page.answers["unassigned"] = set()
+    assert page.save()
+    assert page.answers["asked"] == [("unassigned", forward_missing)]
+    saved = storage.load_profile(page.current)
+    rev = saved.effective_reverse()
+    assert any(n not in rev for n in saved.target_map.names)  # остались без правила
+
+
+def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    from midiremap.ui.cable_layout import DELETE, TARGET_PREFIX
+    page, ed = cables_page(window, size=(1300, 600))
+    hat = ed.current.header(TARGET_PREFIX + "hi-hat")
+    ed.view.verticalScrollBar().setValue(hat.y * cable_view.ROW)
+    assert ed._top_group() == TARGET_PREFIX + "hi-hat"
+    page.set_direction(REVERSE)
+    assert ed._top_group() == TARGET_PREFIX + "hi-hat"
+    assert ed.view.verticalScrollBar().value() == ed.current.header(TARGET_PREFIX + "hi-hat").y * cable_view.ROW
+    # свёрнутость — своя у направления
+    ed.toggle_pool(DELETE)
+    assert DELETE not in ed.collapsed
+    page.set_direction(FORWARD)
+    assert DELETE in ed.collapsed
+    page.set_direction(REVERSE)
+    assert DELETE not in ed.collapsed

@@ -1,7 +1,13 @@
 """Менеджер и редактор профилей ремапа (PySide6). Раскладка (8b3b1): одна строка заголовка —
-[профиль ▾] [⋯] [место под переключатель направления] статус … [↻] [Revert] [Save]; под ней вид «кабелями»
-(cable_view.py): над левым пулом — карта источника, над сценой — счётчик правил и панель подсказок, над правым
-пулом — карта цели. Всё остальное по высоте — сцене.
+[профиль ▾] [⋯] [→ N | ← M] статус … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py): над левым
+пулом — карта источника, над сценой — счётчик правил и панель подсказок, над правым пулом — карта цели.
+Всё остальное по высоте — сцене.
+
+Направление (8b3b2): переключатель «→ N | ← M» (N, M — ноты без правила в этом направлении, missing_rules).
+Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
+на нём (assign_plan, assign_to_articulation, with_write_to, connect_same_numbers, apply_suggested), результат
+пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
+обратные правила (_put). Подсказки, свёрнутость вида и «скрыть подсказки» — свои у каждого направления.
 
 Логики профилей здесь нет — только вызовы midiremap.core (suggestion_targets, plan_suggestions, apply_suggested,
 assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и midiremap.storage. Диалоги вынесены
@@ -13,8 +19,10 @@ assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и mid
 пропускаются и остаются пунктиром. ✕ скрывает подсказки для этой пары карт до повторного открытия профиля.
 Открытие существующего профиля панель не показывает. Нота, получившая правило, из подсказок выбывает.
 
-Отмена/повтор (Ctrl+Z / Ctrl+Y) — стек снимков рабочей копии (профили маленькие) вместе с подсказками: каждое
-действие, изменившее профиль, кладёт снимок «до» (декоратор _undoable; вложенные вызовы — один шаг). Стек
+Отмена/повтор (Ctrl+Z / Ctrl+Y) — один стек на оба направления: снимки рабочей копии (профили маленькие, снимок
+хранит и обратные правила) вместе с подсказками обоих направлений и направлением, в котором сделан шаг: каждое
+действие, изменившее профиль, кладёт снимок «до» (декоратор _undoable; вложенные вызовы — один шаг). Отмена и
+повтор сначала переключают вид на направление шага (только вид, не шаг) — отменённое всегда видно. Стек
 очищается при открытии другого профиля, Save его не очищает (шаг сохранения тоже отменяется).
 """
 from __future__ import annotations
@@ -25,7 +33,7 @@ import functools
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
+    QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -33,7 +41,8 @@ from PySide6.QtWidgets import (
 from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
-    FORWARD, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, sync_reverse, with_write_to,
+    FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, missing_rules,
+    normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
@@ -63,24 +72,43 @@ SUGGEST_TIP = ("Notes whose names match the target map, shown as dashed cables.\
                "the others go to the Write to note.")
 DISMISS_TIP = "Hide the suggestions for these maps"
 
+DIRECTION_SIDES = {FORWARD: "source", REVERSE: "target"}  # чьи ноты считает сегмент направления
+DIRECTION_TIP = "{n} {side} note{s} {have} no rule in this direction"
+DIRECTION_NO_MAP_TIP = "No {side} map: nothing to count in this direction"
+
 
 def _undoable(fn):
     """Действие страницы над рабочей копией — один шаг отмены (если профиль изменился).
-    Заданные обратные правила следуют за правкой прямых (sync_reverse) в том же шаге."""
+    Заданные обратные правила следуют за правкой прямых (sync_reverse) в том же шаге — кроме действий, которые
+    сами согласовали обратные правила (_reverse_done, двойной клик). Затем обратные правила, равные выведенным,
+    хранятся как None (normalized_reverse, как при чтении JSON). Правки в ← прямые правила не меняют —
+    синхронизация для них ничего не делает, а отличающиеся от выведенных обратные правила становятся ручными."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         if self.work is None or self._in_edit:
             return fn(self, *args, **kwargs)
-        before = (copy.deepcopy(self.work), dict(self._suggest))
+        before = self._snapshot()
         self._in_edit = True
+        self._reverse_done = False
         try:
             return fn(self, *args, **kwargs)
         finally:
             self._in_edit = False
             if self.work is not None:
-                self.work.reverse_rules = sync_reverse(before[0], self.work)
+                if not self._reverse_done:
+                    self.work.reverse_rules = sync_reverse(before[0], self.work)
+                self.work.reverse_rules = normalized_reverse(self.work)
             self._record(before)
     return wrapper
+
+
+def _was(note: int, rule: Rule | None) -> str:
+    """«was 60 → 62» / «was unassigned» / «was deleted» / «was kept» — прежнее правило ноты для статуса."""
+    if rule is None:
+        return "was unassigned"
+    if rule.action == "map":
+        return f"was {note} → {rule.dst}"
+    return "was deleted" if rule.action == "delete" else "was kept"
 
 
 def map_summary(m: NoteMap | None) -> str:
@@ -208,11 +236,15 @@ class ProfilesPage(QWidget):
         self.work: RemapProfile | None = None  # рабочая копия, её правит вид «кабелями» (через страницу)
         self._ids: list[str] = []
         self._dirty = False
-        self._undo: list[tuple[RemapProfile, dict[int, str]]] = []  # снимки «до» действия: профиль, подсказки
-        self._redo: list[tuple[RemapProfile, dict[int, str]]] = []
+        # снимки «до» действия: профиль, подсказки обоих направлений, направление, в котором сделан шаг
+        self._undo: list[tuple[RemapProfile, dict[str, dict[int, str]], str]] = []
+        self._redo: list[tuple[RemapProfile, dict[str, dict[int, str]], str]] = []
         self._in_edit = False
-        self._suggest: dict[int, str] = {}  # подсказки: нота без правила -> артикуляция цели
-        self._dismissed: set[tuple] = set()  # пары карт, для которых подсказки скрыты (до открытия профиля)
+        self._reverse_done = False  # действие само согласовало обратные правила (sync_reverse не нужен)
+        self.direction = FORWARD
+        # подсказки по направлениям: нота исходной стороны без правила -> артикуляция стороны цели
+        self._suggest: dict[str, dict[int, str]] = {FORWARD: {}, REVERSE: {}}
+        self._dismissed: set[tuple] = set()  # (пара карт, направление): подсказки скрыты (до открытия профиля)
         self._build_ui()
         self.reload_list()
         self._update_state()
@@ -239,8 +271,24 @@ class ProfilesPage(QWidget):
         more.addSeparator()
         self.delete_action = more.addAction("Delete", self.delete)
         self.more_btn.setMenu(more)
-        self.direction_slot = QHBoxLayout()  # 8b3b2: переключатель направления (пока пусто)
+        # переключатель направления: «→ N | ← M», N и M — ноты без правила в этом направлении
+        self.direction_slot = QHBoxLayout()
         self.direction_slot.setContentsMargins(0, 0, 0, 0)
+        self.direction_slot.setSpacing(0)
+        self.direction_group = QButtonGroup(self)
+        self.direction_group.setExclusive(True)
+        self.direction_btns: dict[str, QPushButton] = {}
+        for d, pos in ((FORWARD, "first"), (REVERSE, "last")):
+            btn = QPushButton()
+            btn.setObjectName("segment")
+            btn.setCheckable(True)
+            btn.setProperty("pos", pos)
+            btn.setProperty("dir", d)
+            btn.clicked.connect(lambda _=False, d=d: self.set_direction(d))
+            self.direction_group.addButton(btn)
+            self.direction_slot.addWidget(btn)
+            self.direction_btns[d] = btn
+        self.direction_btns[FORWARD].setChecked(True)
         self.status = QLabel()
         self.status.setObjectName("status")
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # длинный — обрезается
@@ -265,7 +313,8 @@ class ProfilesPage(QWidget):
         head.addWidget(self.revert_btn)
         head.addWidget(self.save_btn)
         root.addLayout(head)
-        self.header_controls = (self.combo, self.more_btn, self.refresh_btn, self.revert_btn, self.save_btn)
+        self.header_controls = (self.combo, self.more_btn, *self.direction_btns.values(), self.refresh_btn,
+                                self.revert_btn, self.save_btn)
 
         self.cables = CableEditor(self.settings)
         self.cables.connect_requested.connect(self.connect_to)
@@ -273,6 +322,7 @@ class ProfilesPage(QWidget):
         self.cables.disconnect_requested.connect(self.clear_rules)
         self.cables.strike_requested.connect(self.toggle_strike)
         self.cables.write_to_requested.connect(self.set_write_to)
+        self.cables.primary_requested.connect(self.make_primary)
         root.addWidget(self.cables, stretch=1)
 
         # над внешними колонками — карты: источник над левым пулом, цель над правым
@@ -362,6 +412,14 @@ class ProfilesPage(QWidget):
     def ask_write_to(self, name: str, notes: list[int], preselect: int | None = None) -> int | None:
         """Артикуляция на нескольких нотах без Write to: на какую ноту писать (ответ запомнится в профиле).
         preselect — нота, выбранная в списке заранее (первая совпавшая по номеру)."""
+        dlg, items = self.write_to_dialog(name, notes, preselect)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return notes[items.index(dlg.textValue())]
+
+    def write_to_dialog(self, name: str, notes: list[int], preselect: int | None = None
+                        ) -> tuple[QInputDialog, list[str]]:
+        """Диалог вопроса о Write to (без показа) и его пункты. В ← цель — исходная карта: выбор ляжет в её копию."""
         items = [f"{n} · {pitch_name(n)}" for n in notes]
         dlg = QInputDialog(self)
         dlg.setWindowTitle("Write to")
@@ -370,10 +428,9 @@ class ProfilesPage(QWidget):
         dlg.setComboBoxEditable(False)
         if preselect in notes:
             dlg.setTextValue(items[notes.index(preselect)])
-        dlg.setToolTip("The choice is saved in this profile's copy of the target map, not in the map itself")
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return None
-        return notes[items.index(dlg.textValue())]
+        side = "source" if self.direction == REVERSE else "target"
+        dlg.setToolTip(f"The choice is saved in this profile's copy of the {side} map, not in the map itself")
+        return dlg, items
 
     def ask_unassigned(self, notes: list[int]) -> set[int] | None:
         """Перед сохранением: ноты без правила будут удалены — какие оставить на своих номерах.
@@ -478,10 +535,11 @@ class ProfilesPage(QWidget):
         self._show_current()
         self._undo.clear()
         self._redo.clear()
-        self._suggest = {}  # открытие профиля подсказок не показывает
+        self._suggest = {FORWARD: {}, REVERSE: {}}  # открытие профиля подсказок не показывает
         self._dismissed.clear()
+        self._show_direction(FORWARD)  # профиль открывается в →
         self._sync_suggestions()
-        self.cables.set_profile(self.work)
+        self.cables.set_profile(self.work, direction=FORWARD)
         self._update_state()
         self.set_status("")
         return True
@@ -490,9 +548,10 @@ class ProfilesPage(QWidget):
         self.current = self.base = self.work = None
         self._undo.clear()
         self._redo.clear()
-        self._suggest = {}
+        self._suggest = {FORWARD: {}, REVERSE: {}}
+        self._show_direction(FORWARD)
         self._sync_suggestions()
-        self.cables.set_profile(None)
+        self.cables.set_profile(None, direction=FORWARD)
         self._update_state()
 
     def maybe_leave(self) -> bool:
@@ -518,7 +577,7 @@ class ProfilesPage(QWidget):
 
     # --- отмена / повтор ---
 
-    def _record(self, before: tuple[RemapProfile, dict[int, str]]) -> None:
+    def _record(self, before: tuple[RemapProfile, dict[str, dict[int, str]], str]) -> None:
         """После действия: профиль изменился — снимок «до» в стек отмены, повтор сбрасывается."""
         if self.work is None or before[0].to_dict() == self.work.to_dict():
             return
@@ -526,12 +585,15 @@ class ProfilesPage(QWidget):
         del self._undo[:-UNDO_LIMIT]
         self._redo.clear()
 
-    def _snapshot(self) -> tuple[RemapProfile, dict[int, str]]:
-        return copy.deepcopy(self.work), dict(self._suggest)
+    def _snapshot(self, direction: str | None = None) -> tuple[RemapProfile, dict[str, dict[int, str]], str]:
+        """Рабочая копия, подсказки обоих направлений и направление шага (по умолчанию — текущее)."""
+        return (copy.deepcopy(self.work), {d: dict(v) for d, v in self._suggest.items()},
+                direction or self.direction)
 
-    def _restore(self, snap: tuple[RemapProfile, dict[int, str]]) -> None:
+    def _restore(self, snap: tuple[RemapProfile, dict[str, dict[int, str]], str]) -> None:
         """Вернуть рабочую копию к снимку (на месте: «кабели» держат тот же объект) и подсказки."""
-        profile, self._suggest = snap
+        profile, suggest, _ = snap
+        self._suggest = {d: dict(v) for d, v in suggest.items()}
         w = self.work
         maps_changed = (w.source_map, w.target_map) != (profile.source_map, profile.target_map)
         w.name, w.source_map, w.target_map, w.rules = profile.name, profile.source_map, profile.target_map, \
@@ -542,18 +604,71 @@ class ProfilesPage(QWidget):
             self.cables.resort()
 
     def undo(self) -> bool:
+        """Отменить шаг: сначала вид — на направление, в котором он сделан (не шаг), затем снимок «до»."""
         if self.work is None or not self._undo:
             return False
-        self._redo.append(self._snapshot())
-        self._restore(self._undo.pop())
+        snap = self._undo.pop()
+        self._redo.append(self._snapshot(snap[2]))
+        self.set_direction(snap[2])
+        self._restore(snap)
         return True
 
     def redo(self) -> bool:
         if self.work is None or not self._redo:
             return False
-        self._undo.append(self._snapshot())
-        self._restore(self._redo.pop())
+        snap = self._redo.pop()
+        self._undo.append(self._snapshot(snap[2]))
+        self.set_direction(snap[2])
+        self._restore(snap)
         return True
+
+    # --- направление ---
+
+    def set_direction(self, direction: str) -> None:
+        """Переключить вид на направление (→ / ←). Это не шаг отмены: профиль не меняется."""
+        if direction == self.direction:
+            self._show_direction(direction)
+            return
+        self._show_direction(direction)
+        self._sync_suggestions()
+        self.cables.set_direction(direction)
+        self._update_state()
+
+    def _show_direction(self, direction: str) -> None:
+        self.direction = direction
+        btn = self.direction_btns[direction]
+        if not btn.isChecked():
+            btn.setChecked(True)
+
+    def _oriented(self) -> RemapProfile:
+        """Профиль, который правит вид: сам work (→) или work.reversed() (←)."""
+        return self.work.oriented(self.direction)
+
+    def _put(self, new: RemapProfile) -> None:
+        """Результат правки ориентированного профиля — в рабочую копию. В → это карта цели и прямые правила;
+        в ← — карта цели обратного профиля = копия ИСХОДНОЙ карты (Write to ложится в неё) и обратные правила."""
+        if self.direction == FORWARD:
+            self.work.target_map, self.work.rules = new.target_map, new.rules
+        else:
+            self.work.source_map, self.work.reverse_rules = new.target_map, dict(new.rules)
+
+    def _update_direction(self) -> None:
+        """Числа сегментов: ноты карты исходной стороны направления без правила (missing_rules)."""
+        for d, btn in self.direction_btns.items():
+            arrow = "→" if d == FORWARD else "←"
+            btn.setEnabled(self.work is not None)
+            side = DIRECTION_SIDES[d]
+            side_map = None
+            if self.work is not None:
+                side_map = self.work.source_map if d == FORWARD else self.work.target_map
+            if side_map is None:
+                btn.setText(arrow)
+                btn.setToolTip(DIRECTION_NO_MAP_TIP.format(side=side) if self.work is not None else "")
+                continue
+            n = len(missing_rules(self.work, d))
+            btn.setText(f"{arrow} {n}")
+            btn.setToolTip(DIRECTION_TIP.format(n=n, side=side, s="" if n == 1 else "s",
+                                                have="has" if n == 1 else "have"))
 
     def unassigned(self) -> list[int]:
         """Ноты исходной карты без правила."""
@@ -608,6 +723,7 @@ class ProfilesPage(QWidget):
         for btn in (self.source_btn, self.target_btn, self.refresh_btn):
             btn.setEnabled(has)
         self._update_suggest_bar()
+        self._update_direction()
         if not has:
             self.source_btn.setText("—")
             self.target_btn.setText("—")
@@ -615,38 +731,47 @@ class ProfilesPage(QWidget):
             return
         self.source_btn.setText(map_summary(self.work.source_map))
         self.target_btn.setText(map_summary(self.work.target_map))
-        n_rules = len(self.work.rules)
+        q = self._oriented()  # счётчик — по направлению вида
+        n_rules = len(q.rules)
         parts = [f"{n_rules} rule" + ("" if n_rules == 1 else "s")]
-        if self.work.source_map is not None:
-            parts.append(f"{len(self.unassigned())} unassigned")
+        if q.source_map is not None:
+            parts.append(f"{len(missing_rules(self.work, self.direction))} unassigned")
         self.summary.setText(" · ".join(parts))
-        self.summary.setToolTip(UNDO_TIP if self.work.source_map is not None else
-                                f"No source map: one row per rule\n{UNDO_TIP}")
+        side = DIRECTION_SIDES[self.direction]
+        self.summary.setToolTip(UNDO_TIP if q.source_map is not None else
+                                f"No {side} map: one row per rule\n{UNDO_TIP}")
 
     # --- подсказки ---
 
     def _sync_suggestions(self) -> None:
-        """Нота, получившая правило, из подсказок выбывает навсегда (для этой пары карт); передать в «кабели»."""
+        """Нота, получившая правило (в своём направлении), из подсказок выбывает навсегда (для этой пары карт);
+        подсказки текущего направления — в «кабели»."""
         if self.work is None:
-            self._suggest = {}
+            self._suggest = {FORWARD: {}, REVERSE: {}}
         else:
-            self._suggest = {n: a for n, a in self._suggest.items() if n not in self.work.rules}
-        self.cables.set_suggestions(self._suggest)
+            rules = {FORWARD: self.work.rules, REVERSE: self.work.effective_reverse()}
+            self._suggest = {d: {n: a for n, a in v.items() if n not in rules[d]} for d, v in self._suggest.items()}
+        self.cables.set_suggestions(self._suggest[self.direction])
 
     def _compute_suggestions(self) -> None:
-        """Обе карты заданы пользователем: подсказки для нот без правила (если для пары не скрыты ✕)."""
+        """Обе карты заданы пользователем: подсказки для нот без правила в каждом направлении (в ← —
+        ноты цели без обратного правила, имена ищутся в исходной карте); направление, скрытое ✕ для этой пары
+        карт, — без подсказок."""
         w = self.work
-        if w.source_map is None or w.target_map is None or _pair_key(w) in self._dismissed:
-            self._suggest = {}
-        else:
-            self._suggest = {n: a for n, a in suggestion_targets(w.source_map, w.target_map).items()
-                             if n not in w.rules}
+        for d in (FORWARD, REVERSE):
+            q = w.oriented(d)
+            if q.source_map is None or q.target_map is None or (_pair_key(w), d) in self._dismissed:
+                self._suggest[d] = {}
+            else:
+                self._suggest[d] = {n: a for n, a in suggestion_targets(q.source_map, q.target_map).items()
+                                    if n not in q.rules}
 
     def suggestion_counts(self) -> tuple[int, int]:
-        """(подсказок показано, из них применится по Apply)."""
-        if self.work is None or not self._suggest:
+        """(подсказок показано, из них применится по Apply) — в текущем направлении."""
+        suggest = self._suggest[self.direction]
+        if self.work is None or not suggest:
             return 0, 0
-        planned = plan_suggestions(self.work, self._suggest)
+        planned = plan_suggestions(self._oriented(), suggest)
         return len(planned), sum(dst is not None for dst in planned.values())
 
     def _update_suggest_bar(self) -> None:
@@ -668,21 +793,21 @@ class ProfilesPage(QWidget):
     def apply_suggestions(self) -> int:
         """Применить подсказки по логике назначения 8b2c (core apply_suggested); нужен выбор Write to —
         пропускаются и остаются пунктиром. Возвращает число подключённых нот."""
-        if self.work is None or not self._suggest:
+        if self.work is None or not self._suggest[self.direction]:
             return 0
-        new, done = apply_suggested(self.work, self._suggest)
-        self.work.target_map, self.work.rules = new.target_map, new.rules
+        new, done = apply_suggested(self._oriented(), self._suggest[self.direction])
+        self._put(new)
         self._changed()
         n = len(done)
         self.set_status(f"{n} note{'' if n == 1 else 's'} connected.", "ok")
         return n
 
     def dismiss_suggestions(self) -> None:
-        """✕: скрыть подсказки для этой пары карт до повторного открытия профиля."""
+        """✕: скрыть подсказки для этой пары карт в текущем направлении до повторного открытия профиля."""
         if self.work is None:
             return
-        self._dismissed.add(_pair_key(self.work))
-        self._suggest = {}
+        self._dismissed.add((_pair_key(self.work), self.direction))
+        self._suggest[self.direction] = {}
         self._sync_suggestions()
         self.cables.resort()
         self._update_state()
@@ -743,10 +868,13 @@ class ProfilesPage(QWidget):
         """Цель — артикуляция целевой карты (логика — core assign_plan / assign_to_articulation): нота, чей номер
         есть среди нот артикуляции, остаётся на нём; остальные — на Write to. Нужен выбор Write to — спросить
         один раз; он запоминается как primary в КОПИИ целевой карты профиля (карта в хранилище не меняется)."""
-        if self.work is None or self.work.target_map is None or not notes:
+        if self.work is None or not notes:
+            return False
+        q = self._oriented()  # в ← — обратный профиль: цель — исходная карта, Write to ляжет в её копию
+        if q.target_map is None:
             return False
         try:
-            plan = assign_plan(self.work, notes, articulation)
+            plan = assign_plan(q, notes, articulation)
         except ValueError:
             return False
         write_to = None
@@ -754,8 +882,7 @@ class ProfilesPage(QWidget):
             write_to = self.ask_write_to(plan.name, list(plan.targets), plan.preselect)
             if write_to is None:
                 return False
-        new = assign_to_articulation(self.work, notes, articulation, write_to)
-        self.work.target_map, self.work.rules = new.target_map, new.rules
+        self._put(assign_to_articulation(q, notes, articulation, write_to))
         self._changed()
         self.set_status(f"{len(plan.same) + len(plan.others)} note(s) → {plan.name}.")
         return True
@@ -766,17 +893,20 @@ class ProfilesPage(QWidget):
         connect_same_numbers; ноты без совпадения и уже подключённые не трогаются, вопросов нет)."""
         if self.work is None or not notes:
             return 0
-        new, done = connect_same_numbers(self.work, notes, targets)
+        new, done = connect_same_numbers(self._oriented(), notes, targets)
         if done:
-            self.work.rules = new.rules
+            self._put(new)
             self._changed()
         self.set_status(f"{len(done)} of {len(set(notes))} connected")
         return len(done)
 
     @_undoable
     def assign_note(self, notes: list[int], dst: int) -> bool:
+        """Номер вне карты стороны цели (или карты нет): правило map на него."""
+        q = self._oriented()
         for n in notes:
-            self.work.rules[n] = Rule.map_to(dst)
+            q.rules[n] = Rule.map_to(dst)
+        self._put(q)
         self._changed()
         self.set_status(f"{len(notes)} note(s) → {dst}.")
         return True
@@ -785,8 +915,10 @@ class ProfilesPage(QWidget):
     def delete_notes(self, notes: list[int]) -> None:
         if self.work is None or not notes:
             return
+        q = self._oriented()
         for n in notes:
-            self.work.rules[n] = Rule.delete()
+            q.rules[n] = Rule.delete()
+        self._put(q)
         self._changed()
         self.set_status(f"Deleted {len(notes)} note(s).")
 
@@ -794,8 +926,10 @@ class ProfilesPage(QWidget):
     def clear_rules(self, notes: list[int]) -> None:
         if self.work is None or not notes:
             return
+        q = self._oriented()
         for n in notes:
-            self.work.rules.pop(n, None)
+            q.rules.pop(n, None)
+        self._put(q)
         self._changed()
         self.set_status(f"Cleared {len(notes)} rule(s).")
 
@@ -814,22 +948,53 @@ class ProfilesPage(QWidget):
         """Правый клик в пуле: зачеркнуть (delete); если все ноты уже зачёркнуты — вернуть (без правила)."""
         if self.work is None or not notes:
             return
-        if all(self.work.rules.get(n) == Rule.delete() for n in notes):
+        if all(self._oriented().rules.get(n) == Rule.delete() for n in notes):
             self.clear_rules(notes)
         else:
             self.delete_notes(notes)
 
     @_undoable
     def set_write_to(self, note: int) -> bool:
-        """Write to артикуляции цели = note (в копии целевой карты профиля); на note переводятся правила map,
-        которые шли на прежний Write to (кроме n → n) — core with_write_to."""
-        if self.work is None or self.work.target_map is None or note not in self.work.target_map.names:
+        """Write to артикуляции стороны цели = note (в → — в копии целевой карты профиля, в ← — исходной); на
+        note переводятся правила map, которые шли на прежний Write to (кроме n → n) — core with_write_to."""
+        if self.work is None:
             return False
-        new = with_write_to(self.work, note)
-        moved = sum(1 for n, r in new.rules.items() if r != self.work.rules.get(n))
-        self.work.target_map, self.work.rules = new.target_map, new.rules
+        q = self._oriented()
+        if q.target_map is None or note not in q.target_map.names:
+            return False
+        new = with_write_to(q, note)
+        moved = sum(1 for n, r in new.rules.items() if r != q.rules.get(n))
+        self._put(new)
         self._changed()
         self.set_status(f"Write to: {note} ({pitch_name(note)}) · {moved} rule(s) moved.")
+        return True
+
+    @_undoable
+    def make_primary(self, src: int, dst: int) -> bool:
+        """Двойной клик по кабелю (src -> dst ориентированного профиля) — сделать его основным.
+        → (a -> b): обратное правило b -> a (with_primary_cable; алиасы-«дублёры» b — туда же).
+        ← (b -> a): прямое правило a -> b вместо прежнего a -> b' (with_forward_primary; выведенные для b'
+        обратные правила следуют за прямыми). Уже основной — ничего. Один шаг отмены."""
+        if self.work is None:
+            return False
+        a, b = (src, dst) if self.direction == FORWARD else (dst, src)
+        if (a, b) in primary_pairs(self.work):
+            return False
+        try:
+            if self.direction == FORWARD:
+                old = self.work.effective_reverse().get(b)
+                new = with_primary_cable(self.work, a, b)
+                status = f"Reverse: {b} → {a} ({_was(b, old)})"
+            else:
+                old = self.work.rules.get(a)
+                new = with_forward_primary(self.work, a, b)
+                status = f"Forward: {a} → {b} ({_was(a, old)})"
+        except ValueError:
+            return False
+        self.work.rules, self.work.reverse_rules = new.rules, new.reverse_rules
+        self._reverse_done = True  # обратные правила уже согласованы ядром (постусловие — основной кабель)
+        self._changed()
+        self.set_status(status)
         return True
 
     # --- действия со списком ---

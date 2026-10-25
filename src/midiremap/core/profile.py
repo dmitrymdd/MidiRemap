@@ -149,8 +149,8 @@ class RemapProfile:
             )
             # совпадают с выведенными — храним как None: поведение то же (sync_reverse ведёт их одинаково),
             # а прочитанный и только что созданный профиль равны и через ==
-            if reverse is not None and reverse != derive_reverse(p):
-                p.reverse_rules = reverse
+            p.reverse_rules = reverse
+            p.reverse_rules = normalized_reverse(p)
             return p
         except KeyError as e:
             raise ProfileFormatError(f"required field {e.args[0]!r} is missing") from e
@@ -211,23 +211,45 @@ def derive_reverse(p: RemapProfile) -> dict[int, Rule]:
       Write to артикуляции, если у него есть правило, иначе — что у наименьшей её ноты с правилом.
     - Остальные ноты цели правила не получают. keep кабелем не считается и обратного правила не порождает
       (при обратной конвертации такая нота и так остаётся на месте — keep по умолчанию)."""
-    incoming: dict[int, list[int]] = {}
-    for src, rule in p.rules.items():
-        if rule.action == "map":
-            incoming.setdefault(rule.dst, []).append(src)
+    incoming = _incoming(p)
     out = {b: Rule.map_to(b if b in srcs else min(srcs)) for b, srcs in incoming.items()}
     tgt = p.target_map
     if tgt is not None:
         for notes in articulations(tgt).values():
-            donors = [n for n in notes if n in incoming]
-            if len(notes) < 2 or not donors:
+            donor = _donor(tgt, notes, incoming)
+            if len(notes) < 2 or donor is None:
                 continue
-            wt = primary_note(tgt, tgt.names[notes[0]])
-            donor = wt if wt in incoming else donors[0]
             for n in notes:
                 if n not in incoming:
                     out[n] = out[donor]
     return dict(sorted(out.items()))
+
+
+def _incoming(p: RemapProfile) -> dict[int, list[int]]:
+    """Нота цели -> исходные ноты, чьи прямые map идут на неё."""
+    incoming: dict[int, list[int]] = {}
+    for src, rule in p.rules.items():
+        if rule.action == "map":
+            incoming.setdefault(rule.dst, []).append(src)
+    return incoming
+
+
+def _donor(tgt: NoteMap, notes: list[int], incoming: dict[int, list[int]]) -> int | None:
+    """Нота артикуляции цели, чьё обратное правило копируют её алиасы без входящих кабелей: Write to, если на
+    него идут кабели, иначе наименьшая нота с кабелями. None — кабелей на артикуляцию нет."""
+    donors = [n for n in notes if n in incoming]
+    if not donors:
+        return None
+    wt = primary_note(tgt, tgt.names[notes[0]])
+    return wt if wt in incoming else donors[0]
+
+
+def normalized_reverse(p: RemapProfile) -> dict[int, Rule] | None:
+    """reverse_rules профиля, а если они равны выведенным из прямых — None (поведение то же: sync_reverse ведёт
+    их одинаково; так хранятся прочитанные из JSON и правленые в редакторе)."""
+    if p.reverse_rules is None or p.reverse_rules == derive_reverse(p):
+        return None
+    return dict(sorted(p.reverse_rules.items()))
 
 
 def primary_pairs(p: RemapProfile) -> set[tuple[int, int]]:
@@ -257,6 +279,57 @@ def sync_reverse(before: RemapProfile, after: RemapProfile) -> dict[int, Rule] |
     return dict(sorted(out.items()))
 
 
+def with_primary_cable(p: RemapProfile, a: int, b: int) -> RemapProfile:
+    """Новый профиль: прямой кабель a -> b — основной (двойной клик в направлении →): обратное правило b -> a.
+
+    Алиасы той же артикуляции цели без своих кабелей, чьё обратное правило скопировано с b (b — их донор по
+    derive_reverse, правило совпадает с прежним правилом b), переходят на a вместе с b — иначе одна нота
+    «Ride: Bell» вела бы на a, а остальные — на прежнюю ноту. Прямые правила не меняются.
+    Кабель уже основной — профиль не меняется (копия). Нет прямого правила a -> b — ValueError."""
+    if p.rules.get(a) != Rule.map_to(b):
+        raise ValueError(f"note {a} is not mapped to {b}")
+    out = copy.deepcopy(p)
+    rev = p.effective_reverse()
+    old, new = rev.get(b), Rule.map_to(a)
+    if old == new:
+        return out
+    rev[b] = new
+    tgt = p.target_map
+    if tgt is not None and b in tgt.names and old is not None:
+        notes = articulations(tgt)[normalize_name(tgt.names[b])]
+        incoming = _incoming(p)
+        if _donor(tgt, notes, incoming) == b:
+            for n in notes:
+                if n not in incoming and rev.get(n) == old:
+                    rev[n] = new
+    out.reverse_rules = dict(sorted(rev.items()))
+    out.reverse_rules = normalized_reverse(out)
+    return out
+
+
+def with_forward_primary(p: RemapProfile, a: int, b: int) -> RemapProfile:
+    """Новый профиль: обратный кабель b -> a — основной (двойной клик в направлении ←): прямое правило a -> b
+    (на какую ноту a пишется при прямой конвертации) вместо прежнего a -> b'. Обратные правила, выведенные для
+    b', следуют за прямыми (sync_reverse). Постусловие: (a, b) в primary_pairs() — если синхронизация сдвинула
+    правило b, b -> a ставится явно. Нет обратного правила b -> a — ValueError."""
+    if p.effective_reverse().get(b) != Rule.map_to(a):
+        raise ValueError(f"target note {b} is not mapped back to {a}")
+    out = copy.deepcopy(p)
+    out.rules[a] = Rule.map_to(b)
+    out.reverse_rules = sync_reverse(p, out)
+    pin_primary(out, a, b)
+    out.reverse_rules = normalized_reverse(out)
+    return out
+
+
+def pin_primary(p: RemapProfile, a: int, b: int) -> None:
+    """Если (a, b) не основной кабель — обратное правило b -> a явно (профиль меняется на месте)."""
+    if (a, b) not in primary_pairs(p):
+        rev = p.effective_reverse()
+        rev[b] = Rule.map_to(a)
+        p.reverse_rules = dict(sorted(rev.items()))
+
+
 def missing_rules(p: RemapProfile, direction: str = FORWARD) -> list[int]:
     """Полнота направления: ноты карты исходной стороны (для REVERSE — целевой карты) без правила.
     Без этой карты — пусто. Это статус, а не ошибка."""
@@ -284,46 +357,58 @@ class ProfileIssue:
     message: str
 
 
-def keep_issue(source_map: NoteMap | None, target_map: NoteMap | None, note: int) -> ProfileIssue | None:
+# названия карт исходной и целевой стороны направления в текстах замечаний: в REVERSE исходная сторона —
+# целевая карта профиля
+_SIDES = {FORWARD: ("source map", "target map"), REVERSE: ("target map", "source map")}
+
+
+def keep_issue(source_map: NoteMap | None, target_map: NoteMap | None, note: int,
+               direction: str = FORWARD) -> ProfileIssue | None:
     """Что не так, если оставить ноту на том же номере (явный keep или keep по умолчанию).
 
-    None — замечаний нет или проверить не по чему (нет целевой карты; для «другой артикуляции» нужны обе)."""
+    None — замечаний нет или проверить не по чему (нет целевой карты; для «другой артикуляции» нужны обе).
+    source_map / target_map — карты исходной и целевой стороны направления; direction — только для текста
+    (в REVERSE это целевая и исходная карты профиля, так они и названы)."""
+    src_label, tgt_label = _SIDES[direction]
     if target_map is None:
         return None
     if note not in target_map.names:
-        return ProfileIssue(KEEP_NOT_IN_TARGET, note, f"note {note} is kept, but the target map has no note {note}")
+        return ProfileIssue(KEEP_NOT_IN_TARGET, note, f"note {note} is kept, but the {tgt_label} has no note {note}")
     if source_map is not None and note in source_map.names:
         src_name, dst_name = source_map.names[note], target_map.names[note]
         if normalize_name(src_name) != normalize_name(dst_name):
             return ProfileIssue(KEEP_DIFFERENT, note,
-                                f'note {note} is kept, but it is "{src_name}" in the source map '
-                                f'and "{dst_name}" in the target map')
+                                f'note {note} is kept, but it is "{src_name}" in the {src_label} '
+                                f'and "{dst_name}" in the {tgt_label}')
     return None
 
 
-def validate_profile(p: RemapProfile) -> list[ProfileIssue]:
-    """Замечания к правилам профиля относительно его карт, по возрастанию исходной ноты.
+def validate_profile(p: RemapProfile, direction: str = FORWARD) -> list[ProfileIssue]:
+    """Замечания к правилам профиля в направлении direction относительно его карт, по возрастанию ноты
+    исходной стороны (в REVERSE — ноты целевой карты и обратные правила; тексты называют карты профиля).
 
     Каждая проверка — только если нужная карта есть; профиль без карт замечаний не получает.
     delete для ноты вне исходной карты — не замечание (удалить лишнее — норма).
     map на неосновную ноту артикуляции с несколькими нотами — допустимо, не проверяется.
     """
-    src_map, tgt_map = p.source_map, p.target_map
+    q = p.oriented(direction)
+    src_label, tgt_label = _SIDES[direction]
+    src_map, tgt_map = q.source_map, q.target_map
     issues: list[ProfileIssue] = []
-    for src in sorted(p.rules):
-        rule = p.rules[src]
+    for src in sorted(q.rules):
+        rule = q.rules[src]
         if src_map is not None and src not in src_map.names and rule.action != "delete":
-            issues.append(ProfileIssue(SRC_NOT_IN_SOURCE, src, f"rule for note {src}, which is not in the source map"))
+            issues.append(ProfileIssue(SRC_NOT_IN_SOURCE, src, f"rule for note {src}, which is not in the {src_label}"))
         if rule.action == "map" and tgt_map is not None and rule.dst not in tgt_map.names:
             issues.append(ProfileIssue(DST_NOT_IN_TARGET, src,
-                                       f"note {src} is mapped to {rule.dst}, which is not in the target map"))
+                                       f"note {src} is mapped to {rule.dst}, which is not in the {tgt_label}"))
         elif rule.action == "keep":
-            issue = keep_issue(src_map, tgt_map, src)
+            issue = keep_issue(src_map, tgt_map, src, direction)
             if issue is not None:
                 issues.append(issue)
     if src_map is not None:
         issues.extend(ProfileIssue(NO_RULE, n, f'note {n} "{src_map.names[n]}" has no rule (kept by default)')
-                      for n in sorted(src_map.names) if n not in p.rules)
+                      for n in sorted(src_map.names) if n not in q.rules)
     issues.sort(key=lambda i: i.note)  # сортировка устойчива: порядок проверок внутри ноты сохраняется
     return issues
 
