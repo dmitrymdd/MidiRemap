@@ -19,7 +19,10 @@
   (SourceRow.stale, виджет её приглушает); после пересортировки возвращается в пул;
 - сменилось состояние без подключения (напр. зачеркнули правым кликом) — строка остаётся в своём блоке пула
   (вид — по текущему правилу).
-Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)).
+Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)). В ней напротив каждой цели сначала
+строки с основным кабелем (primary_pairs), затем остальные по номеру — номер основного кабеля на строке цели
+верхний (8b3b2). После двойного клика (кабель стал основным) его связка пересортировывается сразу —
+primary_first(); прочие правила замороженного порядка не меняются.
 
 Алиасы источника (одно имя на нескольких нотах, normalize_name) в одном месте (блок пула или строка цели) —
 ОДНА строка с несколькими нотами (SourceRow.notes) и одним кабелем; правила при этом по-прежнему по нотам.
@@ -265,9 +268,23 @@ def _wanted_slot(p: RemapProfile, n: int, suggested: Mapping[int, str]) -> str |
     return None
 
 
+def _bundle_order(p: RemapProfile, notes: Iterable[int]) -> tuple[int, ...]:
+    """Ноты напротив одной цели: сначала с основным кабелем, затем остальные — по номеру."""
+    primary = {a for a, _ in primary_pairs(p)}
+    return tuple(sorted(notes, key=lambda n: (n not in primary, n)))
+
+
+def primary_first(p: RemapProfile, order: OrderSnapshot, slot: str) -> OrderSnapshot:
+    """Порядок, где связка напротив цели slot пересортирована: основной кабель — первым (явное действие
+    пользователя над ней, например двойной клик). Остальные места не меняются."""
+    if slot not in order.slots:
+        return order
+    return replace(order, slots={**order.slots, slot: _bundle_order(p, order.slots[slot])})
+
+
 def fresh_order(p: RemapProfile, suggested: Mapping[int, str] = {}) -> OrderSnapshot:
-    """Полная пересортировка: блоки — по группам и номерам, напротив цели — по номерам.
-    suggested — подсказки (нота -> артикуляция цели), только для нот без правила."""
+    """Полная пересортировка: блоки — по группам и номерам, напротив цели — строки с основным кабелем, затем
+    остальные по номерам. suggested — подсказки (нота -> артикуляция цели), только для нот без правила."""
     names = p.source_map.names if p.source_map is not None else {}
     blocks: dict[str, list[int]] = {b: [] for b in BLOCKS}
     slots: dict[str, list[int]] = {}
@@ -278,7 +295,7 @@ def fresh_order(p: RemapProfile, suggested: Mapping[int, str] = {}) -> OrderSnap
         else:
             blocks[note_block(p.rules.get(n))].append(n)
     return OrderSnapshot({b: tuple(_grouped(v, names)) for b, v in blocks.items()},
-                         {k: tuple(v) for k, v in slots.items()})
+                         {k: _bundle_order(p, v) for k, v in slots.items()})
 
 
 def update_order(p: RemapProfile, prev: OrderSnapshot | None,
@@ -417,10 +434,13 @@ def _unit_rows(ctx: _Ctx, notes: Iterable[int], y: int, block: str | None, slot:
         key = f"{place}|{name}"
         # разные правила (или подсказки на разные номера) — раскрыто всегда
         mixed = len({(p.rules.get(n), ctx.suggested_at(n, slot) and ctx.planned.get(n)) for n in members}) > 1
+        # строка алиасов (и заголовок раскрытых) — на месте первой ноты места, её ноты — по возрастанию;
+        # строки нот под заголовком — в порядке места (в связке — основной кабель первым)
         if not mixed and key not in expanded:
-            out.append(_source_row(ctx, members, y + len(out), block, slot, alias=key))
+            out.append(_source_row(ctx, sorted(members), y + len(out), block, slot, alias=key))
             continue
-        out.append(_source_row(ctx, members, y + len(out), block, slot, alias=key, expanded=True, mixed=mixed))
+        out.append(_source_row(ctx, sorted(members), y + len(out), block, slot, alias=key, expanded=True,
+                               mixed=mixed))
         for n in members:
             out.append(_source_row(ctx, [n], y + len(out), block, slot, child=True))
     return out

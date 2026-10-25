@@ -523,3 +523,44 @@ def test_single_cable_is_primary_and_suggestions_are_not():
     assert all(primary_cables(p).values())
     sugg = build_layout(profile(), no_collapse(), suggested={36: "kick: hit"})
     assert [c.primary for c in sugg.scene.cables] == [False]
+
+
+# --- основной кабель — первым в связке (8b3b2) ---
+
+def test_bundle_primary_row_first_then_ascending():
+    from midiremap.ui.cable_layout import primary_first
+    src = NoteMap("S", {33: "A", 34: "B", 35: "C", 36: "D"})
+    tgt = NoteMap("T", {35: "Kick", 36: "Kick", 60: "Snare"})
+    # 35 -> 35 и 36 -> 36 основные (n -> n), 33 и 34 — нет
+    p = profile({33: Rule.map_to(35), 34: Rule.map_to(36), 35: Rule.map_to(35), 36: Rule.map_to(36)}, src, tgt)
+    lay = build_layout(p, no_collapse())
+    assert lay.order.slots["a:kick"] == (35, 36, 33, 34)
+    assert lay.target_row("a:kick").lines == ((0, 35), (1, 36))  # номер основного кабеля — верхний
+    # основной задан обратным правилом: 33 -> 35 первым, номер 35 на строке цели — сверху
+    p.reverse_rules = {35: Rule.map_to(33), 36: Rule.map_to(36)}
+    lay = build_layout(p, no_collapse())
+    assert lay.order.slots["a:kick"] == (33, 36, 34, 35)
+    assert lay.target_row("a:kick").lines[0] == (0, 35)
+    # замороженный порядок не меняется сам; primary_first пересортировывает только свою связку
+    p.reverse_rules = {35: Rule.map_to(35), 36: Rule.map_to(34)}
+    frozen = build_layout(p, no_collapse(), snapshot=lay.order)
+    assert frozen.order.slots["a:kick"] == (33, 36, 34, 35)
+    assert primary_first(p, frozen.order, "a:kick").slots["a:kick"] == (34, 35, 33, 36)
+    assert primary_first(p, frozen.order, "a:nothing") is frozen.order
+
+
+def test_bundle_primary_first_in_reverse_kick_case():
+    """← : EZD3 34, 35, 36 «Kick: Hit» -> SD3 35; SD3 34 / 36 «Kick: Open» назначены обратно на 34 / 36.
+    Основной (толстый) — SD3 35 (прямое 35 -> 35), он первым, строка «Kick: Open +1» — под ним."""
+    ezd, sd3 = load_map_template("EZdrummer 3"), load_map_template("Superior Drummer 3")
+    p = RemapProfile("p", ezd, sd3, {n: Rule.map_to(35) for n in (34, 35, 36)})
+    p.reverse_rules = {35: Rule.map_to(35), 34: Rule.map_to(34), 36: Rule.map_to(36)}
+    lay = build_layout(p.reversed(), no_collapse())
+    slot = "a:" + normalize_name(ezd.names[35])
+    assert lay.order.slots[slot][0] == 35
+    # 34 и 36 идут на разные номера — их строка раскрыта (заголовок «+1» и строка на ноту), но вся — под 35
+    first, header, *children = [r for r in lay.scene.source_rows if set(r.notes) <= {34, 35, 36}]
+    assert first.notes == (35,) and header.notes == (34, 36) and header.expanded and first.y < header.y
+    assert [c.notes for c in children] == [(34,), (36,)]
+    assert [c.primary for c in lay.scene.cables if c.target.slot == slot] == [True, False, False]
+    assert lay.target_row(slot).lines[0] == (0, 35)

@@ -1166,7 +1166,7 @@ def test_single_row_header_and_more_menu(window, app, storage):
     assert page.more_btn.toolTip() == MORE_TIP and page.direction_slot.count() == 2  # сегменты → / ←
     assert page.more_btn.text() == ""  # точки рисуются, не глиф шрифта
     # всё в одной строке: те же координаты по вертикали, Save — правее всех
-    widgets = (page.combo, page.more_btn, *page.direction_btns.values(), page.status, page.refresh_btn,
+    widgets = (page.combo, page.more_btn, page.status, page.direction_toggle, page.refresh_btn,
                page.revert_btn, page.save_btn)
     window.resize(1300, 900)
     window.show()
@@ -1174,6 +1174,7 @@ def test_single_row_header_and_more_menu(window, app, storage):
     centers = {w.mapTo(page, w.rect().center()).y() for w in widgets}
     assert max(centers) - min(centers) <= 2
     assert len({w.height() for w in page.header_controls}) == 1  # одна высота у всех контролов заголовка
+    assert page.direction_toggle.height() == page.save_btn.height()
     assert page.more_btn.width() == page.refresh_btn.sizeHint().width()  # «⋯» — размером с ↻
     xs = [w.mapTo(page, w.rect().topLeft()).x() for w in widgets]
     assert xs == sorted(xs)
@@ -1678,3 +1679,205 @@ def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
     assert DELETE in ed.collapsed
     page.set_direction(REVERSE)
     assert DELETE not in ed.collapsed
+
+
+# --- доработки 8b3b2: основной первым, двойной клик по Unassigned, заголовок, комбобоксы ---
+
+def shared_numbers(p, k):
+    """k номеров, которые есть в обеих картах и принадлежат разным артикуляциям цели (и источника)."""
+    out, seen_t, seen_s = [], set(), set()
+    for n in sorted(set(p.source_map.names) & set(p.target_map.names)):
+        t, s = normalize_name(p.target_map.names[n]), normalize_name(p.source_map.names[n])
+        if t in seen_t or s in seen_s:
+            continue
+        seen_t.add(t)
+        seen_s.add(s)
+        out.append(n)
+    return out[:k]
+
+
+def bare_page(window, rules=None, reverse=None):
+    """EZD3 → SD3 с заданными правилами (подсказки скрыты)."""
+    page, ed = cables_page(window, accept=False)
+    page.work.rules = dict(rules or {})
+    page.work.reverse_rules = reverse
+    page._changed()
+    ed.resort()
+    return page, ed
+
+
+def dbl_pool_row(app, ed, note):
+    item = ed.pool_items[note]
+    double_click(app, ed.active_pool, item.rect.center())
+
+
+def test_primary_row_moves_first_after_double_click(window, app):
+    from midiremap.core.profile import REVERSE
+    for direction in ("forward", REVERSE):
+        page, ed = cables_page(window) if direction == "forward" else reverse_page(window)
+        item = secondary_cable(ed)
+        src, dst = item.ends
+        slot = item.cable.target.slot
+        assert ed.order.slots[slot][0] != src
+        double_click(app, ed.view, item.path().pointAtPercent(0.5))
+        assert ed.order.slots[slot][0] == src  # связка пересортирована сразу
+        row = ed.current.target_row(slot)
+        assert row.lines[0][1] == dst  # номер основного кабеля — верхний (у раскрытых алиасов — под заголовком)
+        first = min((c for c in ed.cable_items if c.cable.target.slot == slot), key=lambda c: c.cable.src_y)
+        assert first.cable.primary and first.ends == (src, dst)
+        page.answers["save_changes"] = "discard"
+        page.select(LEGACY_ID)
+
+
+def test_kick_bundle_primary_first_in_reverse(window, app):
+    page, ed = reverse_page(window)
+    ezd = page.work.source_map
+    slot = "a:" + normalize_name(ezd.names[35])
+    assert page.connect_to([34, 36], slot)  # SD3 Kick: Open -> EZD3 Kick: Hit (номера совпали: 34 -> 34, 36 -> 36)
+    ed.resort()
+    assert ed.order.slots[slot][0] == 35
+    rows = [i for i in ed.scene_rows if set(i.notes) <= {34, 35, 36}]
+    assert rows[0].notes == (35,) and rows[0].port == "left"
+    assert ed.current.target_row(slot).lines[0] == (0, 35)
+
+
+def test_double_click_unassigned_free_number_is_primary(window, app):
+    from midiremap.core.profile import primary_pairs
+    from midiremap.ui.cable_view import SAME_NUMBER_HINT
+    page, ed = bare_page(window)
+    (t,) = shared_numbers(page.work, 1)
+    item = ed.pool_items[t]
+    assert SAME_NUMBER_HINT in item.toolTip()
+    steps = len(page._undo)
+    dbl_pool_row(app, ed, t)
+    assert not ed.dragging
+    assert page.work.rules == {t: Rule.map_to(t)} and (t, t) in primary_pairs(page.work)
+    assert len(page._undo) == steps + 1
+    assert t in ed.source_items and t not in ed.pool_items  # строка ушла из пула напротив цели
+    assert page.status.text() == "1 note connected to the same number"
+    assert page.undo() and page.work.rules == {}
+
+
+def test_double_click_unassigned_occupied_number_stays_secondary_forward(window, app):
+    from midiremap.core.profile import primary_pairs
+    page, ed = bare_page(window)
+    t, u = shared_numbers(page.work, 2)
+    page.work.rules = {u: Rule.map_to(t)}  # на номер t уже идёт кабель от u — он основной
+    page._changed()
+    ed.resort()
+    assert primary_pairs(page.work) == {(u, t)}
+    dbl_pool_row(app, ed, t)
+    w = page.work
+    assert w.rules == {u: Rule.map_to(t), t: Rule.map_to(t)}
+    assert primary_pairs(w) == {(u, t)} and w.effective_reverse()[t] == Rule.map_to(u)
+    assert w.reverse_rules is not None  # зафиксировано явно: выведение выбрало бы t -> t
+    thick = {c.ends: c.cable.primary for c in ed.cable_items if c.cable.dst == t}
+    assert thick == {(u, t): True, (t, t): False}
+
+
+def test_double_click_unassigned_occupied_number_stays_secondary_reverse(window, app):
+    from midiremap.core.profile import REVERSE, primary_pairs
+    page, ed = bare_page(window)
+    t, u = shared_numbers(page.work, 2)
+    page.work.rules = {t: Rule.map_to(u)}  # прямое t -> u; обратно u -> t — основной кабель на исходную t
+    page._changed()
+    page.set_direction(REVERSE)
+    assert t in ed.pool_items  # нота цели t без обратного правила
+    dbl_pool_row(app, ed, t)
+    w = page.work
+    assert w.rules == {t: Rule.map_to(u)}  # прямые не тронуты
+    assert w.effective_reverse()[t] == Rule.map_to(t) and w.effective_reverse()[u] == Rule.map_to(t)
+    assert primary_pairs(w) == {(t, u)}  # основной по-прежнему u -> t, новый t -> t — неосновной
+    thick = {c.ends: c.cable.primary for c in ed.cable_items if c.cable.dst == t}
+    assert thick == {(u, t): True, (t, t): False}
+
+
+def test_double_click_unassigned_missing_number_and_partial_alias_row(window, app):
+    from midiremap.core.profile import REVERSE
+    gm = MapRef(TEMPLATE, "General MIDI")  # GM — только 35–81: у EZD3 есть ноты без пары
+    page = window.profiles_page
+    new_profile(page, "EZD3 to GM", EZD3, gm)
+    page.dismiss_suggestions()
+    ed = page.cables
+    w = page.work
+    missing = next(n for n in sorted(ed.pool_items) if n not in w.target_map.names
+                   and len(ed.pool_items[n].notes) == 1)
+    dbl_pool_row(app, ed, missing)
+    assert w.rules == {} and page.status.text() == f"No note {missing} in the target map"
+    # строка «+N»: ноты с номером в цели подключаются, остальные остаются в пуле
+    row = next(i for i in ed.pool_rows if len(i.notes) > 1 and not i.model.expanded
+               and 0 < sum(n in w.target_map.names for n in i.notes) < len(i.notes))
+    hit = [n for n in row.notes if n in w.target_map.names]
+    miss = [n for n in row.notes if n not in w.target_map.names]
+    double_click(app, ed.active_pool, row.rect.center())
+    assert set(page.work.rules) == set(hit) and all(page.work.rules[n] == Rule.map_to(n) for n in hit)
+    assert all(n in ed.pool_items for n in miss)
+    assert page.status.text().endswith(f"not in the target map: {', '.join(map(str, miss))}")
+    # ←: «… in the source map» (GM → EZD3: в правом пуле — ноты EZD3, которых нет в GM)
+    new_profile(page, "GM to EZD3", gm, EZD3)
+    page.dismiss_suggestions()
+    page.set_direction(REVERSE)
+    gone = next(n for n in sorted(ed.pool_items) if n not in page.work.source_map.names
+                and len(ed.pool_items[n].notes) == 1)
+    dbl_pool_row(app, ed, gone)
+    assert page.status.text() == f"No note {gone} in the source map" and gone not in page.work.effective_reverse()
+
+
+def test_double_click_delete_row_does_nothing(window, app):
+    from midiremap.ui.cable_layout import DELETE
+    from midiremap.ui.cable_view import SAME_NUMBER_HINT
+    page, ed = bare_page(window)
+    (t,) = shared_numbers(page.work, 1)
+    page.toggle_strike([t])
+    ed.resort()
+    ed.toggle_pool(DELETE)
+    assert SAME_NUMBER_HINT not in ed.pool_items[t].toolTip()
+    dbl_pool_row(app, ed, t)
+    assert page.work.rules == {t: Rule.delete()}
+
+
+def test_double_click_unassigned_scrolls_row_into_view(window, app):
+    page, ed = bare_page(window)
+    window.resize(1300, 600)
+    app.processEvents()
+    t = shared_numbers(page.work, 40)[-1]  # нота в конце списка — её цель внизу сцены
+    calls = []
+    reveal = ed.reveal
+    ed.reveal = lambda note: calls.append(note) or reveal(note)
+    bar = ed.view.verticalScrollBar()
+    bar.setValue(0)
+    dbl_pool_row(app, ed, t)
+    assert calls == [t]
+    visible = ed.view.mapToScene(ed.view.viewport().rect()).boundingRect()
+    assert visible.contains(ed.source_items[t].rect)
+    # уже видна — прокрутка не двигается
+    before = bar.value()
+    ed.reveal(t)
+    assert bar.value() == before
+
+
+def test_header_direction_toggle_centered_single_control(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    page, ed = cables_page(window)
+    window.resize(1300, 900)
+    app.processEvents()
+    toggle = page.direction_toggle
+    center = toggle.mapTo(page, toggle.rect().center()).x()
+    assert abs(center - page.width() / 2) <= 2  # по центру строки (окна), не рядом с «⋯»
+    fwd, rev = page.direction_btns[FORWARD], page.direction_btns[REVERSE]
+    assert fwd.parent() is toggle and rev.parent() is toggle and toggle.objectName() == "segmented"
+    assert fwd.geometry().right() + 1 == rev.geometry().left()  # без промежутка, общая рамка
+    assert toggle.height() == page.save_btn.height() == page.combo.height()
+
+
+def test_comboboxes_draw_own_arrow_and_style_popup(window, app):
+    from midiremap.ui.combo import ComboBox
+    page = window.profiles_page
+    assert isinstance(page.combo, ComboBox) and isinstance(window.profile_combo, ComboBox)
+    assert "QComboBox::drop-down" in window.styleSheet() and "border: none" in window.styleSheet()
+    window.show()
+    page.combo.showPopup()
+    app.processEvents()
+    assert "background" in page.combo.view().window().styleSheet()  # без белых полей у списка
+    page.combo.hidePopup()
+

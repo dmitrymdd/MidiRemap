@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QDrag, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -24,6 +24,7 @@ from ..storage import Storage
 from .maps_page import MapsPage
 from .profiles_page import ProfilesPage, profile_summary
 from .settings import ui_settings
+from .combo import ComboBox
 from .theme import repolish as _repolish, stylesheet
 
 MIDI_EXTS = {".mid", ".midi"}
@@ -285,7 +286,7 @@ class MainWindow(QMainWindow):
         self.profile_stack = QStackedWidget()
         self.profile_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         chooser = QWidget()
-        self.profile_combo = QComboBox()
+        self.profile_combo = ComboBox()
         self.profile_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
         self.direction_btn = QPushButton()

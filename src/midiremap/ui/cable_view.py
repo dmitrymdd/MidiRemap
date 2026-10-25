@@ -59,7 +59,7 @@ from ..core.pitch import pitch_name
 from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, validate_profile
 from .cable_layout import (
     BLOCKS, DEFAULT_COLLAPSED, DELETE, KEEP, MIXED, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header,
-    OrderSnapshot, PoolLayout, SourceRow, TargetRow, build_layout,
+    OrderSnapshot, PoolLayout, SourceRow, TargetRow, build_layout, primary_first, slot_key,
 )
 from .theme import TOKENS
 
@@ -118,6 +118,7 @@ STATE_TIPS = {
 # ←: ноты цели без обратного правила при сохранении не спрашиваются (полнота — статус)
 REVERSE_UNASSIGNED_TIP = "No rule in this direction: kept on the same number when converting"
 PRIMARY_HINT = "Double-click to make primary"
+SAME_NUMBER_HINT = "Double-click to connect to the same number"
 STALE_TIP = "Its cable was removed. Refresh the layout to return it to the pool"
 ROW_HINT = "Drag onto a target to map · Ctrl/Shift+click to select several · Right-click to delete or restore"
 CONNECTED_HINT = "Drag onto another target to remap · Right-click to remove the cable"
@@ -677,6 +678,7 @@ class CableEditor(QWidget):
     strike_requested = Signal(list)         # ноты: зачеркнуть (delete) или, если все зачёркнуты, вернуть
     write_to_requested = Signal(int)        # нота цели: сделать Write to и перенаправить правила
     primary_requested = Signal(int, int)    # двойной клик: кабель (нота строки, нота цели) — сделать основным
+    same_number_requested = Signal(list)    # двойной клик по строке Unassigned: ноты — на те же номера
 
     def __init__(self, settings: QSettings | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -846,6 +848,26 @@ class CableEditor(QWidget):
             self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}
         self.resort()
 
+    def bring_primary_first(self, dst: int) -> None:
+        """Связка напротив цели ноты dst (ориентированного профиля) — основной кабель первым: после двойного клика
+        по кабелю (явное действие над этой связкой); остальной порядок заморожен, как обычно."""
+        if self.order is None or self.shown is None:
+            return
+        self._build(primary_first(self.shown, self.order, slot_key(self.shown.target_map, dst)))
+
+    def reveal(self, note: int) -> None:
+        """Строка ноты в сцене и номер её цели должны быть видны: минимальная прокрутка (уже видны — без
+        движения, к началу не прыгает)."""
+        item = self.source_items.get(note)
+        if item is None:
+            return
+        rect = QRectF(item.rect)
+        cable = next((c for c in self.cable_items if c.src is item), None)
+        if cable is not None:
+            dst = cable.dst.rect
+            rect = rect.united(QRectF(dst.left(), PAD + cable.cable.dst_y * ROW, dst.width(), ROW))
+        self.view.ensureVisible(rect, 0, ROW // 2)
+
     def set_suggestions(self, suggested: dict[int, str]) -> None:
         """Подсказки для показа пунктиром (перестройка — refresh() или resort())."""
         self.suggested = dict(suggested)
@@ -965,6 +987,12 @@ class CableEditor(QWidget):
             chevron = item.chevron_rect()
             if chevron is not None and chevron.contains(scene_pt):
                 QTimer.singleShot(0, lambda k=item.model.alias, pool=view is self.active_pool: self.toggle_alias(k, pool))
+                return True
+            if (event.type() == QEvent.Type.MouseButtonDblClick and item.role == POOL
+                    and item.model.block == UNASSIGNED):
+                # первое нажатие двойного клика лишь выделило строку (перетаскивания без сдвига нет)
+                self._press = None
+                QTimer.singleShot(0, lambda notes=list(item.notes): self.same_number_requested.emit(notes))
                 return True
             view.setFocus()
             self._press_row(view, item, event.modifiers(), pos)
@@ -1476,6 +1504,8 @@ class CableEditor(QWidget):
                 tip += (f": {tgt.names[row.note]}" if row.note in tgt.names
                         else f" (no such note in the {self._sides[1]})")
             tip += f"\n{STALE_TIP}" if row.stale else f"\n{ROW_HINT}"
+            if row.block == UNASSIGNED and not row.stale:
+                tip += f"\n{SAME_NUMBER_HINT}"
         if len(row.notes) > 1:
             tip = f"Notes {', '.join(map(str, row.notes))}\n{tip}\n{MIXED_HINT if row.mixed else ALIAS_HINT}"
         issues = [i for n in row.notes for i in self._issues.get(n, [])]

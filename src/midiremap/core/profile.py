@@ -330,6 +330,30 @@ def pin_primary(p: RemapProfile, a: int, b: int) -> None:
         p.reverse_rules = dict(sorted(rev.items()))
 
 
+def keep_existing_primary(before: RemapProfile, after: RemapProfile, numbers: list[int]) -> list[int]:
+    """После подключения n -> n на номера numbers (двойной клик по Unassigned в →): где на номер уже шли кабели
+    (в before), новый кабель — НЕОСНОВНОЙ, прежний основной остаётся. derive_reverse предпочёл бы n -> n — поэтому
+    обратные правила номера и алиасов его артикуляции без кабелей возвращаются к прежним и задаются явно
+    (after меняется на месте; в after.reverse_rules уже должна быть синхронизация прямых). Возвращает занятые номера."""
+    inc = _incoming(before)
+    occupied = [n for n in numbers if n in inc]
+    if not occupied:
+        return []
+    old, rev = before.effective_reverse(), after.effective_reverse()
+    tgt, inc_after = after.target_map, _incoming(after)
+    for n in occupied:
+        notes = articulations(tgt)[normalize_name(tgt.names[n])] if tgt is not None and n in tgt.names else [n]
+        for m in notes:
+            if m != n and m in inc_after:
+                continue  # у алиаса свои кабели — его правило выводится из них
+            if m in old:
+                rev[m] = old[m]
+            else:
+                rev.pop(m, None)
+    after.reverse_rules = dict(sorted(rev.items()))
+    return occupied
+
+
 def missing_rules(p: RemapProfile, direction: str = FORWARD) -> list[int]:
     """Полнота направления: ноты карты исходной стороны (для REVERSE — целевой карты) без правила.
     Без этой карты — пусто. Это статус, а не ошибка."""

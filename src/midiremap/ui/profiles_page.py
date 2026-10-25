@@ -33,7 +33,7 @@ import functools
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QHeaderView, QInputDialog,
+    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -41,14 +41,15 @@ from PySide6.QtWidgets import (
 from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
-    FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, missing_rules,
-    normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
+    FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
+    keep_existing_primary, missing_rules, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
 from .cable_view import CableEditor
 from .maps_page import TEMPLATE, USER, MapRef, wrapped_tooltip
+from .combo import ComboBox
 from .settings import ui_settings
 from .theme import TOKENS, repolish
 
@@ -256,8 +257,8 @@ class ProfilesPage(QWidget):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        # строка заголовка: [профиль ▾] [⋯] [направление — 8b3b2] статус … [↻] [Revert] [Save]
-        self.combo = QComboBox()
+        # строка заголовка: [профиль ▾] [⋯] статус … [→ N | ← M — по центру окна] … [↻] [Revert] [Save]
+        self.combo = ComboBox()
         self.combo.setMinimumWidth(240)
         self.combo.setMaximumWidth(420)
         self.combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -271,8 +272,11 @@ class ProfilesPage(QWidget):
         more.addSeparator()
         self.delete_action = more.addAction("Delete", self.delete)
         self.more_btn.setMenu(more)
-        # переключатель направления: «→ N | ← M», N и M — ноты без правила в этом направлении
-        self.direction_slot = QHBoxLayout()
+        # переключатель направления: «→ N | ← M», N и M — ноты без правила в этом направлении. Один
+        # сегментированный контрол: общая рамка (QFrame#segmented), между сегментами — тонкий разделитель
+        self.direction_toggle = QFrame()
+        self.direction_toggle.setObjectName("segmented")
+        self.direction_slot = QHBoxLayout(self.direction_toggle)
         self.direction_slot.setContentsMargins(0, 0, 0, 0)
         self.direction_slot.setSpacing(0)
         self.direction_group = QButtonGroup(self)
@@ -284,6 +288,7 @@ class ProfilesPage(QWidget):
             btn.setCheckable(True)
             btn.setProperty("pos", pos)
             btn.setProperty("dir", d)
+            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)  # по высоте рамки
             btn.clicked.connect(lambda _=False, d=d: self.set_direction(d))
             self.direction_group.addButton(btn)
             self.direction_slot.addWidget(btn)
@@ -302,18 +307,29 @@ class ProfilesPage(QWidget):
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
         self.save_btn.clicked.connect(self.save)
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        head.addWidget(self.combo, stretch=1)
-        head.addWidget(self.more_btn)
-        head.addLayout(self.direction_slot)
-        head.addSpacing(10)
-        head.addWidget(self.status, stretch=2)
-        head.addWidget(self.refresh_btn)
-        head.addWidget(self.revert_btn)
-        head.addWidget(self.save_btn)
+        # три колонки: левая и правая — поровну (stretch), переключатель — в средней, т.е. по центру строки
+        left, right = QHBoxLayout(), QHBoxLayout()
+        left.setSpacing(6)
+        right.setSpacing(6)
+        left.addWidget(self.combo, stretch=1)
+        left.addWidget(self.more_btn)
+        left.addSpacing(10)
+        left.addWidget(self.status, stretch=1)
+        left.addSpacing(10)
+        right.addStretch(1)
+        right.addWidget(self.refresh_btn)
+        right.addWidget(self.revert_btn)
+        right.addWidget(self.save_btn)
+        head = QGridLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setHorizontalSpacing(0)
+        head.addLayout(left, 0, 0)
+        head.addWidget(self.direction_toggle, 0, 1)
+        head.addLayout(right, 0, 2)
+        head.setColumnStretch(0, 1)
+        head.setColumnStretch(2, 1)
         root.addLayout(head)
-        self.header_controls = (self.combo, self.more_btn, *self.direction_btns.values(), self.refresh_btn,
+        self.header_controls = (self.combo, self.more_btn, self.direction_toggle, self.refresh_btn,
                                 self.revert_btn, self.save_btn)
 
         self.cables = CableEditor(self.settings)
@@ -323,6 +339,7 @@ class ProfilesPage(QWidget):
         self.cables.strike_requested.connect(self.toggle_strike)
         self.cables.write_to_requested.connect(self.set_write_to)
         self.cables.primary_requested.connect(self.make_primary)
+        self.cables.same_number_requested.connect(self.connect_same_number)
         root.addWidget(self.cables, stretch=1)
 
         # над внешними колонками — карты: источник над левым пулом, цель над правым
@@ -381,7 +398,8 @@ class ProfilesPage(QWidget):
             w.setMinimumHeight(0)
             w.setMaximumHeight(16777215)
             w.ensurePolished()
-        height = max(w.sizeHint().height() for w in self.header_controls)
+        # высота — по обычным контролам: рамка переключателя (+2 px) строку не раздувает, сегменты в ней сжимаются
+        height = max(w.sizeHint().height() for w in self.header_controls if w is not self.direction_toggle)
         for w in self.header_controls:
             w.setFixedHeight(height)
         self.more_btn.setFixedWidth(self.refresh_btn.sizeHint().width())
@@ -994,8 +1012,42 @@ class ProfilesPage(QWidget):
         self.work.rules, self.work.reverse_rules = new.rules, new.reverse_rules
         self._reverse_done = True  # обратные правила уже согласованы ядром (постусловие — основной кабель)
         self._changed()
+        self.cables.bring_primary_first(dst)  # явное действие над связкой — основной кабель в ней первым
         self.set_status(status)
         return True
+
+    @_undoable
+    def connect_same_number(self, notes: list[int]) -> int:
+        """Двойной клик по строке Unassigned: каждая нота — n -> n на тот же номер другой карты, если он там есть
+        (core connect_same_numbers); остальные остаются в пуле. Номер уже занят — новый кабель НЕОСНОВНОЙ: в → прежние
+        обратные правила номера фиксируются (keep_existing_primary — иначе выведение сделало бы основным n -> n),
+        в ← прямые правила не трогаются — неосновной сам собой. Один шаг отмены; сцена прокручивается к строке."""
+        if self.work is None or not notes:
+            return 0
+        q = self._oriented()
+        side = DIRECTION_SIDES[REVERSE if self.direction == FORWARD else FORWARD]  # карта другой стороны
+        wanted = sorted(set(notes))
+        numbers = list(q.target_map.names) if q.target_map is not None else []
+        new, done = connect_same_numbers(q, wanted, numbers)
+        missing = [n for n in wanted if n not in done]
+        if not done:
+            self.set_status(f"No note{'' if len(missing) == 1 else 's'} {', '.join(map(str, missing))} "
+                            f"in the {side} map")
+            return 0
+        if self.direction == FORWARD:
+            new.reverse_rules = sync_reverse(self.work, new)
+            keep_existing_primary(self.work, new, done)
+            self.work.rules, self.work.reverse_rules = new.rules, new.reverse_rules
+            self._reverse_done = True
+        else:
+            self._put(new)
+        self._changed()
+        self.cables.reveal(done[0])
+        text = f"{len(done)} note{'' if len(done) == 1 else 's'} connected to the same number"
+        if missing:
+            text += f" · not in the {side} map: {', '.join(map(str, missing))}"
+        self.set_status(text)
+        return len(done)
 
     # --- действия со списком ---
 

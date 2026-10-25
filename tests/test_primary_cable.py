@@ -127,3 +127,23 @@ def test_validate_profile_reverse_names_profile_maps():
     p2 = prof({38: Rule.keep()}, NoteMap("T", {38: "Tom"}), src=src)
     (issue,) = [i for i in validate_profile(p2) if i.code == KEEP_DIFFERENT]
     assert issue.message == 'note 38 is kept, but it is "Snare" in the source map and "Tom" in the target map'
+
+
+# --- двойной клик по Unassigned: занятый номер — прежний основной остаётся ---
+
+def test_keep_existing_primary_on_occupied_number():
+    from midiremap.core.profile import connect_same_numbers, keep_existing_primary, sync_reverse
+    # 70 -> 53 основной (алиасы 60, 61, 62 копируют его); подключаем 53 -> 53 — номер занят
+    p = prof({70: M(53)}, RIDE)
+    assert primary_pairs(p) == {(70, 53)}
+    new, done = connect_same_numbers(p, [53], list(RIDE.names))
+    assert done == [53] and primary_pairs(new) == {(53, 53)}  # без фиксации выведение предпочло бы n -> n
+    new.reverse_rules = sync_reverse(p, new)
+    assert keep_existing_primary(p, new, done) == [53]
+    assert primary_pairs(new) == {(70, 53)} and new.rules[53] == M(53)
+    assert new.effective_reverse() == {n: M(70) for n in (53, 60, 61, 62)}
+    # свободный номер — ничего не фиксируется, новый кабель основной
+    q = prof({}, RIDE)
+    new, done = connect_same_numbers(q, [36], list(RIDE.names))
+    new.reverse_rules = sync_reverse(q, new)
+    assert keep_existing_primary(q, new, done) == [] and primary_pairs(new) == {(36, 36)}
