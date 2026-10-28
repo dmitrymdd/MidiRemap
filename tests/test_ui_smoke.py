@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from midiremap.core import RemapProfile, Rule, convert, legacy_profile  # noqa: E402
 from midiremap.storage import Storage  # noqa: E402
-from midiremap.ui.main_window import MainWindow, format_report, midi_paths_from_mime  # noqa: E402
+from midiremap.ui.main_window import MainWindow, format_report, midi_paths_from_mime, report_summary  # noqa: E402
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 
@@ -64,6 +64,11 @@ def test_load_convert_and_copy(window, tmp_path, app):
     out = tmp_path / "groove_remapped.mid"
     assert out.is_file() and window.output == out.resolve()
     assert "Remapped" in window.report_view.toPlainText()
+    # коротко — сразу, полный отчёт — по Details; отчёт не растягивается на всю высоту
+    assert window.report_summary.text().split(" · ")[0].endswith("notes converted")
+    assert window.report_view.isHidden() and not window.details_btn.isChecked()
+    window.details_btn.click()
+    assert not window.report_view.isHidden() and window.report_view.maximumHeight() < 1000
 
     window.copy_output()
     urls = app.clipboard().mimeData().urls()
@@ -95,6 +100,26 @@ def test_format_report_mentions_all_parts(tmp_path):
     for part in ("Remapped", "Deleted", "Kept as is", "Merged duplicates",
                  "Overlaps", "Warnings"):
         assert part in text
+
+
+def test_report_summary_counts(tmp_path):
+    profile = RemapProfile(name="p", rules={36: Rule.map_to(35), 38: Rule.delete(), 42: Rule.map_to(42)})
+    report = convert(SAMPLE, tmp_path / "out.mid", profile)
+    hits = {n: r.count for n, r in report.notes.items()}
+    total = sum(hits.values())
+    deleted, remapped = hits.get(38, 0), hits.get(36, 0)
+    kept = total - deleted - remapped
+    w = len(report.warnings)
+    tail = (f"{w} warning" + ("" if w == 1 else "s")) if w else "no warnings"
+    assert report_summary(report) == (f"{total} notes converted · {remapped} remapped · {deleted} deleted"
+                                      f" · {kept} kept unchanged · {tail}")
+
+
+def test_window_default_size_fits_screen(window):
+    area = window.screen().availableGeometry()
+    assert window.width() == max(min(1500, int(area.width() * 0.9)), window.minimumWidth())
+    assert window.height() == max(min(900, int(area.height() * 0.9)), window.minimumHeight())
+    assert (window.minimumWidth(), window.minimumHeight()) == (760, 580)
 
 
 def test_core_does_not_import_qt():

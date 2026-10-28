@@ -1,9 +1,9 @@
 """Менеджер и редактор профилей ремапа (PySide6). Раскладка: одна строка заголовка —
-[профиль ▾] [⋯] статус … [→ N | ← M] (по центру) … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py): над левым
-пулом — карта источника, над сценой — счётчик правил и панель подсказок, над правым пулом — карта цели.
+[профиль ▾] [⋯] статус … [→ | ←] (по центру) … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py): над левым
+пулом — карта источника, над сценой — панель подсказок, над правым пулом — карта цели.
 Всё остальное по высоте — сцене.
 
-Направление: переключатель «→ N | ← M» (N, M — ноты без правила в этом направлении, missing_rules).
+Направление: переключатель «→ | ←» (ноты без правила в этом направлении, missing_rules, — в подсказке сегмента).
 Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
 на нём (assign_plan, assign_to_articulation, with_write_to, connect_same_numbers, apply_suggested), результат
 пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
@@ -116,15 +116,16 @@ def map_summary(m: NoteMap | None) -> str:
     return m.name if m is not None else "no map"
 
 
-def profile_summary(p: RemapProfile, direction: str = FORWARD) -> str:
+def profile_summary(p: RemapProfile, direction: str = FORWARD, rules: bool = True) -> str:
     """«<исходная карта> → <целевая карта> · N rules» (или «no maps» без обеих карт) в направлении direction:
-    для REVERSE — карты наоборот и число обратных правил."""
+    для REVERSE — карты наоборот и число обратных правил. rules=False — без числа правил (вкладка Convert)."""
     p = p.oriented(direction)
+    maps = ("no maps" if p.source_map is None and p.target_map is None
+            else f"{map_summary(p.source_map)} → {map_summary(p.target_map)}")
+    if not rules:
+        return maps
     n = len(p.rules)
-    rules = f"{n} rule" + ("" if n == 1 else "s")
-    if p.source_map is None and p.target_map is None:
-        return f"no maps · {rules}"
-    return f"{map_summary(p.source_map)} → {map_summary(p.target_map)} · {rules}"
+    return f"{maps} · {n} rule" + ("" if n == 1 else "s")
 
 
 def _pair_key(p: RemapProfile) -> tuple:
@@ -257,7 +258,7 @@ class ProfilesPage(QWidget):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        # строка заголовка: [профиль ▾] [⋯] статус … [→ N | ← M — по центру окна] … [↻] [Revert] [Save]
+        # строка заголовка: [профиль ▾] [⋯] статус … [→ | ← — по центру окна] … [↻] [Revert] [Save]
         self.combo = ComboBox()
         self.combo.setMinimumWidth(240)
         self.combo.setMaximumWidth(420)
@@ -272,7 +273,7 @@ class ProfilesPage(QWidget):
         more.addSeparator()
         self.delete_action = more.addAction("Delete", self.delete)
         self.more_btn.setMenu(more)
-        # переключатель направления: «→ N | ← M», N и M — ноты без правила в этом направлении. Один
+        # переключатель направления: «→ | ←». Один
         # сегментированный контрол: общая рамка (QFrame#segmented), между сегментами — тонкий разделитель
         self.direction_toggle = QFrame()
         self.direction_toggle.setObjectName("segmented")
@@ -355,10 +356,7 @@ class ProfilesPage(QWidget):
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             head_box.addWidget(btn)
 
-        # над сценой — счётчик правил и панель подсказок «N matches · Apply · ✕» (не диалог, ничего не блокирует)
-        self.summary = QLabel()
-        self.summary.setObjectName("muted")
-        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # над сценой — панель подсказок «N matches · Apply · ✕» (не диалог, ничего не блокирует)
         self.suggest_bar = QFrame()
         self.suggest_bar.setObjectName("suggestBar")
         self.suggest_label = QLabel()
@@ -379,8 +377,7 @@ class ProfilesPage(QWidget):
         bar.addWidget(self.apply_btn)
         bar.addWidget(self.dismiss_btn)
         mid = self.cables.mid_head
-        mid.addSpacing(4)
-        mid.addWidget(self.summary, stretch=1)
+        mid.addStretch(1)
         mid.addWidget(self.suggest_bar)
 
         context = Qt.ShortcutContext.WidgetWithChildrenShortcut
@@ -672,20 +669,19 @@ class ProfilesPage(QWidget):
             self.work.source_map, self.work.reverse_rules = new.target_map, dict(new.rules)
 
     def _update_direction(self) -> None:
-        """Числа сегментов: ноты карты исходной стороны направления без правила (missing_rules)."""
+        """Сегменты — только стрелки; ноты карты исходной стороны направления без правила (missing_rules) —
+        в подсказке."""
         for d, btn in self.direction_btns.items():
-            arrow = "→" if d == FORWARD else "←"
+            btn.setText("→" if d == FORWARD else "←")
             btn.setEnabled(self.work is not None)
             side = DIRECTION_SIDES[d]
             side_map = None
             if self.work is not None:
                 side_map = self.work.source_map if d == FORWARD else self.work.target_map
             if side_map is None:
-                btn.setText(arrow)
                 btn.setToolTip(DIRECTION_NO_MAP_TIP.format(side=side) if self.work is not None else "")
                 continue
             n = len(missing_rules(self.work, d))
-            btn.setText(f"{arrow} {n}")
             btn.setToolTip(DIRECTION_TIP.format(n=n, side=side, s="" if n == 1 else "s",
                                                 have="has" if n == 1 else "have"))
 
@@ -746,19 +742,9 @@ class ProfilesPage(QWidget):
         if not has:
             self.source_btn.setText("—")
             self.target_btn.setText("—")
-            self.summary.setText("")
             return
         self.source_btn.setText(map_summary(self.work.source_map))
         self.target_btn.setText(map_summary(self.work.target_map))
-        q = self._oriented()  # счётчик — по направлению вида
-        n_rules = len(q.rules)
-        parts = [f"{n_rules} rule" + ("" if n_rules == 1 else "s")]
-        if q.source_map is not None:
-            parts.append(f"{len(missing_rules(self.work, self.direction))} unassigned")
-        self.summary.setText(" · ".join(parts))
-        side = DIRECTION_SIDES[self.direction]
-        self.summary.setToolTip(UNDO_TIP if q.source_map is not None else
-                                f"No {side} map: one row per rule\n{UNDO_TIP}")
 
     # --- подсказки ---
 

@@ -41,6 +41,9 @@ COL_NOTE, COL_PITCH, COL_NAME = range(3)
 COLUMNS = ("NOTE", "PITCH", "NAME")
 COLUMN_TIPS = ("MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
                "Articulation name. Empty = the note is not in the map. +N — the name is on N more notes")
+# клик по заголовку столбца — порядок строк: NOTE / PITCH — все ноты по возрастанию, NAME — по группам инструментов
+SORT_TIPS = ("Click to list notes in ascending order", "Click to list notes in ascending order",
+             "Click to group notes by instrument")
 
 EDIT_TIP = "Double-click or type to edit a name · Empty name: remove the note · Delete: clear selected names"
 
@@ -57,11 +60,6 @@ class MapRef:
     @property
     def read_only(self) -> bool:
         return self.kind == TEMPLATE
-
-
-def edited_status(base: NoteMap, work: NoteMap) -> str:
-    """Статус, с которым карта будет сохранена (правило из finalize_edit)."""
-    return "unverified" if work.names != base.names else base.meta.status
 
 
 @dataclass(frozen=True)
@@ -149,6 +147,7 @@ class NoteTableModel(QAbstractTableModel):
         self.read_only = True
         self._groups: dict[str, list[int]] = {}
         self.rows: list[LayoutRow] = []
+        self.flat = False  # True — все ноты по возрастанию без заголовков групп
         self._note_rows: dict[int, int] = {}
         self._members: dict[str | None, list[int]] = {}
 
@@ -165,8 +164,18 @@ class NoteTableModel(QAbstractTableModel):
         self._layout()
         self.endResetModel()
 
+    def set_flat(self, flat: bool) -> None:
+        if flat != self.flat:
+            self.flat = flat
+            self.relayout()
+
     def _layout(self) -> None:
-        self.rows = [] if self.map is None else group_rows(self.map.names, list(range(128)))
+        if self.map is None:
+            self.rows = []
+        elif self.flat:
+            self.rows = [LayoutRow(None, n) for n in range(128)]
+        else:
+            self.rows = group_rows(self.map.names, list(range(128)))
         self._note_rows = {r.note: i for i, r in enumerate(self.rows) if not r.is_header}
         self._members = {}
         for i, r in enumerate(self.rows):
@@ -215,9 +224,10 @@ class NoteTableModel(QAbstractTableModel):
             if role == Qt.ItemDataRole.DisplayRole:
                 return COLUMNS[section]
             if role == Qt.ItemDataRole.ToolTipRole:
+                tip = COLUMN_TIPS[section] + "\n" + SORT_TIPS[section]
                 if section == COL_NAME and not self.read_only:
-                    return COLUMN_TIPS[section] + ".\n" + EDIT_TIP
-                return COLUMN_TIPS[section]
+                    return tip + "\n" + EDIT_TIP
+                return tip
         return None
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
@@ -419,13 +429,12 @@ class MapListDelegate(QStyledItemDelegate):
 
 def _subtitle(m: NoteMap, legacy: bool = False) -> str:
     parts = ["legacy .txt"] if legacy else []
-    parts.append(m.meta.status)
     parts.append(m.meta.source or "source not recorded")
     return " · ".join(parts)
 
 
 def _tooltip(m: NoteMap, extra: str = "") -> str:
-    lines = [m.name, f"Status: {m.meta.status}", f"Source: {m.meta.source or 'not recorded'}"]
+    lines = [m.name, f"Source: {m.meta.source or 'not recorded'}"]
     if m.meta.notes:
         lines.append(f"Notes: {m.meta.notes}")
     if extra:
@@ -513,8 +522,6 @@ class MapsPage(QWidget):
         right.setSpacing(6)
         self.title = QLabel("No map selected")
         self.title.setObjectName("mapTitle")
-        self.status_chip = QLabel()
-        self.status_chip.setObjectName("chip")
         self.kind_chip = QLabel()
         self.kind_chip.setObjectName("chip")
         self.dirty_label = QLabel("● Unsaved changes")
@@ -528,7 +535,6 @@ class MapsPage(QWidget):
         head.addWidget(self.edit_copy_btn)
         head.addWidget(self.dirty_label)
         head.addWidget(self.kind_chip)
-        head.addWidget(self.status_chip)
         right.addLayout(head)
         self.source_label = QLabel()
         self.source_label.setObjectName("muted")
@@ -564,6 +570,10 @@ class MapsPage(QWidget):
                                    | QAbstractItemView.EditTrigger.AnyKeyPressed)
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(COL_NAME, Qt.SortOrder.AscendingOrder)
+        header.sectionClicked.connect(self.sort_by)
         for col, width in ((COL_NOTE, 64), (COL_PITCH, 64)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.table.setColumnWidth(col, width)
@@ -745,6 +755,30 @@ class MapsPage(QWidget):
         self.model.set_map(None, True)
         self._update_state()
 
+    def sort_by(self, column: int) -> None:
+        """Клик по заголовку: NOTE / PITCH — все ноты по возрастанию, NAME — по группам инструментов."""
+        flat = column != COL_NAME
+        self.table.horizontalHeader().setSortIndicator(COL_NOTE if flat else COL_NAME, Qt.SortOrder.AscendingOrder)
+        if flat == self.model.flat:
+            return
+        note = self._current_note()
+        self.model.set_flat(flat)
+        self.proxy.set_filter(self.named_only.isChecked(), self.search.text())
+        if note is not None:
+            self._reveal_note(note)
+
+    def _current_note(self) -> int | None:
+        index = self.table.currentIndex()
+        if not index.isValid():
+            return None
+        return self.model.note_at(self.proxy.mapToSource(index).row())
+
+    def _reveal_note(self, note: int) -> None:
+        index = self.proxy.mapFromSource(self.model.note_index(note, COL_NAME))
+        if index.isValid():
+            self.table.setCurrentIndex(index)
+            self.table.scrollTo(index, QAbstractItemView.ScrollHint.PositionAtCenter)
+
     def _apply_filter(self) -> None:
         self.model.relayout()  # переименованные ноты встают в свои группы
         self.proxy.set_filter(self.named_only.isChecked(), self.search.text())
@@ -818,7 +852,6 @@ class MapsPage(QWidget):
         self.delete_btn.setEnabled(has_map and not ref.read_only)
         self.search.setEnabled(has_map)
         self.named_only.setEnabled(has_map)
-        self.status_chip.setVisible(has_map)
         self.kind_chip.setVisible(has_map and (ref.read_only or self.legacy))
         if not has_map:
             self.title.setText("No map selected")
@@ -826,14 +859,6 @@ class MapsPage(QWidget):
             self.issues_label.setText("")
             return
         self.title.setText(self.work.name)
-        status = edited_status(self.base, self.work)
-        self.status_chip.setText(status.upper())
-        repolish(self.status_chip, "state", "ok" if status == "verified" else "warn")
-        self.status_chip.setToolTip(
-            "Note names were edited: the map will be saved as unverified."
-            if status != self.base.meta.status else
-            "Verified against the program or plugin itself." if status == "verified" else
-            "Not verified against the program or plugin.")
         self.kind_chip.setText("🔒 TEMPLATE · READ-ONLY" if ref.read_only else "LEGACY .TXT")
         self.kind_chip.setToolTip("Duplicate the template to edit a copy." if ref.read_only else
                                   "Old REAPER .txt map. Saving converts it to JSON.")

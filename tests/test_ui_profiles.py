@@ -123,10 +123,10 @@ def test_summary_line_and_edit_jumps_to_profiles(window, storage):
     combo = window.profile_combo
     assert [combo.itemData(i) for i in range(combo.count())] == sorted([LEGACY_ID, pid], key=str.casefold)
     combo.setCurrentIndex(combo.findData(LEGACY_ID))
-    assert window.profile_summary.text() == f"no maps · {len(legacy_profile().rules)} rules"
+    assert window.profile_summary.text() == "no maps"  # на Convert — без числа правил
     combo.setCurrentIndex(combo.findData(pid))
     n = len(storage.load_profile(pid).rules)
-    assert window.profile_summary.text() == f"EZdrummer 3 → Superior Drummer 3 · {n} rules"
+    assert window.profile_summary.text() == "EZdrummer 3 → Superior Drummer 3"
     window.show_page(PAGE_PROFILES)
     page.select(LEGACY_ID)
     window.show_page(PAGE_CONVERT)
@@ -1119,7 +1119,7 @@ def test_undo_redo_stack(window, app, storage):
     page.clear_rules(notes[:1])
     assert not page.redo()
     # горячие клавиши (в подсказках) — на странице
-    assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.summary.toolTip()
+    assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.revert_btn.toolTip()
     ed.view.setFocus()
     QTest.keyClick(ed.view, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert page.work.rules == {notes[0]: Rule.map_to(notes[0])}
@@ -1178,10 +1178,10 @@ def test_single_row_header_and_more_menu(window, app, storage):
     assert page.more_btn.width() == page.refresh_btn.sizeHint().width()  # «⋯» — размером с ↻
     xs = [w.mapTo(page, w.rect().topLeft()).x() for w in widgets]
     assert xs == sorted(xs)
-    # карты — над внешними колонками, счётчик и подсказки — над сценой
+    # карты — над внешними колонками, подсказки — над сценой (счётчика правил нет)
     ed = page.cables
     assert ed.left_head.indexOf(page.source_btn) >= 0 and ed.right_head.indexOf(page.target_btn) >= 0
-    assert ed.mid_head.indexOf(page.summary) >= 0 and ed.mid_head.indexOf(page.suggest_bar) >= 0
+    assert not hasattr(page, "summary") and ed.mid_head.indexOf(page.suggest_bar) >= 0
     assert page.source_btn.text() == "EZdrummer 3" and page.target_btn.text() == "Superior Drummer 3"
     # Delete через «⋯» — то же подтверждение
     page.answers["confirm"] = False
@@ -1352,11 +1352,10 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     w.show_page(PAGE_CONVERT)
     w.profile_combo.setCurrentIndex(w.profile_combo.findData(pid))
     assert w.direction_btn.text() == "→" and "Click to convert in reverse" in w.direction_btn.toolTip()
-    assert w.profile_summary.text() == f"EZdrummer 3 → Superior Drummer 3 · {len(saved.rules)} rules"
+    assert w.profile_summary.text() == "EZdrummer 3 → Superior Drummer 3"
     w.direction_btn.click()
     assert w.direction == REVERSE and w.direction_btn.text() == "←"
-    n = len(saved.effective_reverse())
-    assert w.profile_summary.text() == f"Superior Drummer 3 → EZdrummer 3 · {n} rules"
+    assert w.profile_summary.text() == "Superior Drummer 3 → EZdrummer 3"
     assert w.settings.value(DIRECTION_KEY) == REVERSE
     src = tmp_path / "groove.mid"
     shutil.copy(SAMPLE, src)
@@ -1364,6 +1363,7 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     w.convert()
     assert w.status.text() == "Converted: groove_remapped.mid"
     assert w.report_view.toPlainText().startswith("Profile: Kit (reverse)")
+    assert w.report_view.isHidden() and not w.details_btn.isHidden()  # полный отчёт — по кнопке Details
     w.close()
     w2 = MainWindow(storage)  # направление — между запусками
     assert w2.direction == REVERSE and w2.direction_btn.text() == "←"
@@ -1462,7 +1462,7 @@ def test_mirrored_layout_columns_and_pools(window, app):
     assert ed._press is None and header.header.collapsed
 
 
-def test_direction_toggle_counters_and_not_an_undo_step(window, app):
+def test_direction_toggle_arrows_tooltips_and_not_an_undo_step(window, app):
     from midiremap.core.profile import FORWARD, REVERSE, missing_rules
     page = window.profiles_page
     assert not page.direction_btns[FORWARD].isEnabled()  # профиля нет
@@ -1471,17 +1471,18 @@ def test_direction_toggle_counters_and_not_an_undo_step(window, app):
     page, ed = cables_page(window)
     w = page.work
     fwd, rev = len(missing_rules(w, FORWARD)), len(missing_rules(w, REVERSE))
-    assert page.direction_btns[FORWARD].text() == f"→ {fwd}" and page.direction_btns[REVERSE].text() == f"← {rev}"
+    assert page.direction_btns[FORWARD].text() == "→" and page.direction_btns[REVERSE].text() == "←"
+    assert page.direction_btns[FORWARD].toolTip() == f"{fwd} source notes have no rule in this direction"
     assert page.direction_btns[REVERSE].toolTip() == f"{rev} target notes have no rule in this direction"
     assert page.direction_btns[FORWARD].isChecked() and page.direction == FORWARD
     steps = len(page._undo)
     page.direction_btns[REVERSE].click()
     assert page.direction == REVERSE and ed.direction == REVERSE and len(page._undo) == steps and not page.redo()
-    assert page.summary.text().startswith(f"{len(w.effective_reverse())} rules · {rev} unassigned")
-    # правка в ← обновляет числа
+    # правка в ← обновляет число в подсказке
     note = ed.pool_rows[0].notes[0]
     page.toggle_strike([note])
-    assert page.direction_btns[REVERSE].text() == f"← {rev - 1}"
+    assert page.direction_btns[REVERSE].text() == "←"
+    assert page.direction_btns[REVERSE].toolTip().startswith(f"{rev - 1} target note")
     # открытие профиля — снова в →
     page.answers["unassigned"] = set()
     assert page.save() and page.direction == REVERSE

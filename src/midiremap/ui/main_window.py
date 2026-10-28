@@ -83,6 +83,23 @@ def format_report(report: ConversionReport) -> str:
     return "\n".join(lines)
 
 
+def report_summary(report: ConversionReport) -> str:
+    """Короткая строка отчёта: ноты всего, переставлены, удалены, оставлены на месте (keep и n → n), предупреждения."""
+    total = remapped = kept = deleted = 0
+    for r in report.notes.values():
+        total += r.count
+        if r.action == "delete":
+            deleted += r.count
+        elif r.action == "map" and r.dst != r.src:
+            remapped += r.count
+        else:
+            kept += r.count
+    w = len(report.warnings)
+    warnings = (f"{w} warning" + ("" if w == 1 else "s")) if w else "no warnings"
+    return (f"{total} notes converted · {remapped} remapped · {deleted} deleted · {kept} kept unchanged"
+            f" · {warnings}")
+
+
 def _label(text: str, name: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName(name)
@@ -216,8 +233,8 @@ class MainWindow(QMainWindow):
             self._seed_error = f"Cannot create the profiles folder: {e}"
 
         self.setWindowTitle("MidiRemap")
-        self.resize(980, 760)
         self.setMinimumSize(760, 580)
+        self._default_size()
         self.setAcceptDrops(True)
         self.setStyleSheet(stylesheet())
         self._build_ui()
@@ -225,6 +242,15 @@ class MainWindow(QMainWindow):
         self.reload_profiles()
         if self._seed_error:
             self.set_status(self._seed_error, "error")
+
+    def _default_size(self) -> None:
+        """~1500×900, но не больше 90 % доступной области экрана (и не меньше минимального размера)."""
+        width, height = 1500, 900
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            width, height = min(width, int(area.width() * 0.9)), min(height, int(area.height() * 0.9))
+        self.resize(max(width, self.minimumWidth()), max(height, self.minimumHeight()))
 
     # --- построение UI ---
 
@@ -341,17 +367,42 @@ class MainWindow(QMainWindow):
         root.addSpacing(6)
 
         root.addWidget(self._section("REPORT"))
+        self.report_summary = _label("", "muted")
+        self.report_summary.setWordWrap(True)
+        self.details_btn = QPushButton("Details")
+        self.details_btn.setObjectName("link")
+        self.details_btn.setCheckable(True)
+        self.details_btn.toggled.connect(self._show_details)
+        srow = QHBoxLayout()
+        srow.setContentsMargins(0, 0, 0, 0)
+        srow.addWidget(self.report_summary, stretch=1)
+        srow.addWidget(self.details_btn, alignment=Qt.AlignmentFlag.AlignTop)
+        root.addLayout(srow)
         self.report_view = QPlainTextEdit()
         self.report_view.setReadOnly(True)
         # без фокуса Ctrl+C всегда копирует файл результата; текст отчёта — через контекстное меню
         self.report_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.report_view.setPlaceholderText("The conversion report will appear here.")
-        root.addWidget(self.report_view, stretch=1)
+        self.report_view.setMaximumHeight(220)  # подробности — не на всю высоту окна
+        root.addWidget(self.report_view)
+        root.addStretch(1)
+        self._set_report(None)
 
         self.status = QLabel("Supports .mid and .midi files.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
+
+    def _set_report(self, text: str | None, summary: str = "") -> None:
+        """Отчёт: короткая строка видна сразу, полный текст — по кнопке Details (свёрнут после каждой конвертации)."""
+        self.report_summary.setText(summary if text is not None else "The conversion report will appear here.")
+        self.report_view.setPlainText(text or "")
+        self.details_btn.setChecked(False)
+        self._show_details(False)
+        self.details_btn.setVisible(text is not None)
+
+    def _show_details(self, shown: bool) -> None:
+        self.report_view.setVisible(shown)
+        self.details_btn.setToolTip("Hide the full report" if shown else "Show the full report")
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -422,7 +473,7 @@ class MainWindow(QMainWindow):
             self.profile_summary.setText("")
             return
         try:
-            text = profile_summary(self.storage.load_profile(profile_id), self.direction)
+            text = profile_summary(self.storage.load_profile(profile_id), self.direction, rules=False)
         except (OSError, ValueError) as e:
             text = f"Cannot read the profile: {e}"
         self.profile_summary.setText(text)
@@ -460,14 +511,14 @@ class MainWindow(QMainWindow):
         self.output = None
         self.drop.set_file(self.source)
         self.out_card.set_file(output_path_for(self.source))
-        self.report_view.clear()
+        self._set_report(None)
         self.set_status("File loaded. Click Convert or press Enter.")
 
     def clear(self) -> None:
         self.source = self.output = None
         self.drop.set_file(None)
         self.out_card.set_file(None)
-        self.report_view.clear()
+        self._set_report(None)
         self.set_status("Cleared.")
 
     def choose_file(self) -> None:
@@ -559,7 +610,7 @@ class MainWindow(QMainWindow):
         self.output = dst
         self.out_card.set_file(dst, ready=True)
         reverse = " (reverse)" if self.direction == REVERSE else ""
-        self.report_view.setPlainText(f"Profile: {profile.name}{reverse}\n\n" + format_report(report))
+        self._set_report(f"Profile: {profile.name}{reverse}\n\n" + format_report(report), report_summary(report))
         self.set_status(f"Converted: {dst.name}", "ok")
 
     def set_status(self, text: str, state: str = "") -> None:

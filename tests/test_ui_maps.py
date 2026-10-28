@@ -16,7 +16,7 @@ from midiremap.core.notenames import parse_notenames  # noqa: E402
 from midiremap.storage import Storage  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui.main_window import PAGE_MAPS, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import COL_NAME, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
 
@@ -65,7 +65,8 @@ def test_manager_lists_templates_and_opens_read_only(window):
     assert not page.model.setData(idx, "X")
     assert not page.rename_btn.isEnabled() and not page.delete_btn.isEnabled()
     assert page.duplicate_btn.isEnabled()
-    assert page.status_chip.text() == "VERIFIED"
+    assert not hasattr(page, "status_chip")  # статус карты в UI не показывается
+    assert "verified" not in page.list.currentItem().toolTip().casefold()
     # у шаблона нет Save/Revert, вместо них подсказка
     assert page.save_btn.isHidden() and page.revert_btn.isHidden()
     assert not page.edit_copy_btn.isHidden() and page.edit_copy_btn.text() == "Duplicate to edit"
@@ -84,7 +85,6 @@ def test_duplicate_edit_save_reload(window, storage, app):
     # правка имени — unverified
     assert page.model.setData(page.model.note_index(38, COL_NAME), "  Snare: Center X  ")
     assert page.dirty and window.nav_maps.text().startswith("Maps") and "●" in window.nav_maps.text()
-    assert page.status_chip.text() == "UNVERIFIED"
     assert page.save()
     assert not page.dirty and "●" not in window.nav_maps.text()
     saved, _ = storage.load_map("My EZD3")
@@ -95,7 +95,6 @@ def test_duplicate_edit_save_reload(window, storage, app):
     w2 = MainWindow(storage)
     w2.maps_page.select(MapRef(USER, "My EZD3"))
     assert w2.maps_page.work.names[38] == "Snare: Center X"
-    assert w2.maps_page.status_chip.text() == "UNVERIFIED"
     w2.close()
 
 
@@ -338,3 +337,21 @@ def test_renamed_note_moves_to_its_group_after_save(window):
     assert m.row_at(m.note_index(38, 0).row()).group == "snare"  # строка не уезжает при правке
     assert page.save()
     assert m.rows[m.note_index(38, 0).row()].group == "cowbell"
+
+
+def test_note_table_sort_modes(window, app):
+    """Клик по NOTE / PITCH — все ноты по возрастанию без заголовков; по NAME — снова группы."""
+    page = window.maps_page
+    page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
+    assert page.model.grouped and not page.model.flat
+    header = page.table.horizontalHeader()
+    page.table.setCurrentIndex(page.proxy.mapFromSource(page.model.note_index(38, COL_NAME)))
+    header.sectionClicked.emit(COL_NOTE)
+    assert page.model.flat and not page.model.grouped
+    notes = page.proxy.note_rows()
+    assert notes == sorted(notes) and notes == sorted(page.work.names)
+    assert header.sortIndicatorSection() == COL_NOTE
+    assert page.model.note_at(page.proxy.mapToSource(page.table.currentIndex()).row()) == 38  # выбор сохранён
+    header.sectionClicked.emit(COL_NAME)
+    assert page.model.grouped and header.sortIndicatorSection() == COL_NAME
+    assert page.model.note_at(page.proxy.mapToSource(page.table.currentIndex()).row()) == 38
