@@ -3,8 +3,8 @@
 Только совпадение имён: точное или после normalize_name (регистр/пробелы).
 Никакого нечёткого поиска (расстояние редактирования, подстроки, синонимы): ложная подсказка хуже пустой.
 
-Подсказки в редакторе профиля (8b2d): suggestion_targets() — нота -> артикуляция цели (совпало имя);
-куда они лягут и применение — по логике назначения 8b2c (assign_plan): plan_suggestions() / apply_suggested().
+Подсказки в редакторе профиля: suggestion_targets() — нота -> артикуляция цели (совпало имя);
+куда они лягут и применение — по логике назначения (assign_plan): plan_suggestions() / apply_suggested().
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def apply_suggestions(profile: RemapProfile, suggestions: Iterable[Suggestion],
     return out
 
 
-# --- подсказки в редакторе профиля (логика назначения 8b2c) ---
+# --- подсказки в редакторе профиля (логика назначения assign_plan) ---
 
 def suggestion_targets(source_map: NoteMap, target_map: NoteMap) -> dict[int, str]:
     """Нота исходной карты -> артикуляция целевой карты (ключ normalize_name), если имя совпало

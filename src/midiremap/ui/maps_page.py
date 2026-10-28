@@ -3,7 +3,7 @@
 Логики карт здесь нет — только вызовы midiremap.core (duplicate_map, finalize_edit, validate_map, экспорт)
 и midiremap.storage. Диалоги вынесены в методы ask_*/choose_*/show_error, чтобы тесты могли их подменить.
 
-Write to (primary) на вкладке Maps не правится (8b2d): его выбирают в профиле, в копии целевой карты.
+Write to (primary) на вкладке Maps не правится: его выбирают в профиле, в копии целевой карты.
 В JSON карты primary остаётся (старые файлы читаются). Имя на нескольких нотах — бейдж «+N» рядом с именем.
 """
 from __future__ import annotations
