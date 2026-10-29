@@ -82,3 +82,14 @@ def test_group_rank_order_for_display():
     assert group_rank("Tambourine") == GROUP_ORDER.index("Percussion")  # по ключевым словам подписи
     assert group_rank("Cymbal 1") == GROUP_ORDER.index("Cymbal")         # SD3: тарелки «Cymbal N» — после Crash
     assert group_rank(None) == group_rank("Metronome") == group_rank("Other") == len(GROUP_ORDER) - 1
+
+
+def test_display_group_and_sort_key():
+    from midiremap.core.notemap import OTHER_GROUP, display_group, group_sort_key
+    assert display_group("Kick: Hit") == ("kick", "Kick")
+    assert display_group("Acoustic Snare") == ("snare", "Snare")
+    assert display_group("Zzz") == (OTHER_GROUP, "Other")
+    groups = [("Other", 1), ("Crash 2", 5), ("Kick", 40), ("Snare", 2), ("Racktom 1", 3), ("Floortom 1", 4)]
+    assert [g for g, _ in sorted(groups, key=lambda g: group_sort_key(*g))] == [
+        "Kick", "Snare", "Racktom 1", "Floortom 1", "Crash 2", "Other"]  # одинаковый ранг (Toms) — по первой ноте
+    assert group_sort_key("Kick", 0, last=True) > group_sort_key("Other", 127)  # служебная группа — в конце

@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import (
-    NoteMap, articulations, duplicate_map, finalize_edit, group_rank, instrument_group, normalize_name, set_note_name,
-    validate_map,
+    NoteMap, articulations, display_group, duplicate_map, finalize_edit, group_sort_key, instrument_group,
+    normalize_name, set_note_name, validate_map,
 )
 from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import note_tip, pitch_name
@@ -48,8 +48,7 @@ SORT_TIPS = ("Click to list notes in ascending order", "Click to list notes in a
 
 EDIT_TIP = "Double-click or type to edit a name · Empty name: remove the note · Delete: clear selected names"
 
-# служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
-OTHER_GROUP, UNNAMED_GROUP = "\0other", "\0unnamed"
+UNNAMED_GROUP = "\0unnamed"  # служебный ключ группы нот без имени (не совпадёт с normalize_name инструмента)
 
 
 @dataclass(frozen=True)
@@ -88,14 +87,9 @@ def group_rows(names: dict[int, str], notes: list[int], unnamed_label: str = "No
         return [LayoutRow(None, n) for n in notes]
     groups: dict[str, tuple[str, list[int]]] = {}
     for n in notes:
-        if n in names:
-            g = instrument_group(names[n])
-            key, label = (normalize_name(g), g) if g else (OTHER_GROUP, "Other")
-        else:
-            key, label = UNNAMED_GROUP, unnamed_label
+        key, label = display_group(names[n]) if n in names else (UNNAMED_GROUP, unnamed_label)
         groups.setdefault(key, (label, []))[1].append(n)
-    order = sorted(groups, key=lambda k: (k == UNNAMED_GROUP,
-                                          group_rank(None if k == OTHER_GROUP else groups[k][0]), groups[k][1][0]))
+    order = sorted(groups, key=lambda k: group_sort_key(groups[k][0], groups[k][1][0], last=k == UNNAMED_GROUP))
     rows: list[LayoutRow] = []
     for key in order:
         label, members = groups[key]

@@ -44,7 +44,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
-from ..core.notemap import NoteMap, articulations, group_rank, instrument_group, normalize_name, primary_note
+from ..core.notemap import (
+    NoteMap, articulations, display_group, group_sort_key, instrument_group, normalize_name, primary_note,
+)
 from ..core.profile import RemapProfile, Rule, primary_pairs
 from ..core.suggest import plan_suggestions
 
@@ -52,7 +54,7 @@ UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
 MIXED = "mixed"  # заголовок раскрытых алиасов, у нот которых разные правила
 POOL_PREFIX, TARGET_PREFIX = UNASSIGNED + "/", "target/"  # ключи групп пула и цели
 # служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
-OTHER, MISSING = "\0other", "\0missing"
+MISSING = "\0missing"
 
 
 @dataclass(frozen=True)
@@ -213,22 +215,20 @@ def all_notes(p: RemapProfile) -> list[int]:
 def _source_group(names: dict[int, str], n: int) -> tuple[str, str]:
     if n not in names:
         return MISSING, "Not in the source map"
-    g = instrument_group(names[n])
-    return (normalize_name(g), g) if g else (OTHER, "Other")
+    return display_group(names[n])
 
 
 def _grouped(notes: Iterable[int], names: dict[int, str]) -> list[int]:
     """Ноты по группам: группы — в общем порядке GROUP_ORDER (group_rank подписи), одинаковый ранг — по первой
     (меньшей) ноте; «Other» — после всех, «Not in the source map» — в самом конце."""
     notes = sorted(notes)
-    first: dict[str, tuple[int, int]] = {}
+    first: dict[str, tuple] = {}
     for n in notes:
         key, label = _source_group(names, n)
-        first.setdefault(key, (group_rank(None if key == OTHER else label), n))
+        first.setdefault(key, group_sort_key(label, n, last=key == MISSING))
 
     def key(n: int) -> tuple:
-        g = _source_group(names, n)[0]
-        return g == MISSING, first[g], n
+        return first[_source_group(names, n)[0]], n
     return sorted(notes, key=key)
 
 
@@ -275,8 +275,7 @@ def _target_groups(p: RemapProfile) -> list[tuple[str | None, str, list[TargetRo
     if tgt is not None:
         for key, notes in sorted(articulations(tgt).items(), key=lambda kv: kv[1][0]):
             label = tgt.names[notes[0]]
-            g = instrument_group(label) if grouped else None
-            gkey, glabel = ((normalize_name(g), g) if g else (OTHER, "Other")) if grouped else (None, "")
+            gkey, glabel = display_group(label) if grouped else (None, "")
             rows.append((gkey, glabel, TargetRow("a:" + key, label, tuple(notes), primary_note(tgt, label),
                                                  True, 0, 1)))
     # номера вне целевой карты — из правил
@@ -287,8 +286,8 @@ def _target_groups(p: RemapProfile) -> list[tuple[str | None, str, list[TargetRo
     groups: dict[str | None, tuple[str, list[TargetRow]]] = {}
     for gkey, glabel, row in rows:
         groups.setdefault(gkey, (glabel, []))[1].append(row)
-    # общий порядок групп (GROUP_ORDER, как в пуле); одинаковый ранг — по первой ноте (устойчивая сортировка)
-    keys = sorted(groups, key=lambda k: (k == MISSING, group_rank(None if k in (OTHER, None) else groups[k][0])))
+    # общий порядок групп (GROUP_ORDER, как в пуле); одинаковый ранг — по первой ноте группы
+    keys = sorted(groups, key=lambda k: group_sort_key(groups[k][0], groups[k][1][0].notes[0], last=k == MISSING))
     return [(k, groups[k][0], groups[k][1]) for k in keys]
 
 

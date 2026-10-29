@@ -102,6 +102,22 @@ def instrument_group(name: str) -> str | None:
     return keyword_group(name)
 
 
+OTHER_GROUP = "\0other"  # ключ группы «Other» (имя не узнали): не совпадёт с normalize_name настоящего инструмента
+
+
+def display_group(name: str) -> tuple[str, str]:
+    """(ключ, подпись) группы, под которой показывается нота с именем name: instrument_group (ключ — его
+    normalize_name), не узнали — (OTHER_GROUP, «Other»). Только для показа, как instrument_group."""
+    g = instrument_group(name)
+    return (normalize_name(g), g) if g else (OTHER_GROUP, "Other")
+
+
+def group_sort_key(label: str, first_note: int, last: bool = False) -> tuple:
+    """Порядок групп при показе — один везде (пул, «from», «to», Maps): last (служебная группа, например ноты вне
+    карты) — в конце, затем group_rank подписи, одинаковый ранг — по первой (меньшей) ноте группы."""
+    return last, group_rank(label), first_note
+
+
 # --- артикуляции и основные ноты ---
 
 _ARTICULATIONS: dict[int, tuple[tuple, dict[str, tuple[int, ...]]]] = {}  # id(карты) -> (снимок имён, группы)
