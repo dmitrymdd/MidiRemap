@@ -65,12 +65,14 @@ def test_load_convert_and_copy(window, tmp_path, app):
     window.convert()
     out = tmp_path / "groove_remapped.mid"
     assert out.is_file() and window.output == out.resolve()
-    assert "Moved:" in window.report_view.toPlainText()
-    # коротко — сразу, полный отчёт — по Details; отчёт не растягивается на всю высоту
-    assert window.report_summary.text().split(" · ")[0].endswith("hits")
-    assert window.report_view.isHidden() and not window.details_btn.isChecked()
-    window.details_btn.click()
-    assert not window.report_view.isHidden() and window.report_view.maximumHeight() < 1000
+    # секции REPORT нет: итог — под именем файла, полный отчёт — в окне Details
+    for gone in ("report_view", "report_summary", "details_btn", "batch_area", "batch_box"):
+        assert not hasattr(window, gone)
+    assert window.drop.single_result.isVisibleTo(window.drop)
+    assert window.drop.single_result.text().startswith("✓ ") and " hits · " in window.drop.single_result.text()
+    dlg = window.details_dialog(src.resolve())
+    assert "Moved:" in dlg.view.toPlainText() and dlg.view.isReadOnly()
+    dlg.deleteLater()
 
     window.copy_output()
     urls = app.clipboard().mimeData().urls()
@@ -108,9 +110,9 @@ def test_format_report_and_summary_use_one_vocabulary(tmp_path):
     assert f"Unchanged: {t.unchanged.hits} hits ({t.unchanged.notes} notes)" in text
     assert f"Deleted: {t.deleted.hits} hit" in text
     w = len(report.warnings)
-    tail = (f"{w} warning" + ("" if w == 1 else "s")) if w else "no warnings"
+    tail = (f" · {w} warning" + ("" if w == 1 else "s")) if w else ""  # нет предупреждений — не пишется
     assert report_summary(report) == (f"{t.hits} hits · {t.moved.hits} moved · {t.unchanged.hits} unchanged"
-                                      f" · {t.deleted.hits} deleted · {tail}")
+                                      f" · {t.deleted.hits} deleted{tail}")
     assert t.moved.hits + t.unchanged.hits + t.deleted.hits == t.hits
     assert "notes converted" not in report_summary(report)  # «notes» — не про hits
 
@@ -123,8 +125,8 @@ def test_batch_summary_wording():
 
 def test_window_default_size_fits_screen(window):
     area = window.screen().availableGeometry()
-    assert window.width() == max(min(1500, int(area.width() * 0.9)), window.minimumWidth())
-    assert window.height() == max(min(900, int(area.height() * 0.9)), window.minimumHeight())
+    assert window.width() == max(min(1280, int(area.width() * 0.9)), window.minimumWidth())
+    assert window.height() == max(min(800, int(area.height() * 0.9)), window.minimumHeight())
     assert (window.minimumWidth(), window.minimumHeight()) == (760, 580)
 
 
@@ -213,14 +215,17 @@ def test_copy_button_says_files_for_several_outputs(window, tmp_path):
 
 def test_failed_file_shows_first_error_line_under_its_name(window, tmp_path):
     from midiremap.core import FileResult
-    from midiremap.ui.main_window import FileReportRow
+    from midiremap.ui.main_window import result_details, result_line
     res = FileResult(tmp_path / "x.mid", tmp_path / "x_remapped.mid", error="Bad header\nat byte 14\nchunk MThd")
-    row = FileReportRow(res)
-    assert row.summary.text() == "Bad header" and row.summary.toolTip() == res.error
-    assert not row.summary.isHidden() and row.view.isHidden()  # видно без раскрытия
-    assert not row.details_btn.isHidden() and row.view.toPlainText() == res.error  # полный текст — в Details
-    one = FileReportRow(FileResult(tmp_path / "y.mid", tmp_path / "y_remapped.mid", error="Cannot read"))
-    assert one.summary.text() == "Cannot read" and one.details_btn.isHidden()
+    assert result_line(res) == "✗ Bad header" and result_details(res) == res.error
+    a, b = _files(tmp_path, "a.mid", "b.mid")
+    window._accept_files([a, b])
+    window.results = {a.resolve(): res}
+    window.drop.set_files(window.sources, window.results)
+    first, second = window.drop.row_widgets()
+    assert first.result.text() == "✗ Bad header" and first.result.property("state") == "error"
+    assert first.result.toolTip() == res.error and not first.details.isHidden()  # видно без раскрытия
+    assert second.result.isHidden() and second.details.isHidden()  # результата нет — строка как раньше
 
 
 def test_single_file_zone_looks_as_before(window, tmp_path):
@@ -238,24 +243,22 @@ def test_convert_several_files_with_one_failure(window, tmp_path):
     window._accept_files([a, bad, c])
     window.convert()
     assert [p.name for p in window.outputs] == ["a_remapped.mid", "c_remapped.mid"]
-    assert window.report_summary.text() == "2 files converted, 1 failed"
     assert window.status.text() == "2 files converted, 1 failed" and window.status.property("state") == "error"
-    rows = [window.batch_box.itemAt(i).widget() for i in range(window.batch_box.count())]
+    rows = window.drop.row_widgets()
     assert [r.name.text() for r in rows] == ["a.mid", "b.mid", "c.mid"]
-    assert " hits · " in rows[0].summary.text()
-    assert rows[1].details_btn.isHidden() and rows[1].summary.property("state") == "error"
+    assert rows[0].result.text().startswith("✓ ") and " hits · " in rows[0].result.text()
+    assert rows[1].result.text().startswith("✗ ") and rows[1].result.property("state") == "error"
+    assert all(not r.details.isHidden() for r in rows)  # у каждой строки — Details
     assert not (tmp_path / "b_remapped.mid").exists()
-    assert not window.batch_area.isHidden() and window.report_view.isHidden() and window.details_btn.isHidden()
-    # у каждой строки свой Details
-    assert rows[0].view.isHidden() and rows[2].view.isHidden()
-    rows[0].details_btn.click()
-    assert not rows[0].view.isHidden() and rows[2].view.isHidden()
-    assert rows[0].view.toPlainText().startswith("Profile:") and "Moved:" in rows[0].view.toPlainText()
+    dlg = window.details_dialog(a.resolve())
+    assert dlg.view.toPlainText().startswith("Profile:") and "Moved:" in dlg.view.toPlainText()
+    dlg.copy()
+    assert QApplication.clipboard().text() == dlg.view.toPlainText()  # Copy — весь текст
+    assert window.details_dialog(bad.resolve()).view.toPlainText() == window.results[bad.resolve()].error
     assert window.out_card.property("state") == "ok" and window.out_card.name.text() == "2 files"
-    # новая загрузка очищает отчёт пакета
-    window.load(a)
-    assert window.batch_area.isHidden() and window.batch_box.count() == 0
-
+    # новая загрузка сбрасывает результаты
+    window._accept_files([_files(tmp_path, "d.mid")[0]])
+    assert window.results == {} and all(r.result.isHidden() for r in window.drop.row_widgets())
 
 def test_convert_several_files_to_output_folder_and_reset(window, tmp_path):
     d1, d2 = tmp_path / "one", tmp_path / "two"
@@ -271,16 +274,16 @@ def test_convert_several_files_to_output_folder_and_reset(window, tmp_path):
     assert window.out_card.folder.text() == str(out)
     window.convert()
     # одинаковые имена в общей папке — ошибка, а не молчаливая перезапись
-    assert window.report_summary.text() == "2 files converted, 1 failed"
-    rows = [window.batch_box.itemAt(i).widget() for i in range(window.batch_box.count())]
-    assert "collides" in rows[1].summary.text()
+    assert window.status.text() == "2 files converted, 1 failed"
+    rows = window.drop.row_widgets()
+    assert "collides" in rows[1].result.text()
     assert sorted(p.name for p in out.iterdir()) == ["groove_remapped.mid", "solo_remapped.mid"]
     assert not (d1 / "groove_remapped.mid").exists()
     window.folder_reset_btn.click()
     assert window.output_dir is None and window.folder_reset_btn.isHidden() and window.outputs == []
     window.convert()
     assert (d1 / "groove_remapped.mid").is_file() and (d2 / "groove_remapped.mid").is_file()
-    assert window.report_summary.text() == "3 files converted"
+    assert window.status.text() == "3 files converted"
 
 
 def test_output_folder_applies_to_single_file(window, tmp_path):
@@ -294,16 +297,17 @@ def test_output_folder_applies_to_single_file(window, tmp_path):
     assert window.status.text() == "Converted: a_remapped.mid"
 
 
-def test_single_file_failure_keeps_error_dialog(window, tmp_path):
+def test_single_file_failure_shows_in_its_row(window, tmp_path):
     bad = tmp_path / "bad.mid"
     bad.write_bytes(b"not midi")
     window.load(bad)
     shown = []
     window.show_error = shown.append
     window.convert()
-    assert len(shown) == 1 and shown[0].startswith("Conversion failed") and window.outputs == []
-    assert window.status.property("state") == "error"
-
+    assert shown == [] and window.outputs == []  # как у пакета: без окна ошибки
+    assert window.status.text() == "Conversion failed." and window.status.property("state") == "error"
+    assert window.drop.single_result.text().startswith("✗ ") and not window.drop.single_details.isHidden()
+    assert window.details_dialog(bad.resolve()).view.toPlainText() == window.results[bad.resolve()].error
 
 def test_copy_several_outputs_as_file_urls(window, tmp_path, app):
     a, b = _files(tmp_path, "a.mid", "b.mid")

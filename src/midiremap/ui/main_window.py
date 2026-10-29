@@ -11,10 +11,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl, Signal
+from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QDrag, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
@@ -100,12 +100,24 @@ def format_report(report: ConversionReport) -> str:
 
 
 def report_summary(report: ConversionReport) -> str:
-    """Итог одной строкой в той же терминологии, что и format_report."""
+    """Итог одной строкой в той же терминологии, что и format_report; предупреждения — только если есть."""
     t = report.totals()
     w = len(report.warnings)
-    warnings = _plural(w, "warning") if w else "no warnings"
-    return (f"{_plural(t.hits, 'hit')} · {t.moved.hits} moved · {t.unchanged.hits} unchanged · {t.deleted.hits} deleted"
-            f" · {warnings}")
+    text = f"{_plural(t.hits, 'hit')} · {t.moved.hits} moved · {t.unchanged.hits} unchanged · {t.deleted.hits} deleted"
+    return text + (f" · {_plural(w, 'warning')}" if w else "")
+
+
+def result_line(res: FileResult) -> str:
+    """Строка результата под именем файла: «✓ 52 hits · …» или «✗ <первая строка ошибки>»."""
+    if res.ok:
+        return f"✓ {report_summary(res.report)}"
+    error = (res.error or "").strip()
+    return f"✗ {error.splitlines()[0] if error else 'Failed'}"
+
+
+def result_details(res: FileResult, head: str = "") -> str:
+    """Полный текст для окна Details: отчёт (с заголовком «Profile: …») или ошибка целиком."""
+    return head + format_report(res.report) if res.ok else (res.error or "Failed").strip()
 
 
 def batch_summary(ok: int, failed: int) -> str:
@@ -122,18 +134,23 @@ def _label(text: str, name: str) -> QLabel:
 
 class SourceZone(QFrame):
     """Зона исходных файлов. Пустая — «перетащи сюда»; один файл — имя и папка; несколько — компактный список
-    (имя и кнопка удаления, «Clear all»). Клик открывает диалог выбора файлов; сам drop и Ctrl+V принимает всё окно."""
+    (имя и кнопка удаления, «Clear all»). После конвертации у каждого файла (и у одного) — строка результата
+    (result_line: ✓ итог / ✗ ошибка) и «Details» (полный отчёт в окне). Клик открывает диалог выбора файлов;
+    сам drop и Ctrl+V принимает всё окно."""
 
-    ROW_H = 26
-    LIST_MAX_H = 4 * ROW_H + 2  # длиннее — прокрутка внутри списка
+    ROW_H, RESULT_ROW_H = 26, 44  # строка списка; с результатом под именем
+    LIST_MAX_H = 4 * RESULT_ROW_H + 2  # длиннее — прокрутка внутри списка
 
-    def __init__(self, on_click, on_remove=None, on_clear=None) -> None:
+    def __init__(self, on_click, on_remove=None, on_clear=None, on_details=None) -> None:
         super().__init__()
         self.setObjectName("drop")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_click = on_click
         self._on_remove = on_remove or (lambda path: None)
         self._on_clear = on_clear or (lambda: None)
+        self._on_details = on_details or (lambda path: None)
+        self.paths: list[Path] = []
+        self.results: dict[Path, FileResult] = {}
         self.icon = _label("↓", "icon")
         self.name = _label("", "cardName")
         self.folder = _label("", "muted")
@@ -145,6 +162,16 @@ class SourceZone(QFrame):
         for w in (self.icon, self.name, self.folder):
             w.setAlignment(Qt.AlignmentFlag.AlignCenter)
             box.addWidget(w)
+        # один файл: строка результата и Details под папкой
+        self.single = QWidget()
+        self.single_result, self.single_details = self._result_widgets(lambda: self._details_of_single())
+        single = QHBoxLayout(self.single)
+        single.setContentsMargins(0, 4, 0, 0)
+        single.addStretch(1)
+        single.addWidget(self.single_result)
+        single.addWidget(self.single_details)
+        single.addStretch(1)
+        box.addWidget(self.single)
         # несколько файлов: заголовок «N files · Clear all» и список строк с кнопками удаления
         self.files_box = QWidget()
         self.count = _label("", "cardName")
@@ -174,14 +201,39 @@ class SourceZone(QFrame):
         box.addWidget(self.files_box)
         self.set_files([])
 
+    def _result_widgets(self, on_details) -> tuple[QLabel, QPushButton]:
+        result = _label("", "status")
+        result.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        details = QPushButton("Details")
+        details.setObjectName("link")
+        details.setCursor(Qt.CursorShape.PointingHandCursor)
+        details.setToolTip("Show the full report")
+        details.clicked.connect(lambda _=False: on_details())
+        return result, details
+
+    def _details_of_single(self) -> None:
+        if self.paths:
+            self._on_details(self.paths[0])
+
+    @staticmethod
+    def _show_result(label: QLabel, details: QPushButton, res: FileResult | None) -> None:
+        label.setText(result_line(res) if res is not None else "")
+        label.setToolTip("" if res is None or res.ok else (res.error or ""))
+        _repolish(label, "state", "" if res is None else "ok" if res.ok else "error")
+        for w in (label, details):
+            w.setVisible(res is not None)
+
     def set_file(self, path: Path | None) -> None:
         self.set_files([path] if path else [])
 
-    def set_files(self, paths: list[Path]) -> None:
+    def set_files(self, paths: list[Path], results: dict[Path, FileResult] | None = None) -> None:
+        """Список файлов и (после конвертации) их результаты."""
+        self.paths, self.results = list(paths), dict(results or {})
         many = len(paths) > 1
         self.files_box.setVisible(many)
         for w in (self.icon, self.name, self.folder):
             w.setVisible(not many)
+        self.single.setVisible(len(paths) == 1 and paths[0] in self.results)
         if not paths:
             self.icon.setText("↓")
             self.name.setText("Drop a MIDI file here")
@@ -190,24 +242,34 @@ class SourceZone(QFrame):
             self.icon.setText("♫")
             self.name.setText(paths[0].name)
             self.folder.setText(str(paths[0].parent))
+            self._show_result(self.single_result, self.single_details, self.results.get(paths[0]))
         else:
             self.count.setText(f"{len(paths)} files")
             while self.rows_box.count():
                 item = self.rows_box.takeAt(0)
-                if item.widget() is not None:
+                if item.widget() is not None:  # прежняя строка — скрыть сразу (удалится в цикле событий)
+                    item.widget().hide()
                     item.widget().deleteLater()
+            height = 0
             for path in paths:
-                self.rows_box.addWidget(self._row(path))
-            self.scroll.setFixedHeight(min(len(paths) * self.ROW_H, self.LIST_MAX_H))
+                row = self._row(path)
+                height += row.height()
+                self.rows_box.addWidget(row)
+            self.scroll.setFixedHeight(min(height, self.LIST_MAX_H))
         self.setToolTip((f"{paths[0]}\n" if len(paths) == 1 else "")
                         + "Click or drop to add files · Esc to clear" if paths else "")
         _repolish(self, "loaded", "true" if paths else "false")
         self.updateGeometry()
 
+    def row_widgets(self) -> list[QWidget]:
+        """Строки списка (несколько файлов) в порядке файлов."""
+        return [self.rows_box.itemAt(i).widget() for i in range(self.rows_box.count())]
+
     def _row(self, path: Path) -> QWidget:
+        res = self.results.get(path)
         row = QWidget()
-        row.setFixedHeight(self.ROW_H)
-        name = _label(path.name, "muted")
+        row.setFixedHeight(self.RESULT_ROW_H if res is not None else self.ROW_H)
+        row.name = name = _label(path.name, "muted")
         name.setToolTip(str(path))
         name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         remove = QPushButton("✕")
@@ -216,10 +278,22 @@ class SourceZone(QFrame):
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
         remove.setToolTip("Remove from the list")
         remove.clicked.connect(lambda _=False, p=path: self._on_remove(p))
-        box = QHBoxLayout(row)
+        row.result, row.details = self._result_widgets(lambda p=path: self._on_details(p))
+        self._show_result(row.result, row.details, res)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(name, stretch=1)
+        top.addWidget(remove)
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 28, 0)
+        bottom.addWidget(row.result, stretch=1)
+        bottom.addWidget(row.details)
+        box = QVBoxLayout(row)
         box.setContentsMargins(2, 0, 2, 0)
-        box.addWidget(name, stretch=1)
-        box.addWidget(remove)
+        box.setSpacing(0)
+        box.addLayout(top)
+        if res is not None:
+            box.addLayout(bottom)
         return row
 
     def set_active(self, active: bool) -> None:
@@ -318,52 +392,28 @@ class OutputCard(QFrame):
             self._on_click()
 
 
-class FileReportRow(QWidget):
-    """Строка отчёта пакета: имя файла, итог одной строкой (или ошибка) и свой переключатель Details."""
+class ReportDialog(QDialog):
+    """Полный отчёт файла (или текст ошибки): только чтение, текст выделяется и копируется; Copy — весь текст."""
 
-    toggled = Signal()  # подробности раскрыты / свёрнуты — высота списка изменилась
-
-    def __init__(self, res: FileResult, details: str = "") -> None:
-        super().__init__()
-        self.name = _label(res.src.name, "cardName")
-        self.name.setToolTip(str(res.src))
-        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        # ошибка: под именем — её первая строка; полный текст — в подсказке и (если строк несколько) в Details
-        error = (res.error or "").strip()
-        if not res.ok and "\n" in error:
-            details = error
-        self.details_btn = QPushButton("Details")
-        self.details_btn.setObjectName("link")
-        self.details_btn.setCheckable(True)
-        self.details_btn.setVisible(bool(details))
-        self.details_btn.setToolTip("Show the full report")
-        self.summary = QLabel(report_summary(res.report) if res.ok else error.splitlines()[0] if error else "Failed")
-        self.summary.setObjectName("muted" if res.ok else "status")
-        self.summary.setWordWrap(True)
-        if not res.ok:
-            self.summary.setToolTip(error)
-            _repolish(self.summary, "state", "error")
-        self.view = QPlainTextEdit(details)
+    def __init__(self, parent, title: str, text: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(640, 480)
+        self.view = QPlainTextEdit(text)
         self.view.setReadOnly(True)
-        self.view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.view.setMaximumHeight(180)
-        self.view.setVisible(False)
-        self.details_btn.toggled.connect(self._toggle)
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.addWidget(self.name, stretch=1)
-        head.addWidget(self.details_btn)
+        self.view.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse
+                                          | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        self.copy_btn = buttons.addButton("Copy", QDialogButtonBox.ButtonRole.ActionRole)
+        self.copy_btn.setToolTip("Copy the whole report")
+        self.copy_btn.clicked.connect(self.copy)
+        buttons.rejected.connect(self.reject)
         box = QVBoxLayout(self)
-        box.setContentsMargins(0, 4, 0, 4)
-        box.setSpacing(2)
-        box.addLayout(head)
-        box.addWidget(self.summary)
-        box.addWidget(self.view)
+        box.addWidget(self.view, stretch=1)
+        box.addWidget(buttons)
 
-    def _toggle(self, shown: bool) -> None:
-        self.view.setVisible(shown)
-        self.details_btn.setToolTip("Hide the full report" if shown else "Show the full report")
-        self.toggled.emit()
+    def copy(self) -> None:
+        QGuiApplication.clipboard().setText(self.view.toPlainText())
 
 
 class MainWindow(QMainWindow):
@@ -372,6 +422,8 @@ class MainWindow(QMainWindow):
         self.storage = storage if storage is not None else Storage()
         self.sources: list[Path] = []     # исходные файлы (один или несколько)
         self.outputs: list[Path] = []     # готовые результаты последней конвертации (только успешные)
+        self.results: dict[Path, FileResult] = {}  # результаты последней конвертации по исходному файлу
+        self.report_head = ""             # «Profile: … » — заголовок окна Details
         self.output_dir: Path | None = None  # None — результаты рядом с исходниками
         self.settings = ui_settings(self.storage)
         saved = self.settings.value(DIRECTION_KEY)
@@ -404,8 +456,8 @@ class MainWindow(QMainWindow):
         return self.outputs[0] if self.outputs else None
 
     def _default_size(self) -> None:
-        """~1500×900, но не больше 90 % доступной области экрана (и не меньше минимального размера)."""
-        width, height = 1500, 900
+        """~1280×800, но не больше 90 % доступной области экрана (и не меньше минимального размера)."""
+        width, height = 1280, 800
         screen = self.screen() or QApplication.primaryScreen()
         if screen is not None:
             area = screen.availableGeometry()
@@ -464,7 +516,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        self.drop = SourceZone(self.choose_file, self.remove_source, self.clear)
+        self.drop = SourceZone(self.choose_file, self.remove_source, self.clear, self.show_details)
         root.addWidget(self.drop)
         root.addSpacing(6)
 
@@ -541,83 +593,12 @@ class MainWindow(QMainWindow):
         root.addLayout(actions)
         root.addSpacing(6)
 
-        root.addWidget(self._section("REPORT"))
-        self.report_summary = _label("", "muted")
-        self.report_summary.setWordWrap(True)
-        self.details_btn = QPushButton("Details")
-        self.details_btn.setObjectName("link")
-        self.details_btn.setCheckable(True)
-        self.details_btn.toggled.connect(self._show_details)
-        srow = QHBoxLayout()
-        srow.setContentsMargins(0, 0, 0, 0)
-        srow.addWidget(self.report_summary, stretch=1)
-        srow.addWidget(self.details_btn, alignment=Qt.AlignmentFlag.AlignTop)
-        root.addLayout(srow)
-        self.report_view = QPlainTextEdit()
-        self.report_view.setReadOnly(True)
-        # без фокуса Ctrl+C всегда копирует файл результата; текст отчёта — через контекстное меню
-        self.report_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.report_view.setMaximumHeight(220)  # подробности — не на всю высоту окна
-        root.addWidget(self.report_view)
-        # пакет: по строке на файл (итог + свой Details), список не длиннее BATCH_MAX_H
-        self.batch_host = QWidget()
-        self.batch_box = QVBoxLayout(self.batch_host)
-        self.batch_box.setContentsMargins(0, 0, 0, 0)
-        self.batch_box.setSpacing(0)
-        self.batch_area = QScrollArea()
-        self.batch_area.setWidgetResizable(True)
-        self.batch_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.batch_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.batch_area.setWidget(self.batch_host)
-        root.addWidget(self.batch_area)
         root.addStretch(1)
-        self._set_report(None)
 
         self.status = QLabel("Supports .mid and .midi files.")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
         root.addWidget(self.status)
-
-    BATCH_MAX_H = 300
-
-    def _set_report(self, text: str | None, summary: str = "") -> None:
-        """Отчёт одного файла: короткая строка видна сразу, полный текст — по кнопке Details (свёрнут после каждой
-        конвертации). None — отчёта нет."""
-        self._clear_batch_rows()
-        self.report_summary.setText(summary if text is not None else "The conversion report will appear here.")
-        self.report_view.setPlainText(text or "")
-        self.details_btn.setChecked(False)
-        self._show_details(False)
-        self.details_btn.setVisible(text is not None)
-
-    def _clear_batch_rows(self) -> None:
-        while self.batch_box.count():
-            item = self.batch_box.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self.batch_area.setVisible(False)
-
-    def _set_batch_report(self, files: list[FileResult], head: str) -> None:
-        """Отчёт пакета: общая строка сверху и по строке на файл (итог в той же терминологии + свой Details)."""
-        self._set_report(None)
-        ok = sum(1 for f in files if f.ok)
-        self.report_summary.setText(batch_summary(ok, len(files) - ok))
-        self.details_btn.setVisible(False)
-        for res in files:
-            row = FileReportRow(res, head + format_report(res.report) if res.ok else "")
-            row.toggled.connect(self._fit_batch_area)
-            self.batch_box.addWidget(row)
-        self.batch_area.setVisible(True)
-        self._fit_batch_area()
-
-    def _fit_batch_area(self) -> None:
-        """Высота списка — по содержимому, но не больше BATCH_MAX_H (дальше прокрутка внутри)."""
-        self.batch_box.activate()
-        self.batch_area.setFixedHeight(min(self.BATCH_MAX_H, self.batch_host.sizeHint().height() + 2))
-
-    def _show_details(self, shown: bool) -> None:
-        self.report_view.setVisible(shown)
-        self.details_btn.setToolTip("Hide the full report" if shown else "Show the full report")
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -727,10 +708,9 @@ class MainWindow(QMainWindow):
             path = Path(path).resolve()
             if path not in files:
                 files.append(path)
-        self.sources, self.outputs = files, []
+        self.sources, self.outputs, self.results = files, [], {}
         self.drop.set_files(files)
         self._show_planned_outputs()
-        self._set_report(None)
         self._show_copy()
 
     def _show_copy(self) -> None:
@@ -807,7 +787,8 @@ class MainWindow(QMainWindow):
     def set_output_dir(self, folder: Path | None) -> None:
         """Папка для всех результатов; None — каждый рядом со своим исходником."""
         self.output_dir = folder
-        self.outputs = []
+        self.outputs, self.results = [], {}
+        self.drop.set_files(self.sources)
         self.folder_reset_btn.setVisible(folder is not None)
         self._show_planned_outputs()
         self._show_copy()
@@ -888,26 +869,35 @@ class MainWindow(QMainWindow):
             return
         result = convert_batch(self.sources, profile, self.direction, self.output_dir)
         self.outputs = result.outputs
+        self.results = {f.src: f for f in result.files}
+        self.report_head = f"Profile: {profile.name}{' (reverse)' if self.direction == REVERSE else ''}\n\n"
+        self.drop.set_files(self.sources, self.results)  # итог — в строке каждого файла
         self._show_copy()
-        head = f"Profile: {profile.name}{' (reverse)' if self.direction == REVERSE else ''}\n\n"
-        if len(result.files) == 1:  # один файл — как раньше: итог, Details, окно ошибки
-            res = result.files[0]
-            if not res.ok:
-                self._show_planned_outputs()
-                self.show_error(f"Conversion failed:\n\n{res.error}")
-                self.set_status("Conversion failed.", "error")
-                return
-            self.out_card.set_file(res.dst, ready=True)
-            self._set_report(head + format_report(res.report), report_summary(res.report))
-            self.set_status(f"Converted: {res.dst.name}", "ok")
-            return
         if result.outputs:
             self.out_card.set_files(result.outputs, ready=True, where=self._where())
         else:
             self._show_planned_outputs()
-        self._set_batch_report(result.files, head)
+        if len(result.files) == 1:
+            res = result.files[0]
+            if res.ok:
+                self.set_status(f"Converted: {res.dst.name}", "ok")
+            else:
+                self.set_status("Conversion failed.", "error")
+            return
         self.set_status(batch_summary(len(result.succeeded), len(result.failed)),
                         "error" if result.failed else "ok")
+
+    def details_dialog(self, path: Path) -> ReportDialog | None:
+        """Окно Details файла path (полный отчёт или ошибка); None — результата нет."""
+        res = self.results.get(path)
+        if res is None:
+            return None
+        return ReportDialog(self, f"{path.name} — report", result_details(res, self.report_head))
+
+    def show_details(self, path: Path) -> None:
+        dlg = self.details_dialog(path)
+        if dlg is not None:
+            dlg.exec()
 
     def set_status(self, text: str, state: str = "") -> None:
         self.status.setText(text)

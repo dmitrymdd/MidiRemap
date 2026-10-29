@@ -41,7 +41,7 @@ COL_NOTE, COL_PITCH, COL_NAME = range(3)
 COLUMNS = ("NOTE", "PITCH", "NAME")
 COLUMN_TIPS = ("MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
                "Articulation name. Empty = the note is not in the map. +N — the name is on N more notes")
-# клик по заголовку столбца — порядок строк: NOTE / PITCH — все ноты по возрастанию, NAME — по группам инструментов
+# клик по заголовку столбца: по возрастанию → по убыванию → по группам инструментов (вид по умолчанию)
 SORT_TIPS = ("Click to list notes in ascending order", "Click to list notes in ascending order",
              "Click to group notes by instrument")
 
@@ -147,7 +147,7 @@ class NoteTableModel(QAbstractTableModel):
         self.read_only = True
         self._groups: dict[str, list[int]] = {}
         self.rows: list[LayoutRow] = []
-        self.flat = False  # True — все ноты по возрастанию без заголовков групп
+        self.sort: tuple[int, bool] | None = None  # (колонка, по убыванию); None — по группам инструментов
         self._note_rows: dict[int, int] = {}
         self._members: dict[str | None, list[int]] = {}
 
@@ -164,16 +164,28 @@ class NoteTableModel(QAbstractTableModel):
         self._layout()
         self.endResetModel()
 
-    def set_flat(self, flat: bool) -> None:
-        if flat != self.flat:
-            self.flat = flat
+    def set_sort(self, sort: tuple[int, bool] | None) -> None:
+        """Сортировка (колонка, по убыванию) — все ноты без заголовков групп; None — по группам инструментов."""
+        if sort != self.sort:
+            self.sort = sort
             self.relayout()
+
+    def _sorted_notes(self) -> list[int]:
+        """Ноты 0–127 по колонке сортировки. NOTE и PITCH — по номеру (высота растёт вместе с номером); NAME —
+        по имени (без учёта регистра), равные — по номеру; ноты без имени — всегда в конце."""
+        col, desc = self.sort
+        notes = list(range(128))
+        if col != COL_NAME:
+            return notes[::-1] if desc else notes
+        names = self.map.names
+        named = sorted((n for n in notes if n in names), key=lambda n: (normalize_name(names[n]), n), reverse=desc)
+        return named + [n for n in notes if n not in names]
 
     def _layout(self) -> None:
         if self.map is None:
             self.rows = []
-        elif self.flat:
-            self.rows = [LayoutRow(None, n) for n in range(128)]
+        elif self.sort is not None:
+            self.rows = [LayoutRow(None, n) for n in self._sorted_notes()]
         else:
             self.rows = group_rows(self.map.names, list(range(128)))
         self._note_rows = {r.note: i for i, r in enumerate(self.rows) if not r.is_header}
@@ -571,8 +583,7 @@ class MapsPage(QWidget):
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
         header.setSectionsClickable(True)
-        header.setSortIndicatorShown(True)
-        header.setSortIndicator(COL_NAME, Qt.SortOrder.AscendingOrder)
+        header.setSortIndicatorShown(False)  # по умолчанию — группы, без стрелки
         header.sectionClicked.connect(self.sort_by)
         for col, width in ((COL_NOTE, 64), (COL_PITCH, 64)):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
@@ -756,13 +767,21 @@ class MapsPage(QWidget):
         self._update_state()
 
     def sort_by(self, column: int) -> None:
-        """Клик по заголовку: NOTE / PITCH — все ноты по возрастанию, NAME — по группам инструментов."""
-        flat = column != COL_NAME
-        self.table.horizontalHeader().setSortIndicator(COL_NOTE if flat else COL_NAME, Qt.SortOrder.AscendingOrder)
-        if flat == self.model.flat:
-            return
+        """Клик по заголовку колонки: по возрастанию → по убыванию → снова по группам инструментов (вид по
+        умолчанию); клик по другой колонке — сразу по возрастанию. Стрелка заголовка показывает состояние."""
+        sort = self.model.sort
+        if sort is None or sort[0] != column:
+            sort = (column, False)
+        elif not sort[1]:
+            sort = (column, True)
+        else:
+            sort = None
+        header = self.table.horizontalHeader()
+        header.setSortIndicatorShown(sort is not None)
+        if sort is not None:
+            header.setSortIndicator(sort[0], Qt.SortOrder.DescendingOrder if sort[1] else Qt.SortOrder.AscendingOrder)
         note = self._current_note()
-        self.model.set_flat(flat)
+        self.model.set_sort(sort)
         self.proxy.set_filter(self.named_only.isChecked(), self.search.text())
         if note is not None:
             self._reveal_note(note)

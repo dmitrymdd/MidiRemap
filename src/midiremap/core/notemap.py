@@ -46,24 +46,43 @@ def normalize_name(s: str) -> str:
     return " ".join(s.casefold().split())
 
 
-# Хвост «(артикуляция)» в конце имени: «Kick (hit)» -> «Kick».
-_TRAILING_PARENS = re.compile(r"^(.*?)\s*\([^()]*\)\s*$")
+# Категория по ключевым словам для имён без «Инструмент:» (General MIDI, Guitar Pro 8). ПОРЯДОК ВАЖЕН: первая
+# совпавшая категория выигрывает — «bass drum» раньше барабанов, «ride bell» — Ride (Ride раньше перкуссии),
+# «Chinese Cymbal» — China (раньше Cymbal), «Hi Bongo» — не Hi-Hat (нужно «hat»).
+_KEYWORD_GROUPS: tuple[tuple[str, re.Pattern], ...] = tuple((label, re.compile(rx)) for label, rx in (
+    ("Kick", r"\bkick|\bbass ?drum|\bgrancassa"),
+    ("Hi-Hat", r"\bhi-?hat|\bhi hat|\bhihat|\bhats?\b"),
+    ("Snare", r"\bsnare|\bside ?stick|\brim ?shot|\brim\b"),
+    ("Toms", r"\btoms?\b|floor ?tom|rack ?tom"),
+    ("Ride", r"\bride\b"),
+    ("Crash", r"\bcrash"),
+    ("China", r"\bchina\b|\bchinese\b"),
+    ("Splash", r"\bsplash"),
+    ("Cymbal", r"\bcymbal|\bpiatti\b"),
+    ("Percussion", r"\bclap|tambourine|cowbell|\bconga|\bbongo|\bshaker|\bcabasa|\bmaraca|\bagogo|\btimbale"
+                   r"|\bguiro|\bclaves?\b|\bwhistle|wood ?block|\btriangle|vibraslap|\bcuica|castanet|\bsurdo"
+                   r"|bell tree|jingle|tinkle|\bgolpe|\bcajon|\bchimes?\b"),
+))
+
+
+def keyword_group(name: str) -> str | None:
+    """Категория имени по ключевым словам (Kick, Hi-Hat, Snare, Toms, Ride, Crash, China, Splash, Cymbal,
+    Percussion); None — не узнали (показывается как «Other»)."""
+    low = name.casefold()
+    return next((label for label, rx in _KEYWORD_GROUPS if rx.search(low)), None)
 
 
 def instrument_group(name: str) -> str | None:
     """Инструмент из имени ноты — ТОЛЬКО для показа строк под заголовками (не для сопоставления и подсказок).
 
-    «Инструмент: артикуляция» -> текст до первого «:» (так названы все ноты шаблонов SD3 и EZD3);
-    «Инструмент (артикуляция)» -> текст до завершающей скобки (все ноты Guitar Pro 8);
-    иначе None (у имён General MIDI структуры нет — плоский список). Группы сравнивать через normalize_name.
+    «Инструмент: артикуляция» -> текст до первого «:» (так названы все ноты шаблонов SD3 и EZD3) — в приоритете;
+    иначе — категория по ключевым словам (keyword_group: General MIDI, Guitar Pro 8 «Kick (hit)»); не узнали — None
+    (группа «Other»). Группы сравнивать через normalize_name.
     """
     head, colon, _ = name.partition(":")
-    if colon:
-        return head.strip() or None
-    m = _TRAILING_PARENS.match(name.strip())
-    if m:
-        return m.group(1).strip() or None
-    return None
+    if colon and head.strip():
+        return head.strip()
+    return keyword_group(name)
 
 
 # --- артикуляции и основные ноты ---

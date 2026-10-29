@@ -3,7 +3,7 @@ import pytest
 
 from midiremap.core.notemap import NoteMap
 from midiremap.core.profile import (
-    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
+    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, match_by_number, number_matches,
 )
 
 SRC = NoteMap("src", {33: "Snare: Edge", 38: "Snare: Center", 39: "Snare: Center", 40: "Snare: Rim",
@@ -97,3 +97,24 @@ def test_group_drop_connects_matching_numbers_only():
     assert 33 not in out.rules and 70 not in out.rules
     assert p.rules[40] == Rule.delete()  # вход не меняется
     assert connect_same_numbers(p, [41, 43], group)[1] == []
+
+
+def test_number_matches_only_notes_without_rule_with_number_in_target():
+    # 33, 39, 70 — нет в цели; 38 — зачёркнута; 40 — уже подключена; 66, 41, 43 — без правила и есть в цели
+    p = profile({38: Rule.delete(), 40: Rule.map_to(41)})
+    assert number_matches(p) == [41, 43, 66]
+    out, done = match_by_number(p)
+    assert done == [41, 43, 66]
+    assert out.rules == {38: Rule.delete(), 40: Rule.map_to(41), 41: Rule.map_to(41), 43: Rule.map_to(43),
+                         66: Rule.map_to(66)}
+    assert p.rules == {38: Rule.delete(), 40: Rule.map_to(41)}  # исходный профиль не меняется
+    assert match_by_number(out)[1] == []  # повторно — нечего
+
+
+def test_match_by_number_without_maps_and_in_reverse():
+    assert number_matches(RemapProfile("p", None, TGT)) == [] and match_by_number(RemapProfile("p", SRC, None))[1] == []
+    # обратное направление — на reversed(): ноты цели без обратного правила, чей номер есть в исходной карте
+    p = profile({38: Rule.map_to(38)})
+    q = p.reversed()
+    assert 38 not in number_matches(q) and number_matches(q) == [n for n in sorted(TGT.names)
+                                                                   if n in SRC.names and n not in q.rules]

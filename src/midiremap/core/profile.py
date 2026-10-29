@@ -560,6 +560,23 @@ def connect_same_numbers(p: RemapProfile, notes: list[int], targets: list[int]) 
     return out, done
 
 
+def number_matches(p: RemapProfile) -> list[int]:
+    """«Match by number»: ноты исходной карты БЕЗ правила (не зачёркнутые, не подключённые), чей номер есть в
+    целевой карте (по возрастанию). Для обратного направления — вызывать на p.reversed()."""
+    if p.source_map is None or p.target_map is None:
+        return []
+    return [n for n in sorted(p.source_map.names) if n not in p.rules and n in p.target_map.names]
+
+
+def match_by_number(p: RemapProfile) -> tuple[RemapProfile, list[int]]:
+    """n → n для всех number_matches(p) (как двойной клик по строке Unassigned: connect_same_numbers).
+    Возвращает новый профиль и подключённые ноты."""
+    notes = number_matches(p)
+    if not notes:
+        return copy.deepcopy(p), []
+    return connect_same_numbers(p, notes, list(p.target_map.names))
+
+
 def legacy_profile() -> RemapProfile:
     """Схема GM → SD3 из первой версии программы: NOTE_MAP + явное удаление всех остальных нот.
 

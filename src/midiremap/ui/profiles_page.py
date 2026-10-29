@@ -1,9 +1,10 @@
-"""Менеджер и редактор профилей ремапа (PySide6). Раскладка: одна строка заголовка —
-статус … [→] [профиль ▾] [⋯] (комбобокс — по центру) … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py):
-пул Unassigned и сцена; над колонками сцены — карты сторон «from» и «to», над «to» справа — панель подсказок.
-Всё остальное по высоте — сцене. Статус — отклик на последнее действие (не счётчик).
+"""Менеджер и редактор профилей ремапа (PySide6). Раскладка — две строки над видом «кабелями» (cable_view.py):
+[профиль ▾] [New] [Duplicate] [Rename] [Delete] … статус [Revert] [Save]; над колонками — «Unassigned» и
+«Match by number» над пулом | [карта «from» ▾] [→/←] [карта «to» ▾] над сценой (кнопка направления — по центру
+промежутка для кабелей), над «to» справа — панель подсказок. Статус — отклик на последнее действие (не счётчик),
+гаснет через ~4 с.
 
-Направление: одна кнопка — показывает текущее (→ / ←, цветом направления), клик переключает; карты направления
+Направление: кнопка показывает текущее (→ / ←, цветом направления), клик переключает; карты направления
 словами — в подсказке. Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
 на нём (assign_plan, assign_to_articulation, with_write_to, connect_same_numbers, apply_suggested), результат
 пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
@@ -30,10 +31,10 @@ from __future__ import annotations
 import copy
 import functools
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import QEvent, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -42,7 +43,7 @@ from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
     FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
-    keep_existing_primary, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
+    keep_existing_primary, match_by_number, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
@@ -54,7 +55,6 @@ from .settings import ui_settings
 from .theme import TOKENS, repolish
 
 SOURCE, TARGET = "source", "target"
-REFRESH_TIP = "Refresh layout"
 
 ID_ROLE = Qt.ItemDataRole.UserRole           # ID профиля в хранилище (None — профиль не читается)
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3     # имя профиля без пометки «•»
@@ -62,9 +62,12 @@ SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 4  # «карты · N rules» сох
 
 UNDO_LIMIT = 200
 UNDO_KEYS, REDO_KEYS = ("Ctrl+Z",), ("Ctrl+Y", "Ctrl+Shift+Z")
-UNDO_TIP = "Undo (Ctrl+Z) · Redo (Ctrl+Y)"
+UNDO_TIP = "Undo: Ctrl+Z · Redo: Ctrl+Y or Ctrl+Shift+Z"
+STATUS_MS, STATUS_FADE_MS = 4000, 600  # статус гаснет через ~4 с после последнего сообщения
+DIRECTION_W = 44  # кнопка направления между картами, px
+MATCH_TIP = ("Connect every unassigned note to the same number in the other map, if it is there\n"
+             "(struck-through and connected notes are left alone; one undo step)")
 
-MORE_TIP = "New, rename, duplicate or delete a profile"
 SOURCE_TIP = "Source map: the layout the MIDI file was made for (e.g. Guitar Pro 8 export)\nClick to choose a map"
 TARGET_TIP = "Target map: the layout of the plugin the converted file is for\nClick to choose a map"
 
@@ -130,28 +133,6 @@ def profile_summary(p: RemapProfile, direction: str = FORWARD) -> str:
 def _pair_key(p: RemapProfile) -> tuple:
     """Пара карт профиля (для «скрыть подсказки для этих карт»)."""
     return tuple((m.name, tuple(sorted(m.names.items()))) for m in (p.source_map, p.target_map))
-
-
-class DotsButton(QPushButton):
-    """Кнопка «⋯» (меню действий с профилем): три точки рисуются сами — глиф шрифта на 100 % слишком мелкий.
-    Цвет — как у текста кнопок-иконок (↻): приглушённый, при наведении — обычный."""
-    DOT_R, DOT_GAP = 1.8, 6.0  # радиус точки и шаг между центрами, px
-
-    def __init__(self, parent=None) -> None:
-        super().__init__("", parent)
-        self.setObjectName("iconButton")
-        self.setMinimumWidth(40)
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        token = "text_faint" if not self.isEnabled() else "text" if self.underMouse() or self.isDown() else "text_muted"
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(TOKENS[token]))
-        c = QRectF(self.rect()).center()
-        for k in (-1, 0, 1):
-            p.drawEllipse(QPointF(c.x() + k * self.DOT_GAP, c.y()), self.DOT_R, self.DOT_R)
 
 
 class UnassignedDialog(QDialog):
@@ -257,61 +238,47 @@ class ProfilesPage(QWidget):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        # строка заголовка: статус … [→] [профиль ▾] [⋯] … [↻] [Revert] [Save]
+        # верхняя строка: [профиль ▾] [New] [Duplicate] [Rename] [Delete] … статус [Revert] [Save]
         self.combo = ComboBox()
         self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo.setMinimumContentsLength(COMBO_CHARS)
         self.combo.currentIndexChanged.connect(self._on_combo_changed)
-        self.more_btn = DotsButton()
-        self.more_btn.setToolTip(MORE_TIP)
-        more = QMenu(self.more_btn)
-        self.new_action = more.addAction("New", self.new_profile)
-        self.rename_action = more.addAction("Rename", self.rename)
-        self.duplicate_action = more.addAction("Duplicate", self.duplicate)
-        more.addSeparator()
-        self.delete_action = more.addAction("Delete", self.delete)
-        self.more_btn.setMenu(more)
-        self.direction_btn = QPushButton()
-        self.direction_btn.setObjectName("direction")
-        self.direction_btn.clicked.connect(self.toggle_direction)
+        self.new_btn, self.duplicate_btn, self.rename_btn, self.delete_btn = (
+            self._button(text, tip, slot) for text, tip, slot in (
+                ("New", "Create an empty profile", self.new_profile),
+                ("Duplicate", "Copy this profile under a new name", self.duplicate),
+                ("Rename", "Rename this profile", self.rename),
+                ("Delete", "Delete this profile", self.delete)))
         self.status = QLabel()
         self.status.setObjectName("status")
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # длинный — обрезается
-        self.refresh_btn = QPushButton("↻")
-        self.refresh_btn.setToolTip(REFRESH_TIP)
-        self.refresh_btn.setObjectName("iconButton")
-        self.refresh_btn.clicked.connect(lambda: self.cables.resort())
-        self.revert_btn = QPushButton("Revert")
-        self.revert_btn.setToolTip(f"Discard unsaved changes\n{UNDO_TIP}")
-        self.revert_btn.clicked.connect(self.revert)
-        self.save_btn = QPushButton("Save")
+        # статус — отклик на действие: гаснет через STATUS_MS после последнего сообщения
+        self._status_fx = QGraphicsOpacityEffect(self.status)
+        self.status.setGraphicsEffect(self._status_fx)
+        self._status_fade = QPropertyAnimation(self._status_fx, b"opacity", self)
+        self._status_fade.setDuration(STATUS_FADE_MS)
+        self._status_fade.setEndValue(0.0)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(STATUS_MS)
+        self._status_timer.timeout.connect(self._status_fade.start)
+        self.revert_btn = self._button("Revert", f"Discard unsaved changes\n{UNDO_TIP}", self.revert)
+        self.save_btn = self._button("Save", "Save the profile", self.save)
         self.save_btn.setObjectName("primary")
-        self.save_btn.clicked.connect(self.save)
-        # три колонки: левая и правая — поровну (stretch), в средней — [→] [профиль] [⋯]; кнопка направления и «⋯»
-        # одной ширины — комбобокс ровно по центру строки
-        left, center, right = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
-        for box in (left, center, right):
-            box.setSpacing(6)
-        left.addWidget(self.status, stretch=1)
-        left.addSpacing(10)
-        for w in (self.direction_btn, self.combo, self.more_btn):
-            center.addWidget(w)
-        right.addSpacing(10)
-        right.addStretch(1)
-        right.addWidget(self.refresh_btn)
-        right.addWidget(self.revert_btn)
-        right.addWidget(self.save_btn)
-        head = QGridLayout()
+        head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
-        head.setHorizontalSpacing(0)
-        head.addLayout(left, 0, 0)
-        head.addLayout(center, 0, 1)
-        head.addLayout(right, 0, 2)
-        head.setColumnStretch(0, 1)
-        head.setColumnStretch(2, 1)
+        head.setSpacing(6)
+        for w in (self.combo, self.new_btn, self.duplicate_btn, self.rename_btn, self.delete_btn):
+            head.addWidget(w)
+        head.addSpacing(16)
+        head.addWidget(self.status, stretch=1)
+        head.addSpacing(10)
+        head.addWidget(self.revert_btn)
+        head.addWidget(self.save_btn)
         root.addLayout(head)
-        self.header_controls = (self.direction_btn, self.combo, self.more_btn, self.refresh_btn, self.revert_btn,
-                                self.save_btn)
+        self.header_controls = (self.combo, self.new_btn, self.duplicate_btn, self.rename_btn, self.delete_btn,
+                                self.revert_btn, self.save_btn)
 
         self.cables = CableEditor(self.settings)
         self.cables.connect_requested.connect(self.connect_to)
@@ -323,6 +290,14 @@ class ProfilesPage(QWidget):
         self.cables.same_number_requested.connect(self.connect_same_number)
         self.cables.note_drop_requested.connect(self.assign_note)
         root.addWidget(self.cables, stretch=1)
+
+        # строка над колонками: «Unassigned» + Match by number | [карта «from» ▾] [→/←] [карта «to» ▾]
+        self.match_btn = self._button("Match by number", MATCH_TIP, self.match_by_number)
+        self.match_btn.setObjectName("link")
+        self.cables.pool_head.addWidget(self.match_btn)
+        self.direction_btn = self._button("", "", self.toggle_direction)
+        self.direction_btn.setObjectName("direction")
+        self.cables.gap_head.addWidget(self.direction_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # над колонками сцены — карты: над «from» — карта стороны источника направления, над «to» — цели
         # (в ← — наоборот: кнопки остаются на местах, меняется карта, которую они выбирают — source_btn/target_btn)
@@ -359,10 +334,16 @@ class ProfilesPage(QWidget):
         self.cables.to_head.addWidget(self.suggest_bar)
         self.cables.to_slot.installEventFilter(self)  # ширина колонки «to» — уместить панель подсказок
 
-        context = Qt.ShortcutContext.WidgetWithChildrenShortcut
-        for keys, slot in ((UNDO_KEYS, self.undo), (REDO_KEYS, self.redo)):
-            for k in keys:
-                QShortcut(QKeySequence(k), self, activated=slot, context=context)
+        # отмена/повтор — на всё окно, пока видна вкладка Profiles (фокус может быть где угодно: комбобокс, кнопки,
+        # вкладки); на других вкладках выключены (showEvent / hideEvent)
+        self._shortcuts = [QShortcut(QKeySequence(k), self, activated=slot, context=Qt.ShortcutContext.WindowShortcut)
+                           for keys, slot in ((UNDO_KEYS, self.undo), (REDO_KEYS, self.redo)) for k in keys]
+
+    def _button(self, text: str, tip: str, slot) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setToolTip(tip)
+        btn.clicked.connect(lambda _=False: slot())
+        return btn
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.cables.to_slot and event.type() == QEvent.Type.Resize:
@@ -371,12 +352,18 @@ class ProfilesPage(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        for sc in self._shortcuts:
+            sc.setEnabled(True)
         self._fit_header()
 
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        for sc in self._shortcuts:
+            sc.setEnabled(False)
+
     def _fit_header(self) -> None:
-        """Контролы строки заголовка — одной высоты (по самому высокому); «⋯» и кнопка направления — размером
-        с ↻ (одной ширины — комбобокс между ними по центру). Считается при показе: размеры зависят от стиля окна,
-        а при создании страницы он ещё не применён."""
+        """Контролы верхней строки — одной высоты (по самому высокому); кнопка направления — по высоте кнопок
+        карт. Считается при показе: размеры зависят от стиля окна, а при создании страницы он ещё не применён."""
         for w in self.header_controls:
             w.setMinimumHeight(0)
             w.setMaximumHeight(16777215)
@@ -384,8 +371,7 @@ class ProfilesPage(QWidget):
         height = max(w.sizeHint().height() for w in self.header_controls)
         for w in self.header_controls:
             w.setFixedHeight(height)
-        for w in (self.more_btn, self.direction_btn):
-            w.setFixedWidth(self.refresh_btn.sizeHint().width())
+        self.direction_btn.setFixedSize(DIRECTION_W, self.from_btn.sizeHint().height())
 
     # --- диалоги (тесты подменяют эти методы) ---
 
@@ -602,7 +588,7 @@ class ProfilesPage(QWidget):
         w.reverse_rules = profile.reverse_rules
         self._changed()
         if maps_changed:
-            self.cables.resort()
+            self.cables.refresh()
 
     def undo(self) -> bool:
         """Отменить шаг: сначала вид — на направление, в котором он сделан (не шаг), затем снимок «до»."""
@@ -727,9 +713,9 @@ class ProfilesPage(QWidget):
         self._mark_dirty_item()
         self.save_btn.setEnabled(dirty)
         self.revert_btn.setEnabled(dirty)
-        for action in (self.duplicate_action, self.rename_action, self.delete_action):
-            action.setEnabled(has)
-        for btn in (self.from_btn, self.to_btn, self.refresh_btn):
+        for btn in (self.duplicate_btn, self.rename_btn, self.delete_btn, self.match_btn):
+            btn.setEnabled(has)
+        for btn in (self.from_btn, self.to_btn):
             btn.setEnabled(has)
         self._update_suggest_bar()
         self._update_direction()
@@ -820,7 +806,7 @@ class ProfilesPage(QWidget):
         self._dismissed.add((_pair_key(self.work), self.direction))
         self._suggest[self.direction] = {}
         self._sync_suggestions()
-        self.cables.resort()
+        self.cables.refresh()
         self._update_state()
 
     # --- карты профиля ---
@@ -867,7 +853,7 @@ class ProfilesPage(QWidget):
         self.work.reverse_rules = None  # обратные правила по нотам прежней карты не переживают смену — снова выводятся
         self._compute_suggestions()
         self._sync_suggestions()
-        self.cables.resort()  # смена карты — пересортировка
+        self.cables.refresh()
         self._update_state()
         self.set_status(f"{what.capitalize()} map: {map_summary(m)}.")
         return True
@@ -1008,20 +994,18 @@ class ProfilesPage(QWidget):
         self.work.rules, self.work.reverse_rules = new.rules, new.reverse_rules
         self._reverse_done = True  # обратные правила уже согласованы ядром (постусловие — основной кабель)
         self._changed()
-        self.cables.bring_primary_first(dst)  # явное действие над связкой — основной кабель в ней первым
         self.set_status(status)
         return True
 
     @_undoable
     def connect_same_number(self, notes: list[int]) -> int:
         """Двойной клик по строке Unassigned: каждая нота — n -> n на тот же номер другой карты, если он там есть
-        (core connect_same_numbers); остальные остаются в пуле. Номер уже занят — новый кабель НЕОСНОВНОЙ: в → прежние
-        обратные правила номера фиксируются (keep_existing_primary — иначе выведение сделало бы основным n -> n),
-        в ← прямые правила не трогаются — неосновной сам собой. Один шаг отмены; сцена прокручивается к строке."""
+        (core connect_same_numbers); остальные остаются в пуле. Номер уже занят — новый кабель НЕОСНОВНОЙ
+        (_put_same_numbers). Один шаг отмены; сцена прокручивается к строке."""
         if self.work is None or not notes:
             return 0
         q = self._oriented()
-        side = DIRECTION_SIDES[REVERSE if self.direction == FORWARD else FORWARD]  # карта другой стороны
+        side = self._other_side()
         wanted = sorted(set(notes))
         numbers = list(q.target_map.names) if q.target_map is not None else []
         new, done = connect_same_numbers(q, wanted, numbers)
@@ -1030,6 +1014,35 @@ class ProfilesPage(QWidget):
             self.set_status(f"No note{'' if len(missing) == 1 else 's'} {', '.join(map(str, missing))} "
                             f"in the {side} map")
             return 0
+        self._put_same_numbers(new, done)
+        self.cables.reveal(done[0])
+        text = f"{len(done)} note{'' if len(done) == 1 else 's'} connected to the same number"
+        if missing:
+            text += f" · not in the {side} map: {', '.join(map(str, missing))}"
+        self.set_status(text)
+        return len(done)
+
+    @_undoable
+    def match_by_number(self) -> int:
+        """«Match by number» (текущее направление): все ноты пула без правила, чей номер есть в карте другой
+        стороны, — n -> n (core match_by_number; как двойной клик по каждой). Один шаг отмены."""
+        if self.work is None:
+            return 0
+        new, done = match_by_number(self._oriented())
+        if not done:
+            self.set_status("No notes match by number")
+            return 0
+        self._put_same_numbers(new, done)
+        self.set_status(f"Matched {len(done)} note{'' if len(done) == 1 else 's'} by number", "ok")
+        return len(done)
+
+    def _other_side(self) -> str:
+        return DIRECTION_SIDES[REVERSE if self.direction == FORWARD else FORWARD]  # карта другой стороны
+
+    def _put_same_numbers(self, new: RemapProfile, done: list[int]) -> None:
+        """Результат n -> n (ориентированного профиля) — в рабочую копию. Номер уже занят — новый кабель
+        НЕОСНОВНОЙ: в → прежние обратные правила номера фиксируются (keep_existing_primary — иначе выведение
+        сделало бы основным n -> n), в ← прямые правила не трогаются — неосновной сам собой."""
         if self.direction == FORWARD:
             new.reverse_rules = sync_reverse(self.work, new)
             keep_existing_primary(self.work, new, done)
@@ -1038,12 +1051,6 @@ class ProfilesPage(QWidget):
         else:
             self._put(new)
         self._changed()
-        self.cables.reveal(done[0])
-        text = f"{len(done)} note{'' if len(done) == 1 else 's'} connected to the same number"
-        if missing:
-            text += f" · not in the {side} map: {', '.join(map(str, missing))}"
-        self.set_status(text)
-        return len(done)
 
     # --- действия со списком ---
 
@@ -1139,5 +1146,12 @@ class ProfilesPage(QWidget):
         self.set_status(f'Deleted "{name}".', "ok")
 
     def set_status(self, text: str, state: str = "") -> None:
+        """Отклик на действие (не счётчик): виден сразу, гаснет через STATUS_MS после последнего сообщения."""
         self.status.setText(text)
         repolish(self.status, "state", state)
+        self._status_fade.stop()
+        self._status_fx.setOpacity(1.0)
+        if text:
+            self._status_timer.start()
+        else:
+            self._status_timer.stop()

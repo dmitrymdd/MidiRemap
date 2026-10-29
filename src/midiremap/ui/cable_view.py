@@ -35,9 +35,10 @@ write_to_requested / primary_requested) — правила меняет ядро
 граница пула — QSplitter; ширины — в QSettings (ширина пула в px, колонки — доли ширины сцены). Имя или подпись
 не помещается — полностью в подсказке.
 
-Пересортировка: set_profile(), resort() (кнопка ↻), режим группы цели.
-После правок — refresh(): порядок заморожен (см. cable_layout). Сворачивание в пуле и раскрытие алиасов
-перестраивают только свою колонку (порядок тот же).
+После каждой правки — refresh(): раскладка строится заново (порядок не замораживается: снятая с кабеля нота
+сразу в своей группе пула). Чтобы вид не прыгал, прокрутка каждой колонки держится за якорь — строку под курсором
+или верхнюю видимую (у сцены — строки и заголовки цели). Сворачивание в пуле и раскрытие алиасов перестраивают
+только свою колонку.
 """
 from __future__ import annotations
 
@@ -46,10 +47,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPainterPathStroker, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import (
     QApplication, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QMenu,
-    QSplitter, QVBoxLayout, QWidget,
+    QSizePolicy, QSplitter, QVBoxLayout, QWidget,
 )
 
 from ..core.notemap import primary_note
@@ -57,7 +58,7 @@ from ..core.pitch import pitch_name
 from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, validate_profile
 from .cable_layout import (
     DELETE, KEEP, MIXED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header,
-    OrderSnapshot, SourceRow, TargetRow, build_layout, primary_first, slot_key,
+    SourceRow, TargetRow, build_layout,
 )
 from .theme import TOKENS
 
@@ -77,15 +78,14 @@ CABLE_THIN_W = CABLE_W / 2         # прочие кабели; превью о�
 CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
-STALE = 0.45        # прозрачность строки без кабеля (до пересортировки)
-POOL_WIDTH = 240    # начальная ширина пула
+POOL_WIDTH = 310    # начальная ширина пула
 SCENE_MIN = 460     # минимальная ширина сцены, px
 MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колонки и промежутка для кабелей
 GRIP = 6            # ширина зоны захвата границы колонок, px
 SUGGESTED = 0.7     # непрозрачность пунктирного кабеля подсказки
 # ключи QSettings: ширина пула (px) и доли ширины сцены колонок
 POOL_KEY, COLUMNS_KEY = "cables/unassigned_width", "cables/scene_columns"
-POOL_MIN = 180      # минимальная ширина пула
+POOL_MIN = 200      # минимальная ширина пула
 HEAD_H = 34         # высота строки-заголовка над колонками
 
 # цвет кабелей направления (кабели, точки, обводка цели, превью): обычный и под курсором
@@ -113,7 +113,6 @@ STATE_TIPS = {
 REVERSE_UNASSIGNED_TIP = "No rule in this direction: kept on the same number when converting"
 PRIMARY_HINT = "Double-click to make primary"
 SAME_NUMBER_HINT = "Double-click to connect to the same number"
-STALE_TIP = "Its cable was removed. Refresh the layout to return it to the pool"
 NUMBER_DROP_HINT = "Drop on a number to connect to that note"
 ROW_HINT = "Drag onto a target to map · Ctrl/Shift+click to select several · Right-click to delete or restore"
 CONNECTED_HINT = "Drag onto another target to remap · Right-click to remove the cable"
@@ -728,12 +727,16 @@ class CableEditor(QWidget):
         self.pool.handler = self.view.handler = self
         # над пулом — заголовок колонки; над сценой — слоты, выровненные по колонкам «from» и «to» (_place_heads)
         pool_head = QWidget()
+        pool_head.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # ширину пула задаёт не заголовок
         self.pool_title = QLabel(POOL_TITLE)
         self.pool_title.setObjectName("columnTitle")
-        _row_box(pool_head).addWidget(self.pool_title)
+        self.pool_head = _row_box(pool_head)  # страница добавляет кнопки справа от заголовка
+        self.pool_head.addWidget(self.pool_title)
+        self.pool_head.addStretch(1)
         self.scene_head = QWidget()
-        self.from_slot, self.to_slot = QWidget(self.scene_head), QWidget(self.scene_head)
-        self.from_head, self.to_head = _row_box(self.from_slot), _row_box(self.to_slot)
+        self.from_slot, self.gap_slot, self.to_slot = (QWidget(self.scene_head) for _ in range(3))
+        self.from_head, self.gap_head, self.to_head = (_row_box(w) for w in (self.from_slot, self.gap_slot,
+                                                                             self.to_slot))
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(8)
@@ -757,7 +760,6 @@ class CableEditor(QWidget):
         self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}  # свёрнутость — своя у направления
         self.selection: set[int] = set()                   # выделенные ноты (строки пула и колонки «from»)
         self.suggested: dict[int, str] = {}                # подсказки: нота без правила -> артикуляция цели
-        self.order: OrderSnapshot | None = None
         self.current: CableLayout | None = None  # последняя построенная раскладка
         # доли ширины сцены: колонка «from», промежуток для кабелей, колонка «to» (None — по умолчанию от ширины)
         self.columns: tuple[float, float, float] | None = _load_columns(settings)
@@ -771,6 +773,7 @@ class CableEditor(QWidget):
         self.pool_headers: dict[str, _HeaderItem] = {}           # заголовки пула по ключу
         self.scene_rows: list[_Row] = []
         self.target_items: dict[str, _Row] = {}                  # строки цели по slot
+        self.scene_headers: dict[str, _HeaderItem] = {}          # заголовки групп цели по ключу
         self.hovered: _CableItem | None = None
         self._issues: dict[int, list[str]] = {}  # нота -> тексты замечаний (подсказка строки)
         self._press: _Press | None = None
@@ -839,7 +842,7 @@ class CableEditor(QWidget):
         return SIDES[self.direction]
 
     def set_direction(self, direction: str) -> None:
-        """Сменить направление (с пересортировкой). Вид остаётся на той же группе инструментов: группа вверху
+        """Сменить направление. Вид остаётся на той же группе инструментов: группа вверху
         видимой части сцены (по normalize_name подписи) — после перестройки снова вверху; нет такой — к началу."""
         if direction == self.direction:
             return
@@ -847,7 +850,7 @@ class CableEditor(QWidget):
         self.cancel_drag()
         self.selection.clear()
         self.direction = direction
-        self.resort()
+        self._build(anchor=False)
         self._scroll_to_group(group)
 
     def _top_group(self) -> str | None:
@@ -866,8 +869,7 @@ class CableEditor(QWidget):
     # --- управление ---
 
     def set_profile(self, p: RemapProfile | None, reset_collapsed: bool = True, direction: str | None = None) -> None:
-        """Другой профиль (или тот же после сохранения/отката, смены карты) — пересортировать.
-        reset_collapsed — свёрнутость по умолчанию в обоих направлениях (открытие профиля);
+        """Другой профиль (или тот же после сохранения/отката, смены карты). reset_collapsed — свёрнутость по умолчанию в обоих направлениях (открытие профиля);
         direction — сразу в этом направлении (None — в текущем)."""
         self.cancel_drag()
         self.profile = p
@@ -876,14 +878,7 @@ class CableEditor(QWidget):
         self.selection.clear()
         if reset_collapsed:
             self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}
-        self.resort()
-
-    def bring_primary_first(self, dst: int) -> None:
-        """Связка напротив цели ноты dst (ориентированного профиля) — основной кабель первым: после двойного клика
-        по кабелю (явное действие над этой связкой); остальной порядок заморожен, как обычно."""
-        if self.order is None or self.shown is None:
-            return
-        self._build(primary_first(self.shown, self.order, slot_key(self.shown.target_map, dst)))
+        self._build(anchor=reset_collapsed is False)
 
     def reveal(self, note: int) -> None:
         """Строка ноты в сцене и номер её цели должны быть видны: минимальная прокрутка (уже видны — без
@@ -899,31 +894,27 @@ class CableEditor(QWidget):
         self.view.ensureVisible(rect, 0, ROW // 2)
 
     def set_suggestions(self, suggested: dict[int, str]) -> None:
-        """Подсказки для показа пунктиром (перестройка — refresh() или resort())."""
+        """Подсказки для показа пунктиром (перестройка — refresh())."""
         self.suggested = dict(suggested)
 
     def refresh(self) -> None:
-        """Правила изменились: порядок заморожен — строки без кабеля остаются на местах до пересортировки."""
-        self._build(self.order)
-
-    def resort(self) -> None:
-        self.order = None
-        self._build(None)
+        """Правила (или подсказки) изменились: раскладка заново, прокрутка — за якорь."""
+        self._build()
 
     def toggle_pool(self, key: str) -> None:
-        """Свернуть/развернуть блок или группу пула: перестраивается только пул (порядок тот же)."""
+        """Свернуть/развернуть группу пула: перестраивается только пул."""
         self.collapsed ^= {key}
-        self._build(self.order, scene=False)
+        self._build(scene=False)
 
     def toggle_target(self, key: str) -> None:
-        """Группа цели: «только подключённые» ↔ «все» (с пересортировкой)."""
+        """Группа цели: «только подключённые» ↔ «все»."""
         self.show_all ^= {key}
-        self.resort()
+        self._build()
 
     def toggle_alias(self, key: str, in_pool: bool) -> None:
-        """Раскрыть/свернуть алиасы: перестраивается только своя колонка (порядок тот же)."""
+        """Раскрыть/свернуть алиасы: перестраивается только своя колонка."""
         self.expanded ^= {key}
-        self._build(self.order, pool=in_pool, scene=not in_pool)
+        self._build(pool=in_pool, scene=not in_pool)
 
     def selected_notes(self) -> list[int]:
         return sorted(self.selection)
@@ -1230,7 +1221,7 @@ class CableEditor(QWidget):
             return
         self._spring_key = None
         self.show_all.add(key)
-        self._build(self.order, pool=False)  # порядок тот же: строки, которые тащат, не двигаются
+        self._build(pool=False)  # пул не трогаем: строки, которые тащат, не двигаются
         self._update_hover()
 
     def _tick(self) -> None:
@@ -1321,17 +1312,19 @@ class CableEditor(QWidget):
 
     # --- построение ---
 
-    def _build(self, snapshot: OrderSnapshot | None, *, pool: bool = True, scene: bool = True) -> None:
+    def _build(self, *, pool: bool = True, scene: bool = True, anchor: bool = True) -> None:
+        """Раскладка заново; pool / scene — какие колонки перерисовать; anchor — удержать прокрутку за якорь."""
         p = self.profile
         self.shown = p.oriented(self.direction) if p is not None else None
-        lay = build_layout(self.shown, self.collapsed, snapshot, self.show_all, self.expanded, self.suggested)
-        if self.current is not None:  # порядок тот же — нетронутая колонка остаётся как есть
+        lay = build_layout(self.shown, self.collapsed, show_all=self.show_all, expanded=self.expanded,
+                           suggested=self.suggested)
+        if self.current is not None:  # нетронутая колонка остаётся как есть
             if not pool:
                 lay.pool = self.current.pool
             if not scene:
                 lay.scene = self.current.scene
+        anchors = {v: self._anchors(v) if anchor else [] for v in (self.pool, self.view)}
         self.current = lay
-        self.order = lay.order
         self._issues = {}
         if p is not None:
             for i in validate_profile(p, self.direction):
@@ -1341,10 +1334,45 @@ class CableEditor(QWidget):
             self._drag.hover = None  # элементы сейчас пересоздадутся
         if pool:
             self._draw_pool()
+            self._restore_anchor(self.pool, anchors[self.pool])
         if scene:
             self._draw_scene()
+            self._restore_anchor(self.view, anchors[self.view])
         visible = {n for item in self.pool_rows + self.scene_rows for n in item.notes}
         self.set_selection(self.selection & visible)
+
+    # --- якорь прокрутки ---
+
+    def _anchor_items(self, view: _ColumnView) -> list[tuple[tuple, QRectF]]:
+        """Элементы, за которые держится прокрутка view (ключ, прямоугольник): в пуле — строки и заголовки групп,
+        в сцене — строки и заголовки цели (подключённые строки при правках переезжают, цели — нет)."""
+        if view is self.pool:
+            rows = [(("a", i.model.alias) if i.model.expanded else ("n", i.notes[0]), i.rect) for i in self.pool_rows]
+            return rows + [(("h", k), i.rect) for k, i in self.pool_headers.items()]
+        return ([(("t", k), i.rect) for k, i in self.target_items.items()]
+                + [(("h", k), i.rect) for k, i in self.scene_headers.items()])
+
+    def _anchors(self, view: _ColumnView) -> list[tuple[tuple, float]]:
+        """Якоря: элемент под курсором (или верхний видимый) и следующие за ним — ключ и смещение от верха
+        видимой части. После перестройки берётся первый уцелевший (строка могла уйти из пула)."""
+        items = sorted(self._anchor_items(view), key=lambda kr: kr[1].top())
+        if not items:
+            return []
+        top = view.verticalScrollBar().value()
+        vp = view.viewport()
+        cursor = vp.mapFromGlobal(QCursor.pos())
+        y = view.mapToScene(cursor).y() if vp.rect().contains(cursor) else top
+        start = next((i for i, (_, r) in enumerate(items) if r.bottom() > y), len(items))
+        return [(k, r.top() - top) for k, r in items[start:]]
+
+    def _restore_anchor(self, view: _ColumnView, anchors: list[tuple[tuple, float]]) -> None:
+        if not anchors:
+            return
+        now = dict(self._anchor_items(view))
+        for key, offset in anchors:
+            if key in now:
+                view.verticalScrollBar().setValue(round(now[key].top() - offset))
+                return
 
     def _draw_pool(self) -> None:
         lay = self.current
@@ -1387,8 +1415,8 @@ class CableEditor(QWidget):
     def _column_px(self, width: float) -> tuple[float, float, float]:
         """Ширины колонки «from», промежутка и колонки «to» в px при ширине сцены width."""
         avail = width - 2 * PAD
-        if self.columns is None:  # по умолчанию: промежуток ~22 %, колонки поровну
-            gap = min(220.0, max(90.0, width * 0.22))
+        if self.columns is None:  # по умолчанию: промежуток ~12 %, колонки поровну
+            gap = min(150.0, max(70.0, width * 0.12))
             return (avail - gap) / 2, gap, (avail - gap) / 2
         c2, gap, c3 = (f * avail for f in self.columns)
         gap = max(MIN_GAP, gap)
@@ -1443,12 +1471,15 @@ class CableEditor(QWidget):
         return PAD, PAD + c2 + gap, c2, c3
 
     def _place_heads(self) -> None:
-        """Слоты над сценой — ровно над колонками «from» и «to» (за их границами при перетаскивании)."""
+        """Слоты над сценой — ровно над колонками «from» и «to» и по центру промежутка между ними (за границами
+        колонок при перетаскивании). Слот промежутка не уже своего содержимого."""
         lx, rx, col2, col3 = self._scene_columns(self.view.width_px(SCENE_MIN))
         off = self.scene_head.mapFromGlobal(self.view.viewport().mapToGlobal(QPoint(0, 0))).x()
         height = self.scene_head.height()
         self.from_slot.setGeometry(round(off + lx), 0, round(col2), height)
         self.to_slot.setGeometry(round(off + rx), 0, round(col3), height)
+        gap = max(rx - lx - col2, self.gap_slot.sizeHint().width())
+        self.gap_slot.setGeometry(round(off + (lx + col2 + rx) / 2 - gap / 2), 0, round(gap), height)
 
     # --- полные имена в подсказках ---
 
@@ -1468,7 +1499,7 @@ class CableEditor(QWidget):
         """Колонка «from» (подключённые строки, точка справа) и колонка «to» (строки цели, точка слева)."""
         lay = self.current
         self.cable_items, self.source_items, self.scene_rows, self.target_items = [], {}, [], {}
-        self.suggestion_items = []
+        self.suggestion_items, self.scene_headers = [], {}
         self.hovered = None
         self._place_heads()
         if lay is None:
@@ -1487,7 +1518,9 @@ class CableEditor(QWidget):
             return QRectF(x, PAD + y * ROW, col2 if x == lx else col3, h * ROW)
 
         for h in sc.target_headers:
-            if h.key in self.show_all:
+            if not lay.placement.slots:  # кабелей нет — все группы раскрыты (клик ничего не скрывает)
+                tip = "All articulations shown until something is connected"
+            elif h.key in self.show_all:
                 tip = "All articulations shown. Click to show connected only"
             else:
                 tip = "Connected only. Click to show all articulations"
@@ -1497,6 +1530,7 @@ class CableEditor(QWidget):
                 tip += f"\n{TARGET_GROUP_HINT}"
             item = _HeaderItem(rect(rx, h.y), h, self.toggle_target, tip, self.tone)
             self._full_label(item, self.view)
+            self.scene_headers[h.key] = item
             scene.addItem(item)
         solid = {c.target.slot for c in sc.cables if not c.suggested}
         dashed = {c.target.slot for c in sc.cables if c.suggested} - solid
@@ -1511,8 +1545,6 @@ class CableEditor(QWidget):
             indent = INDENT if r.child else 0
             item = self._source_item(rect(lx, r.y).adjusted(indent, 0, 0, 0), r, SOURCE)
             self._full_name(item, self.view)
-            if r.stale:
-                item.setOpacity(STALE)
             self._register(item, self.source_items, self.scene_rows)
             scene.addItem(item)
         rows_by_y = {item.model.y: item for item in self.scene_rows}
@@ -1544,7 +1576,7 @@ class CableEditor(QWidget):
             if row.state == KEEP and tgt is not None:
                 tip += (f": {tgt.names[row.note]}" if row.note in tgt.names
                         else f" (no such note in the {self.sides[1]} map)")
-            tip += f"\n{STALE_TIP}" if row.stale else f"\n{ROW_HINT}"
+            tip += f"\n{ROW_HINT}"
             if row.block == UNASSIGNED and row.state != DELETE:
                 tip += f"\n{SAME_NUMBER_HINT}"
         if len(row.notes) > 1:

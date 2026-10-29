@@ -16,7 +16,7 @@ from midiremap.core.notenames import parse_notenames  # noqa: E402
 from midiremap.storage import Storage  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui.main_window import PAGE_MAPS, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.ui.maps_page import COL_NAME, COL_NOTE, COL_PITCH, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
 
@@ -322,9 +322,10 @@ def test_rows_grouped_by_instrument(window):
     h = page.proxy.index(0, 0)
     assert page.table.columnSpan(0, 0) == 3
     assert not page.proxy.flags(h) & Qt.ItemFlag.ItemIsSelectable
-    # General MIDI — плоский список
+    # General MIDI — группы по ключевым словам (префиксов нет)
     page.select(MapRef(TEMPLATE, "General MIDI"))
-    assert not page.model.grouped and len(page.model.rows) == 128
+    labels = [r.label for r in page.model.rows if r.is_header]
+    assert page.model.grouped and {"Kick", "Snare", "Toms", "Percussion"} <= set(labels)
 
 
 def test_renamed_note_moves_to_its_group_after_save(window):
@@ -339,19 +340,44 @@ def test_renamed_note_moves_to_its_group_after_save(window):
     assert m.rows[m.note_index(38, 0).row()].group == "cowbell"
 
 
-def test_note_table_sort_modes(window, app):
-    """Клик по NOTE / PITCH — все ноты по возрастанию без заголовков; по NAME — снова группы."""
+def test_note_table_sort_cycle_every_column(window, app):
+    """Клик по заголовку: по возрастанию → по убыванию → снова группы; стрелка показывает состояние."""
     page = window.maps_page
     page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
-    assert page.model.grouped and not page.model.flat
-    header = page.table.horizontalHeader()
-    page.table.setCurrentIndex(page.proxy.mapFromSource(page.model.note_index(38, COL_NAME)))
-    header.sectionClicked.emit(COL_NOTE)
-    assert page.model.flat and not page.model.grouped
-    notes = page.proxy.note_rows()
-    assert notes == sorted(notes) and notes == sorted(page.work.names)
-    assert header.sortIndicatorSection() == COL_NOTE
-    assert page.model.note_at(page.proxy.mapToSource(page.table.currentIndex()).row()) == 38  # выбор сохранён
+    m, header = page.model, page.table.horizontalHeader()
+    assert m.grouped and m.sort is None and not header.isSortIndicatorShown()
+    page.table.setCurrentIndex(page.proxy.mapFromSource(m.note_index(38, COL_NAME)))
+
+    def current():
+        return m.note_at(page.proxy.mapToSource(page.table.currentIndex()).row())
+
+    names = page.work.names
+    for col in (COL_NOTE, COL_PITCH):
+        header.sectionClicked.emit(col)
+        notes = page.proxy.note_rows()
+        assert m.sort == (col, False) and not m.grouped and notes == sorted(names)
+        assert header.isSortIndicatorShown() and header.sortIndicatorSection() == col
+        assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+        header.sectionClicked.emit(col)
+        assert m.sort == (col, True) and page.proxy.note_rows() == sorted(names, reverse=True)
+        assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder and current() == 38  # выбор сохранён
+        header.sectionClicked.emit(col)
+        assert m.sort is None and m.grouped and not header.isSortIndicatorShown()  # третий клик — группы
     header.sectionClicked.emit(COL_NAME)
-    assert page.model.grouped and header.sortIndicatorSection() == COL_NAME
-    assert page.model.note_at(page.proxy.mapToSource(page.table.currentIndex()).row()) == 38
+    by_name = sorted(names, key=lambda n: (names[n].casefold(), n))
+    assert m.sort == (COL_NAME, False) and page.proxy.note_rows() == by_name
+    header.sectionClicked.emit(COL_NAME)
+    assert page.proxy.note_rows() == by_name[::-1]
+    header.sectionClicked.emit(COL_NOTE)  # другая колонка — сразу по возрастанию
+    assert m.sort == (COL_NOTE, False)
+    header.sectionClicked.emit(COL_NOTE)
+    header.sectionClicked.emit(COL_NOTE)
+    assert m.grouped and current() == 38
+    # ноты без имени — в конце при любом направлении
+    page.named_only.setChecked(False)
+    header.sectionClicked.emit(COL_NAME)
+    header.sectionClicked.emit(COL_NAME)
+    rows = page.proxy.note_rows()
+    assert len(rows) == 128 and all(n not in names for n in rows[len(names):])
+
+

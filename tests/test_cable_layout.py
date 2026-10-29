@@ -8,8 +8,8 @@ from midiremap.core.notemap import NoteMap, articulations, normalize_name
 from midiremap.core.profile import RemapProfile, Rule
 from midiremap.templates import load_map_template
 from midiremap.ui.cable_layout import (
-    DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Header, OrderSnapshot, TargetRow, build_layout,
-    fresh_order, slot_key, update_order,
+    DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Header, Placement, TargetRow, build_layout,
+    placement, slot_key,
 )
 
 SRC = NoteMap("Src", {36: "Kick: Hit", 37: "Kick: Soft", 38: "Snare: Center", 40: "Snare: Rim",
@@ -57,7 +57,7 @@ def test_target_rows_from_real_template_match_articulations():
 
 
 def test_flat_target_without_groups():
-    gm = NoteMap("GM", {35: "Acoustic Bass Drum", 36: "Bass Drum 1"})
+    gm = NoteMap("Plain", {35: "Note A", 36: "Note B"})  # ни префикса, ни ключевых слов — без групп
     lay = build_layout(profile(src=None, tgt=gm), no_collapse())
     assert lay.scene.target_headers == [] and len(lay.scene.target_rows) == 2
 
@@ -145,30 +145,27 @@ def test_nothing_collapsed_by_default():
     assert rows_by_note(lay)[40].state == DELETE
 
 
-# --- замороженный порядок ---
+# --- раскладка заново после каждой правки ---
 
-def test_removed_cable_row_stays_in_place_until_resort():
+def test_removed_cable_row_returns_to_its_pool_group_immediately():
     p = profile({38: Rule.map_to(38), 40: Rule.map_to(38)})
     first = build_layout(p, no_collapse())
-    y40 = rows_by_note(first)[40].y
+    assert first.target_row("a:snare: center").height == 2
     p.rules[40] = Rule.delete()
-    lay = build_layout(p, no_collapse(), first.order)
+    lay = build_layout(p, no_collapse())
     row = rows_by_note(lay)[40]
-    assert row.y == y40 and row.block is None and not row.connected and row.state == DELETE
+    assert row.block == UNASSIGNED and row.state == DELETE and 40 in lay.header(POOL_PREFIX + "snare").notes
     assert {c.src for c in lay.scene.cables} == {38}
-    assert lay.target_row("a:snare: center").height == 2  # строка всё ещё напротив
-    resorted = build_layout(p, no_collapse(), None)
-    assert rows_by_note(resorted)[40].block == UNASSIGNED and rows_by_note(resorted)[40].state == DELETE
-    assert resorted.target_row("a:snare: center").height == 1
+    assert lay.target_row("a:snare: center").height == 1  # связка сразу короче
 
 
-def test_cleared_rule_row_stays_in_place():
+def test_cleared_rule_row_goes_back_to_pool():
     p = profile({38: Rule.map_to(38)})
-    first = build_layout(p, no_collapse())
+    build_layout(p, no_collapse())
     del p.rules[38]
-    lay = build_layout(p, no_collapse(), first.order)
-    assert rows_by_note(lay)[38].block is None and rows_by_note(lay)[38].state == UNASSIGNED
-    assert lay.order.place_of(38) == ("slot", "a:snare: center")
+    lay = build_layout(p, no_collapse())
+    assert rows_by_note(lay)[38].block == UNASSIGNED and lay.scene.source_rows == []
+    assert lay.placement.place_of(38) == ("pool", "")
 
 
 def test_newly_connected_row_moves_opposite_target_immediately():
@@ -176,48 +173,40 @@ def test_newly_connected_row_moves_opposite_target_immediately():
     first = build_layout(p, no_collapse())
     assert rows_by_note(first)[40].block == UNASSIGNED
     p.rules[40] = Rule.map_to(39)
-    lay = build_layout(p, no_collapse(), first.order)
+    lay = build_layout(p, no_collapse())
     row, tgt = rows_by_note(lay)[40], lay.target_row("a:snare: center")
     assert row.block is None and row.connected and row.y == tgt.y
-    # остальные неназначенные — в прежнем порядке
-    assert [n for n in first.order.pool if n != 40] == list(lay.order.pool)
+    # остальные неназначенные — в прежнем порядке (по группам и номерам)
+    assert [n for n in first.placement.pool if n != 40] == list(lay.placement.pool)
 
 
-def test_reconnected_row_moves_to_new_target_and_appends():
+def test_reconnected_row_moves_to_new_target_in_number_order():
     p = profile({36: Rule.map_to(38), 38: Rule.map_to(38), 40: Rule.map_to(42)})
-    first = build_layout(p, no_collapse())
+    build_layout(p, no_collapse())
     p.rules[36] = Rule.map_to(42)
-    lay = build_layout(p, no_collapse(), first.order)
-    assert lay.order.slots[slot_key(TGT, 42)] == (40, 36)  # новая связь — в конец
-    assert lay.order.slots[slot_key(TGT, 38)] == (38,)
+    lay = build_layout(p, no_collapse())
+    assert lay.placement.slots[slot_key(TGT, 42)] == (36, 40)  # основной (наименьшая) — первым
+    assert lay.placement.slots[slot_key(TGT, 38)] == (38,)
 
 
-def test_struck_note_stays_in_place_before_and_after_resort():
+def test_struck_note_stays_in_its_group_position():
     p = profile()
     first = build_layout(p, no_collapse())
     p.rules[38] = Rule.delete()
-    lay = build_layout(p, no_collapse(), first.order)
+    lay = build_layout(p, no_collapse())
     row = rows_by_note(lay)[38]
     assert row.block == UNASSIGNED and row.state == DELETE and row.y == rows_by_note(first)[38].y
-    resorted = build_layout(p, no_collapse())
-    assert rows_by_note(resorted)[38].y == row.y and resorted.order == first.order  # и после пересортировки
+    assert lay.placement == first.placement
 
 
-def test_order_is_stable_without_changes():
+def test_placement_is_deterministic_and_complete():
     p = profile({36: Rule.map_to(36), 38: Rule.keep()})
-    order = fresh_order(p)
-    assert update_order(p, order) == order
-    assert update_order(p, None) == order
-
-
-def test_stale_snapshot_is_tolerated():
-    p = profile({36: Rule.map_to(36)})
-    stale = OrderSnapshot((1, 2, 38), {"a:gone": (36, 3), "n:57": (40,)})
-    order = update_order(p, stale)
-    notes = [n for v in (order.pool, *order.slots.values()) for n in v]
+    assert placement(p) == placement(p) == build_layout(p).placement
+    pl = placement(p)
+    notes = [n for v in (pl.pool, *pl.slots.values()) for n in v]
     assert sorted(notes) == sorted(SRC.names)  # каждая нота ровно один раз, лишних нет
-    assert order.place_of(36) == ("slot", "a:kick: hit")
-    assert "n:57" not in order.slots  # 57 теперь есть в целевой карте
+    assert pl.place_of(36) == ("slot", "a:kick: hit") and pl.place_of(99) is None
+    assert isinstance(pl, Placement)
 
 
 def test_slot_keys_compare_names_normalized():
@@ -245,25 +234,21 @@ def test_scene_starts_at_top_regardless_of_pool():
     assert lay.pool.height == len(lay.pool.headers) + len(lay.pool.rows)
 
 
-def test_connecting_leaves_pool_and_removing_returns_after_resort():
+def test_connecting_leaves_pool_and_removing_returns_at_once():
     p = profile()
     first = build_layout(p, no_collapse())
     assert rows_by_note(first)[46].block == UNASSIGNED
     p.rules[46] = Rule.map_to(46)
-    lay = build_layout(p, no_collapse(), first.order)
+    lay = build_layout(p, no_collapse())
     assert 46 not in {r.note for r in lay.pool.rows}
     assert sum(h.count for h in lay.pool.headers) == len(SRC.names) - 1
     row = rows_by_note(lay)[46]
-    assert row.connected and not row.stale and row.y == lay.target_row("a:hat: open").y
-    # кабель убрали — строка в сцене на месте, «устаревшая»
+    assert row.connected and row.y == lay.target_row("a:hat: open").y
+    # кабель убрали — сразу обратно в пул, на прежнее место
     del p.rules[46]
-    lay2 = build_layout(p, no_collapse(), lay.order)
-    row = rows_by_note(lay2)[46]
-    assert row.stale and row.block is None and row.y == lay.source_row(46).y
-    assert 46 not in {r.note for r in lay2.pool.rows}
-    # пересортировка — обратно в пул
-    lay3 = build_layout(p, no_collapse(), None)
-    assert rows_by_note(lay3)[46].block == UNASSIGNED and lay3.scene.source_rows == []
+    lay2 = build_layout(p, no_collapse())
+    assert rows_by_note(lay2)[46].block == UNASSIGNED and lay2.scene.source_rows == []
+    assert rows_by_note(lay2)[46].y == rows_by_note(first)[46].y
 
 
 def test_pool_collapse_does_not_move_scene():
@@ -293,17 +278,30 @@ def test_target_groups_connected_only_by_default():
     assert [r.slot for r in lay.scene.target_rows] == ["a:hat: closed", "a:hat: open"]
 
 
-def test_target_row_stays_while_row_without_cable_is_opposite():
-    p = profile({42: Rule.map_to(42)})
-    first = build_layout(p, no_collapse())
+def test_target_row_hidden_once_its_cable_is_removed():
+    p = profile({42: Rule.map_to(42), 36: Rule.map_to(36)})
+    assert build_layout(p, no_collapse()).target_row("a:hat: closed") is not None
     del p.rules[42]
-    lay = build_layout(p, no_collapse(), first.order)
-    assert lay.target_row("a:hat: closed") is not None and rows_by_note(lay)[42].stale
-    assert build_layout(p, no_collapse()).target_row("a:hat: closed") is None  # после пересортировки — скрыта
+    lay = build_layout(p, no_collapse())
+    assert lay.target_row("a:hat: closed") is None  # «только подключённые» — сразу скрыта
+    assert rows_by_note(lay)[42].block == UNASSIGNED
+
+
+def test_all_target_groups_expanded_while_nothing_is_connected():
+    p = profile()
+    lay = build_layout(p, no_collapse())
+    assert lay.scene.target_headers and not any(h.collapsed for h in lay.scene.target_headers)
+    assert {r.slot for r in lay.scene.target_rows} == {"a:" + k for k in articulations(TGT)}
+    p.rules[42] = Rule.map_to(42)  # первый кабель — группы «только подключённые»
+    lay = build_layout(p, no_collapse())
+    assert [r.slot for r in lay.scene.target_rows] == ["a:hat: closed"]
+    # подсказка — тоже кабель (пунктир)
+    lay = build_layout(profile(), no_collapse(), suggested={36: "kick: hit"})
+    assert [r.slot for r in lay.scene.target_rows] == ["a:kick: hit"]
 
 
 def test_flat_target_shows_all_rows():
-    gm = NoteMap("GM", {35: "Acoustic Bass Drum", 36: "Bass Drum 1"})
+    gm = NoteMap("Plain", {35: "Note A", 36: "Note B"})
     lay = build_layout(profile(src=None, tgt=gm))
     assert len(lay.scene.target_rows) == 2
 
@@ -360,7 +358,7 @@ def test_connecting_alias_row_moves_all_notes_together():
     first = build_layout(p, no_collapse())
     for n in first.source_row(38).notes:
         p.rules[n] = Rule.map_to(39)
-    lay = build_layout(p, no_collapse(), first.order)
+    lay = build_layout(p, no_collapse())
     assert [r.notes for r in lay.scene.source_rows] == [(38, 39, 40)]
     assert [r.notes for r in lay.pool.rows] == [(36,), (42,)]
 
@@ -412,19 +410,18 @@ def test_suggestions_placed_opposite_target_with_dashed_cables():
     sugg = {36: "kick: hit", 38: "snare: center", 40: "snare: center", 49: "crash: hit"}
     lay = build_layout(p, no_collapse(), suggested=sugg)
     rows = rows_by_note(lay)
-    assert all(rows[n].block is None and rows[n].suggested and not rows[n].stale for n in (36, 38, 40))
+    assert all(rows[n].block is None and rows[n].suggested for n in (36, 38, 40))
     assert rows[49].state == DELETE and rows[49].block == UNASSIGNED and not rows[49].suggested  # у 49 есть правило — не подсказка
     cables = {c.src: c for c in lay.scene.cables}
     assert all(c.suggested for c in cables.values())
     assert (cables[36].dst, cables[38].dst, cables[40].dst) == (36, 38, 38)  # 40 — на Write to (38)
     assert lay.target_row("a:snare: center").lines == ((0, 38),)
-    # подсказки скрыли — строки на местах, приглушены до пересортировки
-    hidden = build_layout(p, no_collapse(), lay.order)
-    assert rows_by_note(hidden)[36].stale and rows_by_note(hidden)[36].y == rows[36].y
-    assert not hidden.scene.cables and rows_by_note(build_layout(p, no_collapse()))[36].block == UNASSIGNED
+    # подсказки скрыли — строки сразу в пуле
+    hidden = build_layout(p, no_collapse())
+    assert not hidden.scene.cables and rows_by_note(hidden)[36].block == UNASSIGNED
     # применили — те же места, кабели сплошные
     p.rules.update({36: Rule.map_to(36), 38: Rule.map_to(38), 40: Rule.map_to(38)})
-    applied = build_layout(p, no_collapse(), lay.order, suggested=sugg)
+    applied = build_layout(p, no_collapse(), suggested=sugg)
     assert [(r.note, r.y) for r in applied.scene.source_rows] == [(r.note, r.y) for r in lay.scene.source_rows]
     assert all(c.dst is not None and not c.suggested for c in applied.scene.cables)
 
@@ -527,25 +524,21 @@ def test_single_cable_is_primary_and_suggestions_are_not():
 # --- основной кабель — первым в связке (8b3b2) ---
 
 def test_bundle_primary_row_first_then_ascending():
-    from midiremap.ui.cable_layout import primary_first
     src = NoteMap("S", {33: "A", 34: "B", 35: "C", 36: "D"})
     tgt = NoteMap("T", {35: "Kick", 36: "Kick", 60: "Snare"})
     # 35 -> 35 и 36 -> 36 основные (n -> n), 33 и 34 — нет
     p = profile({33: Rule.map_to(35), 34: Rule.map_to(36), 35: Rule.map_to(35), 36: Rule.map_to(36)}, src, tgt)
     lay = build_layout(p, no_collapse())
-    assert lay.order.slots["a:kick"] == (35, 36, 33, 34)
+    assert lay.placement.slots["a:kick"] == (35, 36, 33, 34)
     assert lay.target_row("a:kick").lines == ((0, 35), (1, 36))  # номер основного кабеля — верхний
     # основной задан обратным правилом: 33 -> 35 первым, номер 35 на строке цели — сверху
     p.reverse_rules = {35: Rule.map_to(33), 36: Rule.map_to(36)}
     lay = build_layout(p, no_collapse())
-    assert lay.order.slots["a:kick"] == (33, 36, 34, 35)
+    assert lay.placement.slots["a:kick"] == (33, 36, 34, 35)
     assert lay.target_row("a:kick").lines[0] == (0, 35)
-    # замороженный порядок не меняется сам; primary_first пересортировывает только свою связку
+    # сменился основной — связка сразу пересортирована
     p.reverse_rules = {35: Rule.map_to(35), 36: Rule.map_to(34)}
-    frozen = build_layout(p, no_collapse(), snapshot=lay.order)
-    assert frozen.order.slots["a:kick"] == (33, 36, 34, 35)
-    assert primary_first(p, frozen.order, "a:kick").slots["a:kick"] == (34, 35, 33, 36)
-    assert primary_first(p, frozen.order, "a:nothing") is frozen.order
+    assert build_layout(p, no_collapse()).placement.slots["a:kick"] == (34, 35, 33, 36)
 
 
 def test_bundle_primary_first_in_reverse_kick_case():
@@ -556,7 +549,7 @@ def test_bundle_primary_first_in_reverse_kick_case():
     p.reverse_rules = {35: Rule.map_to(35), 34: Rule.map_to(34), 36: Rule.map_to(36)}
     lay = build_layout(p.reversed(), no_collapse())
     slot = "a:" + normalize_name(ezd.names[35])
-    assert lay.order.slots[slot][0] == 35
+    assert lay.placement.slots[slot][0] == 35
     # 34 и 36 идут на разные номера — их строка раскрыта (заголовок «+1» и строка на ноту), но вся — под 35
     first, header, *children = [r for r in lay.scene.source_rows if set(r.notes) <= {34, 35, 36}]
     assert first.notes == (35,) and header.notes == (34, 36) and header.expanded and first.y < header.y
