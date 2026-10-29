@@ -1,7 +1,7 @@
 import copy
 
 from midiremap.core.notemap import NoteMap, articulations, normalize_name
-from midiremap.core.profile import RemapProfile, Rule
+from midiremap.core.profile import NO_RULE, RemapProfile, Rule, validate_profile
 from midiremap.core.suggest import Suggestion, apply_suggestions, suggest_rules
 from midiremap.templates import load_map_template
 
@@ -119,6 +119,10 @@ def test_templates_ezd3_to_sd3_consistent_with_data():
     assert {'exact', 'ambiguous', 'none'} <= kinds  # в этой паре есть все три случая
     profile = apply_suggestions(RemapProfile('EZD3 → SD3', ezd, sd3), result)
     assert profile.rules == {s.src: Rule.map_to(s.dst) for s in result if s.kind in ('exact', 'probable')}
+    # правила из подсказок ведут на существующие ноты; без правила — ровно ноты без точной/вероятной подсказки
+    issues = validate_profile(profile)
+    assert all(i.code == NO_RULE for i in issues)
+    assert [i.note for i in issues] == [s.src for s in result if s.kind in ('ambiguous', 'none')]
 
 
 # --- подсказки в редакторе профиля: логика назначения (assign_plan) ---

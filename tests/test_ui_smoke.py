@@ -1,8 +1,5 @@
 """Смоук-тесты главного окна PySide6 (без pytest-qt, платформа Qt offscreen)."""
-import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -118,14 +115,6 @@ def test_window_default_size_fits_screen(window):
     assert window.width() == max(min(1280, int(area.width() * 0.9)), window.minimumWidth())
     assert window.height() == max(min(800, int(area.height() * 0.9)), window.minimumHeight())
     assert (window.minimumWidth(), window.minimumHeight()) == (760, 580)
-
-
-def test_core_does_not_import_qt():
-    code = ("import sys, midiremap.core, midiremap.storage; "
-            "sys.exit(any(m.startswith(('PySide6', 'shiboken6')) for m in sys.modules))")
-    src = Path(__file__).resolve().parents[1] / "src"
-    env = {**os.environ, "PYTHONPATH": str(src)}
-    assert subprocess.run([sys.executable, "-c", code], env=env).returncode == 0
 
 
 # --- пакетная конвертация на вкладке Convert ---

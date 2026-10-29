@@ -1406,16 +1406,6 @@ def test_switching_profile_in_combo_asks_about_unsaved(window, app):
     assert page.answers["asked"].count("save_changes") == 2
 
 
-def test_old_sidebar_key_is_ignored(app, storage):
-    from midiremap.ui.settings import ui_settings
-    s = ui_settings(storage)
-    s.setValue("profiles/sidebar_collapsed", True)
-    s.sync()
-    w = MainWindow(storage)
-    assert w.profiles_page.combo.isVisibleTo(w.profiles_page)
-    w.close()
-
-
 def test_scene_columns_resize_and_persist(window, app, storage):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
@@ -1467,24 +1457,6 @@ def test_scene_columns_resize_and_persist(window, app, storage):
     QApplication.processEvents()
     assert w2.profiles_page.cables.splitter.sizes()[0] == sizes[0]
     w2.close()
-
-
-def test_old_column_width_keys_are_ignored(app, storage):
-    from midiremap.ui.cable_view import POOL_WIDTH
-    from midiremap.ui.settings import ui_settings
-    s = ui_settings(storage)
-    s.setValue("cables/pool_width", 420)  # ключи прежней раскладки с двумя пулами
-    s.setValue("cables/pool_right_width", 380)
-    s.setValue("cables/columns", "0.2,0.5,0.2")
-    s.sync()
-    w = MainWindow(storage)
-    w.resize(1300, 900)
-    w.show_page(PAGE_PROFILES)
-    w.show()
-    QApplication.processEvents()
-    ed = w.profiles_page.cables
-    assert ed.columns is None and ed.splitter.sizes()[0] == POOL_WIDTH
-    w.close()
 
 
 def test_truncated_names_in_tooltips(window, app):

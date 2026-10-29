@@ -215,9 +215,10 @@ def test_slot_keys_compare_names_normalized():
     assert slot_key(tgt, 12) == "n:12" and slot_key(None, 10) == "n:10"
 
 
-def test_no_qt_imports():
-    code = ("import sys, midiremap.ui.cable_layout; "
-            "assert not [m for m in sys.modules if m.startswith('PySide6')], 'Qt imported'")
+def test_core_storage_and_layout_do_not_import_qt():
+    """Ядро, хранилище и раскладка «кабелей» — без Qt (один отдельный процесс на все три)."""
+    code = ("import sys, midiremap.core, midiremap.storage, midiremap.ui.cable_layout; "
+            "assert not [m for m in sys.modules if m.startswith(('PySide6', 'shiboken6'))], 'Qt imported'")
     src = str(Path(__file__).resolve().parents[1] / "src")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src, os.environ.get("PYTHONPATH")]))}
     subprocess.run([sys.executable, "-c", code], check=True, env=env)

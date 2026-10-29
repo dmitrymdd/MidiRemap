@@ -3,8 +3,6 @@ from midiremap.core.profile import (
     DST_NOT_IN_TARGET, KEEP_DIFFERENT, KEEP_NOT_IN_TARGET, NO_RULE, SRC_NOT_IN_SOURCE, ProfileIssue, RemapProfile,
     Rule, keep_issue, validate_profile,
 )
-from midiremap.core.suggest import apply_suggestions, suggest_rules
-from midiremap.templates import load_map_template
 
 SRC = NoteMap('src', {36: 'Kick', 38: 'Snare', 42: 'Hat Closed', 51: 'Ride'})
 TGT = NoteMap('tgt', {36: 'kick ', 38: 'Rimshot', 51: 'Ride', 126: 'Ride'})
@@ -93,16 +91,6 @@ def test_validate_does_not_change_profile():
     before = p.to_json()
     validate_profile(p)
     assert p.to_json() == before
-
-
-def test_templates_ezd3_to_sd3_after_suggestions():
-    ezd, sd3 = load_map_template('EZdrummer 3'), load_map_template('Superior Drummer 3')
-    suggestions = suggest_rules(ezd, sd3)
-    p = apply_suggestions(RemapProfile('EZD3 → SD3', ezd, sd3), suggestions)
-    issues = validate_profile(p)
-    # правила из подсказок ведут на существующие ноты; без правила — ровно ноты без точной/вероятной подсказки
-    assert all(i.code == NO_RULE for i in issues)
-    assert [i.note for i in issues] == [s.src for s in suggestions if s.kind in ('ambiguous', 'none')]
 
 
 def test_with_explicit_keeps():
