@@ -9,8 +9,9 @@ from typing import Literal
 
 import mido
 
-from .notemap import normalize_name
-from .profile import FORWARD, Action, RemapProfile, Rule, check_note
+from .profile import (
+    FORWARD, KEEP_DIFFERENT, KEEP_NOT_IN_TARGET, Action, RemapProfile, Rule, check_note, keep_issue,
+)
 
 NOTE_TYPES = ('note_on', 'note_off')
 DEFAULT_RULE = Rule.keep()
@@ -218,17 +219,19 @@ def _warnings(profile: RemapProfile, scan: Analysis, notes: dict[int, NoteResult
         warnings.append("The profile has no target map, so target notes were not checked.")
         return warnings
     for n, r in notes.items():
-        if r.action == 'keep' and n not in tm.names:
-            warnings.append(f"Note {n} is kept as is, but the target map has no note {n}. "
-                            "It will probably not sound.")
-        elif r.action == 'keep':
-            tgt_name = tm.names[n]
-            src_name = sm.names.get(n) if sm is not None else None
-            if src_name is None:
+        if r.action == 'keep':
+            # те же проверки, что у профиля (keep_issue), но тексты — про файл, и неизвестное имя источника — тоже
+            issue = keep_issue(sm, tm, n)
+            code = issue.code if issue is not None else None
+            if code == KEEP_NOT_IN_TARGET:
+                warnings.append(f"Note {n} is kept as is, but the target map has no note {n}. "
+                                "It will probably not sound.")
+            elif code == KEEP_DIFFERENT:
+                warnings.append(f"Note {n} \"{sm.names[n]}\" is kept as is, but in the target map it is "
+                                f"\"{tm.names[n]}\".")
+            elif sm is None or n not in sm.names:
                 warnings.append(f"Note {n} is kept as is. Its source name is unknown, "
-                                f"and in the target map it is \"{tgt_name}\".")
-            elif normalize_name(src_name) != normalize_name(tgt_name):
-                warnings.append(f"Note {n} \"{src_name}\" is kept as is, but in the target map it is \"{tgt_name}\".")
+                                f"and in the target map it is \"{tm.names[n]}\".")
         elif r.action == 'map' and r.dst not in tm.names:
             warnings.append(f"Note {n} → {r.dst}: the target map has no note {r.dst}.")
     return warnings

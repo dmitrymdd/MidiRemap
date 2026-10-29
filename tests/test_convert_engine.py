@@ -221,13 +221,13 @@ def test_keep_onto_differently_named_note_warns(tmp_path):
     src = nmap('GM', n38='Acoustic Snare', n40='Electric Snare', n42='Closed Hi-Hat')
     tgt = nmap('SD3', n38='Tom 1', n40='  electric   SNARE ', n42='Closed Hi-Hat')
     w = warnings_for(tmp_path, [38, 40, 42], profile({38: Rule.keep()}, src, tgt))
-    assert len(w) == 1 and '38' in w[0] and 'Tom 1' in w[0]  # 40 и 42 совпали после нормализации
+    assert w == ['Note 38 "Acoustic Snare" is kept as is, but in the target map it is "Tom 1".']  # 40, 42 совпали
 
 
 def test_keep_with_unknown_source_name_warns(tmp_path):
     tgt = nmap('SD3', n38='Snare')
     w = warnings_for(tmp_path, [38], profile(target=tgt))  # нет исходной карты, keep по умолчанию
-    assert len(w) == 1 and 'unknown' in w[0]
+    assert w == ['Note 38 is kept as is. Its source name is unknown, and in the target map it is "Snare".']
     w = warnings_for(tmp_path, [38], profile(source=nmap('GM', n36='Kick'), target=tgt))
     assert len(w) == 1 and 'unknown' in w[0]
 
