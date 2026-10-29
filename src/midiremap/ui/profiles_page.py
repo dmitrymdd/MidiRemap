@@ -45,7 +45,7 @@ from ..core.profile import (
     keep_existing_primary, match_by_number, missing_rules, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
-from ..storage import Storage, sanitize_id
+from ..storage import Storage, id_taken
 from ..templates import list_map_templates, load_map_template
 from .cable_view import CableEditor
 from .maps_page import TEMPLATE, USER, MapRef, wrapped_tooltip
@@ -1043,7 +1043,6 @@ class ProfilesPage(QWidget):
 
     def ask_unique_name(self, title: str, default: str, exclude_id: str | None = None) -> str | None:
         """Имя профиля; ID (имя файла) не должен совпадать с существующим профилем. None — отмена."""
-        taken = {i.casefold() for i in self._ids} - {(exclude_id or "").casefold()}
         while True:
             text = self.ask_text(title, "Profile name:", default)
             if text is None:
@@ -1052,7 +1051,7 @@ class ProfilesPage(QWidget):
             if not text:
                 self.show_error("The name cannot be empty.")
                 continue
-            if sanitize_id(text).casefold() in taken:
+            if id_taken(text, self._ids, exclude_id):
                 self.show_error(f'A profile named "{text}" already exists. Choose another name.')
                 default = text
                 continue
@@ -1099,14 +1098,8 @@ class ProfilesPage(QWidget):
             return
         p = copy.deepcopy(self.base)
         p.name = name
-        new_id = sanitize_id(name)
         try:
-            if new_id.casefold() == old_id.casefold():  # тот же файл (Windows не различает регистр)
-                self.storage.save_profile(p, profile_id=old_id, overwrite=True)
-                new_id = old_id
-            else:
-                self.storage.save_profile(p, profile_id=new_id)
-                self.storage.delete_profile(old_id)
+            new_id = self.storage.rename_profile(old_id, p)
         except (OSError, ValueError) as e:
             self.show_error(f"Cannot rename the profile:\n\n{e}")
             return

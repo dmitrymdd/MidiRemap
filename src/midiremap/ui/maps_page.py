@@ -26,7 +26,7 @@ from ..core.notemap import (
 )
 from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import note_tip, pitch_name
-from ..storage import Storage, sanitize_id
+from ..storage import Storage, id_taken, sanitize_id
 from ..templates import list_map_templates, load_map_template
 from .theme import TOKENS, repolish
 
@@ -906,7 +906,6 @@ class MapsPage(QWidget):
 
     def ask_unique_name(self, title: str, default: str, exclude_id: str | None = None) -> str | None:
         """Имя новой карты; ID (имя файла) не должен совпадать с существующей картой. None — отмена."""
-        taken = {i.casefold() for i in self._user_ids} - {(exclude_id or "").casefold()}
         while True:
             text = self.ask_text(title, "Map name:", default)
             if text is None:
@@ -915,7 +914,7 @@ class MapsPage(QWidget):
             if not text:
                 self.show_error("The name cannot be empty.")
                 continue
-            if sanitize_id(text).casefold() in taken:
+            if id_taken(text, self._user_ids, exclude_id):
                 self.show_error(f'A map named "{text}" already exists. Choose another name.')
                 default = text
                 continue
@@ -985,14 +984,8 @@ class MapsPage(QWidget):
             return
         m = copy.deepcopy(self.base)
         m.name = name
-        new_id = sanitize_id(name)
         try:
-            if new_id.casefold() == old_ref.id.casefold():  # тот же файл (Windows не различает регистр)
-                self.storage.save_map(m, map_id=old_ref.id, overwrite=True)
-                new_id = old_ref.id
-            else:
-                self.storage.save_map(m, map_id=new_id)
-                self.storage.delete_map(old_ref.id)
+            new_id = self.storage.rename_map(old_ref.id, m)
         except (OSError, ValueError) as e:
             self.show_error(f"Cannot rename the map:\n\n{e}")
             return
