@@ -244,6 +244,19 @@ def _donor(tgt: NoteMap, notes: list[int], incoming: dict[int, list[int]]) -> in
     return wt if wt in incoming else donors[0]
 
 
+def _alias_copies(p: RemapProfile, b: int) -> list[int]:
+    """Алиасы ноты цели b без своих кабелей, чьё выведенное обратное правило — копия правила b (b — их донор по
+    derive_reverse). Пусто — b нет в целевой карте или донор артикуляции не b."""
+    tgt = p.target_map
+    if tgt is None or b not in tgt.names:
+        return []
+    notes = articulations(tgt)[normalize_name(tgt.names[b])]
+    incoming = _incoming(p)
+    if _donor(tgt, notes, incoming) != b:
+        return []
+    return [n for n in notes if n != b and n not in incoming]
+
+
 def normalized_reverse(p: RemapProfile) -> dict[int, Rule] | None:
     """reverse_rules профиля, а если они равны выведенным из прямых — None (поведение то же: sync_reverse ведёт
     их одинаково; так хранятся прочитанные из JSON и правленые в редакторе)."""
@@ -294,14 +307,10 @@ def with_primary_cable(p: RemapProfile, a: int, b: int) -> RemapProfile:
     if old == new:
         return out
     rev[b] = new
-    tgt = p.target_map
-    if tgt is not None and b in tgt.names and old is not None:
-        notes = articulations(tgt)[normalize_name(tgt.names[b])]
-        incoming = _incoming(p)
-        if _donor(tgt, notes, incoming) == b:
-            for n in notes:
-                if n not in incoming and rev.get(n) == old:
-                    rev[n] = new
+    if old is not None:
+        for n in _alias_copies(p, b):
+            if rev.get(n) == old:
+                rev[n] = new
     out.reverse_rules = dict(sorted(rev.items()))
     out.reverse_rules = normalized_reverse(out)
     return out
@@ -338,13 +347,7 @@ def keep_old_target_reverse(before: RemapProfile, after: RemapProfile, a: int) -
     if old_rule is None or old_rule.action != "map" or old_rule == new_rule:
         return []
     old = old_rule.dst
-    notes = [old]
-    tgt = before.target_map
-    if tgt is not None and old in tgt.names:
-        group = articulations(tgt)[normalize_name(tgt.names[old])]
-        incoming = _incoming(before)
-        if _donor(tgt, group, incoming) == old:
-            notes += [n for n in group if n != old and n not in incoming]
+    notes = [old, *_alias_copies(before, old)]
     was, derived = before.effective_reverse(), derive_reverse(before)
     manual = before.reverse_rules or {}
     keep = [n for n in sorted(notes)
