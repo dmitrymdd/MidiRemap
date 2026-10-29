@@ -17,7 +17,6 @@ from .notemap import NoteMap, articulations, normalize_name, primary_note
 from .profile import RemapProfile, Rule, assign_plan, assign_to_articulation
 
 Kind = Literal["exact", "probable", "ambiguous", "none"]
-KINDS: tuple[str, ...] = ("exact", "probable", "ambiguous", "none")
 
 
 @dataclass(frozen=True)

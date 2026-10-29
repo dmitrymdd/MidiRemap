@@ -1,13 +1,12 @@
 """Пакетная конвертация нескольких файлов одним профилем (без Qt и без UI)."""
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .convert import ConversionReport, convert
-from .errors import describe_error, technical_details
+from .errors import describe_error, path_key, technical_details
 from .profile import FORWARD, RemapProfile
 
 SUFFIX = "_remapped"
@@ -48,10 +47,6 @@ class BatchResult:
         return [f.dst for f in self.succeeded]
 
 
-def _key(path: Path) -> str:
-    return os.path.normcase(os.path.abspath(path))
-
-
 def convert_batch(sources: Iterable[Path], profile: RemapProfile, direction: str = FORWARD,
                   output_dir: Path | None = None,
                   convert_fn: Callable[..., ConversionReport] = convert) -> BatchResult:
@@ -62,7 +57,7 @@ def convert_batch(sources: Iterable[Path], profile: RemapProfile, direction: str
     с другим исходником пачки, — такой файл не пишется и попадает в отчёт ошибкой (первый занявший имя пишется).
     """
     sources = list(sources)
-    source_keys = {_key(s) for s in sources}
+    source_keys = {path_key(s) for s in sources}
     claimed: dict[str, Path] = {}
     result = BatchResult()
     folder_error = None
@@ -73,7 +68,7 @@ def convert_batch(sources: Iterable[Path], profile: RemapProfile, direction: str
             folder_error = f"Cannot create the output folder: {e}"
     for src in sources:
         dst = output_path_for(src, output_dir)
-        key = _key(dst)
+        key = path_key(dst)
         error = folder_error
         if error is None and key in claimed:
             error = f"Output name collides with the result of {claimed[key].name}: {dst.name}"

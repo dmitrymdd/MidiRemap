@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .notemap import NoteMap, articulations
+from .notemap import NoteMap, articulations, primary_note
 
 HEADER = "# MIDI note/CC name map"
 
@@ -96,11 +96,9 @@ def primary_only_notes(m: NoteMap) -> tuple[set[int], list[str]]:
     keep: set[int] = set()
     skipped: list[str] = []
     for notes in articulations(m).values():
-        flagged = [n for n in notes if n in m.primary]
-        if len(notes) == 1:
-            keep.add(notes[0])
-        elif len(flagged) == 1:
-            keep.add(flagged[0])
+        wt = primary_note(m, m.names[notes[0]])
+        if wt is not None:
+            keep.add(wt)
         else:
             skipped.append(m.names[notes[0]])
     return keep, skipped

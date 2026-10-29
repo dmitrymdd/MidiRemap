@@ -15,11 +15,16 @@ GENERIC = "Could not convert: {reason}"
 REASON_MAX = 80
 
 
+def path_key(path) -> str:
+    """Ключ сравнения путей: абсолютный, без различия регистра на Windows (один файл — один ключ)."""
+    return os.path.normcase(os.path.abspath(path))
+
+
 def _same(a, b: Path | None) -> bool:
     if a is None or b is None:
         return False
     try:
-        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+        return path_key(a) == path_key(b)
     except (TypeError, ValueError):
         return False
 
