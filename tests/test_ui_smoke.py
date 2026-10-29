@@ -247,18 +247,19 @@ def test_convert_several_files_with_one_failure(window, tmp_path):
     rows = window.drop.row_widgets()
     assert [r.name.text() for r in rows] == ["a.mid", "b.mid", "c.mid"]
     assert rows[0].result.text().startswith("✓ ") and " hits · " in rows[0].result.text()
-    assert rows[1].result.text().startswith("✗ ") and rows[1].result.property("state") == "error"
+    assert rows[1].result.text() == "✗ Not a MIDI file" and rows[1].result.property("state") == "error"
     assert all(not r.details.isHidden() for r in rows)  # у каждой строки — Details
     assert not (tmp_path / "b_remapped.mid").exists()
     dlg = window.details_dialog(a.resolve())
     assert dlg.view.toPlainText().startswith("Profile:") and "Moved:" in dlg.view.toPlainText()
     dlg.copy()
     assert QApplication.clipboard().text() == dlg.view.toPlainText()  # Copy — весь текст
-    assert window.details_dialog(bad.resolve()).view.toPlainText() == window.results[bad.resolve()].error
+    assert window.details_dialog(bad.resolve()).view.toPlainText() == NOT_MIDI_DETAILS
     assert window.out_card.property("state") == "ok" and window.out_card.name.text() == "2 files"
     # новая загрузка сбрасывает результаты
     window._accept_files([_files(tmp_path, "d.mid")[0]])
     assert window.results == {} and all(r.result.isHidden() for r in window.drop.row_widgets())
+
 
 def test_convert_several_files_to_output_folder_and_reset(window, tmp_path):
     d1, d2 = tmp_path / "one", tmp_path / "two"
@@ -297,6 +298,9 @@ def test_output_folder_applies_to_single_file(window, tmp_path):
     assert window.status.text() == "Converted: a_remapped.mid"
 
 
+NOT_MIDI_DETAILS = "Not a MIDI file\n\nTechnical details:\nOSError: MThd not found. Probably not a MIDI file"
+
+
 def test_single_file_failure_shows_in_its_row(window, tmp_path):
     bad = tmp_path / "bad.mid"
     bad.write_bytes(b"not midi")
@@ -306,8 +310,19 @@ def test_single_file_failure_shows_in_its_row(window, tmp_path):
     window.convert()
     assert shown == [] and window.outputs == []  # как у пакета: без окна ошибки
     assert window.status.text() == "Conversion failed." and window.status.property("state") == "error"
-    assert window.drop.single_result.text().startswith("✗ ") and not window.drop.single_details.isHidden()
-    assert window.details_dialog(bad.resolve()).view.toPlainText() == window.results[bad.resolve()].error
+    assert window.drop.single_result.text() == "✗ Not a MIDI file" and not window.drop.single_details.isHidden()
+    assert window.details_dialog(bad.resolve()).view.toPlainText() == NOT_MIDI_DETAILS
+
+
+def test_truncated_file_row_shows_plain_message_details_show_exception(window, tmp_path):
+    (src,) = _files(tmp_path, "cut.mid")
+    src.write_bytes(src.read_bytes()[:40])
+    window.load(src)
+    window.convert()
+    assert window.drop.single_result.text() == "✗ The file is damaged or truncated"  # не «✗ EOFError»
+    assert window.details_dialog(src.resolve()).view.toPlainText() == (
+        "The file is damaged or truncated\n\nTechnical details:\nEOFError")
+
 
 def test_copy_several_outputs_as_file_urls(window, tmp_path, app):
     a, b = _files(tmp_path, "a.mid", "b.mid")

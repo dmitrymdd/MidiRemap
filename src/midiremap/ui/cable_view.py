@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
 
 from ..core.notemap import primary_note
 from ..core.pitch import pitch_name
-from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, validate_profile
+from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, names_differ, validate_profile
 from .cable_layout import (
     DELETE, KEEP, MIXED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header,
     SourceRow, TargetRow, build_layout,
@@ -78,6 +78,8 @@ CABLE_THIN_W = CABLE_W / 2         # прочие кабели; превью о�
 CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
+MARK_R = 7          # «≠» на кабеле (имена разные у только что сделанного Match by number): радиус кружка
+MARK_OFFSET = 18    # центр «≠» — левее конца кабеля у строки цели
 POOL_WIDTH = 310    # начальная ширина пула
 SCENE_MIN = 460     # минимальная ширина сцены, px
 MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колонки и промежутка для кабелей
@@ -488,6 +490,7 @@ class _CableItem(QGraphicsPathItem):
                  tooltip: str, tone: tuple[str, str] = TONES[FORWARD]) -> None:
         super().__init__(path)
         self.cable, self.editor, self.src, self.dst, self.tone = cable, editor, src, dst, tone
+        self.marked = False  # «≠» у конца: Match by number только что соединил разные имена
         self.setZValue(0.5)
         self.setAcceptHoverEvents(not cable.suggested)
         if not cable.suggested:
@@ -512,6 +515,31 @@ class _CableItem(QGraphicsPathItem):
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self.setPen(pen)
         self.setZValue(0.6 if hovered else 0.5)
+
+    def set_marked(self, marked: bool) -> None:
+        if marked != self.marked:
+            self.prepareGeometryChange()
+            self.marked = marked
+            self.update()
+
+    def _mark_rect(self) -> QRectF:
+        end = self.path().currentPosition()
+        return QRectF(end.x() - MARK_OFFSET - MARK_R, end.y() - MARK_R, 2 * MARK_R, 2 * MARK_R)
+
+    def boundingRect(self) -> QRectF:
+        rect = super().boundingRect()
+        return rect.united(self._mark_rect().adjusted(-1, -1, 1, 1)) if self.marked else rect
+
+    def paint(self, p: QPainter, option, widget=None) -> None:
+        super().paint(p, option, widget)
+        if not self.marked:
+            return
+        r = self._mark_rect()
+        p.setPen(QPen(_color(self.tone[0], 0.6), 1))
+        p.setBrush(_color("bg"))
+        p.drawEllipse(r)
+        p.setPen(_color(self.tone[0]))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, "≠")
 
     def shape(self) -> QPainterPath:
         if self.cable.suggested:
@@ -760,6 +788,7 @@ class CableEditor(QWidget):
         self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}  # свёрнутость — своя у направления
         self.selection: set[int] = set()                   # выделенные ноты (строки пула и колонки «from»)
         self.suggested: dict[int, str] = {}                # подсказки: нота без правила -> артикуляция цели
+        self.marks: set[tuple[int, int]] = set()           # кабели со «≠»: (нота, цель) ориентированного профиля
         self.current: CableLayout | None = None  # последняя построенная раскладка
         # доли ширины сцены: колонка «from», промежуток для кабелей, колонка «to» (None — по умолчанию от ширины)
         self.columns: tuple[float, float, float] | None = _load_columns(settings)
@@ -849,6 +878,7 @@ class CableEditor(QWidget):
         group = self._top_group()
         self.cancel_drag()
         self.selection.clear()
+        self.marks = set()  # пары другого направления не совпадают с этими
         self.direction = direction
         self._build(anchor=False)
         self._scroll_to_group(group)
@@ -876,6 +906,7 @@ class CableEditor(QWidget):
         if direction is not None:
             self.direction = direction
         self.selection.clear()
+        self.marks = set()
         if reset_collapsed:
             self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}
         self._build(anchor=reset_collapsed is False)
@@ -900,6 +931,20 @@ class CableEditor(QWidget):
     def refresh(self) -> None:
         """Правила (или подсказки) изменились: раскладка заново, прокрутка — за якорь."""
         self._build()
+
+    def set_marks(self, pairs: set[tuple[int, int]]) -> None:
+        """Пометить «≠» кабели (нота, цель) текущего направления; пустое — снять. Без перестройки: только кабели.
+        Отметки живут до set_marks(set()), смены направления или профиля (их снимает страница)."""
+        self.marks = set(pairs)
+        for item in self.cable_items:
+            item.set_marked(self._is_marked(item.cable))
+
+    def marked_notes(self) -> set[int]:
+        """Ноты строк «from» помеченных кабелей (для выделения)."""
+        return {n for n, _ in self.marks if n in self.source_items}
+
+    def _is_marked(self, c: Cable) -> bool:
+        return not c.suggested and any((n, c.dst) in self.marks for n in c.notes)
 
     def toggle_pool(self, key: str) -> None:
         """Свернуть/развернуть группу пула: перестраивается только пул."""
@@ -1553,9 +1598,12 @@ class CableEditor(QWidget):
             a = QPointF(src.rect.right(), PAD + c.src_y * ROW + ROW / 2)
             b = QPointF(rx, PAD + (c.dst_y + 0.5) * ROW)  # на свой номер в строке цели
             tip = self._cable_tip(c.notes, c.dst) if c.dst is not None else ""
+            if tip and names_differ(self.shown, c.notes[0], c.dst):
+                tip = f"{self._names_differ_tip(c.notes[0], c.dst)}\n{tip}"
             if tip and not c.primary:
                 tip += f"\n{PRIMARY_HINT}"
             item = _CableItem(cable_path(a, b), c, self, src, self.target_items[c.target.slot], tip, self.tone)
+            item.set_marked(self._is_marked(c))
             scene.addItem(item)
             (self.suggestion_items if c.suggested else self.cable_items).append(item)
         self.view.end()
@@ -1614,6 +1662,10 @@ class CableEditor(QWidget):
         _, number, pitch = lines[0]
         return _Row(r, TARGET, t, number, pitch, t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
                     badge=many, port=port, dashed=dashed, tooltip=tip, lines=lines, tone=self.tone)
+
+    def _names_differ_tip(self, src: int, dst: int) -> str:
+        p = self.shown
+        return f"Names differ: {p.source_map.names[src]} → {p.target_map.names[dst]}"
 
     def _cable_tip(self, notes: tuple[int, ...], dst: int) -> str:
         """«ноты имя → нота имя» по ориентированному профилю (как на картинке — слева направо)."""

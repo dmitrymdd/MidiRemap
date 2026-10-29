@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .convert import ConversionReport, convert
+from .errors import describe_error, technical_details
 from .profile import FORWARD, RemapProfile
 
 SUFFIX = "_remapped"
@@ -22,7 +23,8 @@ class FileResult:
     src: Path
     dst: Path
     report: ConversionReport | None = None
-    error: str | None = None
+    error: str | None = None    # понятный текст (describe_error)
+    details: str | None = None  # технические детали: тип исключения и его текст
 
     @property
     def ok(self) -> bool:
@@ -84,7 +86,8 @@ def convert_batch(sources: Iterable[Path], profile: RemapProfile, direction: str
         try:
             report = convert_fn(src, dst, profile, direction=direction)
         except Exception as exc:  # любая ошибка файла (битый MIDI, доступ) — в отчёт, пачка продолжается
-            result.files.append(FileResult(src, dst, error=str(exc) or type(exc).__name__))
+            result.files.append(FileResult(src, dst, error=describe_error(exc, src, dst),
+                                           details=technical_details(exc)))
         else:
             result.files.append(FileResult(src, dst, report))
     return result

@@ -3,7 +3,8 @@ import pytest
 
 from midiremap.core.notemap import NoteMap
 from midiremap.core.profile import (
-    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, match_by_number, number_matches,
+    RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, match_by_number, names_differ,
+    number_matches,
 )
 
 SRC = NoteMap("src", {33: "Snare: Edge", 38: "Snare: Center", 39: "Snare: Center", 40: "Snare: Rim",
@@ -103,12 +104,25 @@ def test_number_matches_only_notes_without_rule_with_number_in_target():
     # 33, 39, 70 — нет в цели; 38 — зачёркнута; 40 — уже подключена; 66, 41, 43 — без правила и есть в цели
     p = profile({38: Rule.delete(), 40: Rule.map_to(41)})
     assert number_matches(p) == [41, 43, 66]
-    out, done = match_by_number(p)
+    out, done, differ = match_by_number(p)
     assert done == [41, 43, 66]
+    assert differ == [43]  # «Tom: Center» -> «Tom: Low»; 41 и 66 — те же имена
     assert out.rules == {38: Rule.delete(), 40: Rule.map_to(41), 41: Rule.map_to(41), 43: Rule.map_to(43),
                          66: Rule.map_to(66)}
     assert p.rules == {38: Rule.delete(), 40: Rule.map_to(41)}  # исходный профиль не меняется
-    assert match_by_number(out)[1] == []  # повторно — нечего
+    assert match_by_number(out)[1:] == ([], [])  # повторно — нечего
+
+
+def test_names_differ_after_normalize_and_by_target_note_name():
+    src = NoteMap("s", {1: "snare:  CENTER", 2: "Kick", 3: "Tom"})
+    tgt = NoteMap("t", {1: "Snare: Center", 2: "Kick: Hit", 7: "Snare: Center", 8: "Snare: Center"})
+    p = RemapProfile("p", src, tgt)
+    assert not names_differ(p, 1, 1)                     # регистр и пробелы не в счёт
+    assert not names_differ(p, 1, 8)                     # алиас: имя артикуляции ноты цели
+    assert names_differ(p, 2, 2) and names_differ(p, 3, 7)
+    assert not names_differ(p, 3, 99) and not names_differ(p, 50, 1)  # ноты нет — сравнивать нечего
+    assert not names_differ(RemapProfile("p", src, None), 2, 2)
+    assert names_differ(p.reversed(), 2, 2) and not names_differ(p.reversed(), 7, 1)  # ← — на reversed()
 
 
 def test_match_by_number_without_maps_and_in_reverse():

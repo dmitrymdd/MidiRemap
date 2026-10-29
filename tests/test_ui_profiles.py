@@ -2150,7 +2150,7 @@ def test_drop_on_single_note_articulation_number(window, app, direction):
 # --- полировка: Match by number, статус, горячие клавиши, прокрутка ---
 
 def test_match_by_number_button_one_undo_step(window, app):
-    from midiremap.core.profile import REVERSE, number_matches, primary_pairs
+    from midiremap.core.profile import REVERSE, names_differ, number_matches, primary_pairs
     page, ed = bare_page(window)
     t, u = shared_numbers(page.work, 2)
     page.work.rules = {u: Rule.map_to(t)}  # номер t уже занят кабелем от u
@@ -2164,7 +2164,9 @@ def test_match_by_number_button_one_undo_step(window, app):
     assert all(w.rules[n] == Rule.map_to(n) for n in expected) and w.rules[u] == Rule.map_to(t)
     assert w.rules[struck] == Rule.delete()
     assert (u, t) in primary_pairs(w)  # как двойной клик: занятый номер — новый кабель неосновной
-    assert page.status.text() == f"Matched {len(expected)} notes by number"
+    differ = [n for n in expected if names_differ(page.work, n, n)]
+    tail = f" · {len(differ)} with different names" if differ else ""
+    assert page.status.text() == f"Matched {len(expected)} notes by number{tail}"
     assert len(page._undo) == steps + 1 and all(n in ed.source_items for n in expected)
     page.match_btn.click()
     assert page.status.text() == "No notes match by number" and len(page._undo) == steps + 1
@@ -2174,6 +2176,109 @@ def test_match_by_number_button_one_undo_step(window, app):
     rev = number_matches(page.work.reversed())
     assert rev and page.match_by_number() == len(rev)
     assert all(page.work.effective_reverse()[n] == Rule.map_to(n) for n in rev)
+
+
+def test_match_by_number_reports_different_names_on_real_maps(window):
+    page = window.profiles_page
+    new_profile(page)  # EZD3 -> SD3
+    page.dismiss_suggestions()
+    assert page.match_by_number() == 122
+    # «Snare: Sidestick» -> «Snare: Forward brushTrig» и т. п. — не молчаливый успех
+    assert page.status.text() == "Matched 122 notes by number · 79 with different names"
+    # подсказка кабеля — у любого кабеля с разными именами, в обоих направлениях
+    from midiremap.core.profile import REVERSE, names_differ
+    for direction in (None, REVERSE):
+        if direction:
+            page.set_direction(direction)
+        shown, items = page.cables.shown, page.cables.cable_items
+        differ = [c for c in items if names_differ(shown, *c.ends)]
+        assert differ and len(differ) < len(items)
+        for c in items:
+            src, dst = shown.source_map.names[c.ends[0]], shown.target_map.names[c.ends[1]]
+            assert c.toolTip().startswith(f"Names differ: {src} → {dst}\n") == (c in differ)
+
+
+def _matched_with_marks(page):
+    """EZD3 -> SD3, Match by number: отметки «≠» стоят. Возвращает пары (нота, цель) с разными именами."""
+    from midiremap.core.profile import names_differ
+    if page.current is None:
+        new_profile(page)
+        page.dismiss_suggestions()
+    page.match_by_number()
+    differ = {(n, n) for n in page.work.rules if page.work.rules[n].action == "map"
+              and page.work.rules[n].dst == n and names_differ(page.work, n, n)}
+    assert page.cables.marks and page.cables.marks <= differ
+    return differ
+
+
+def marked(ed):
+    return [c for c in ed.cable_items if c.marked]
+
+
+def test_match_by_number_marks_only_its_new_cables_with_different_names(window):
+    from midiremap.core.profile import names_differ
+    page = window.profiles_page
+    ed = page.cables
+    new_profile(page)
+    page.dismiss_suggestions()
+    before = 6  # «Snare: Zone Trigger» -> 38 «Snare: Center»: кабель до Match by number, имена разные
+    page.assign_note([before], 38)
+    page.match_by_number()
+    assert len(ed.marks) == 78 and (before, 38) not in ed.marks
+    cables = {c.ends: c for c in ed.cable_items}
+    assert not cables[(before, 38)].marked  # старый кабель — без «≠», но с подсказкой
+    assert cables[(before, 38)].toolTip().startswith("Names differ: Snare: Zone Trigger → Snare: Center")
+    assert marked(ed) and all(names_differ(ed.shown, *c.ends) and c.ends in ed.marks for c in marked(ed))
+    same = [c for c in ed.cable_items if c.ends[0] == c.ends[1] and not names_differ(ed.shown, *c.ends)]
+    assert same and not any(c.marked for c in same)  # одинаковые имена — без отметки
+    # отметка — не жёлтая подсветка проблем: строки не меняют фон
+    assert not any(ed.source_items[c.ends[0]].warn for c in marked(ed))
+    # перестройка без правки (свернуть/развернуть группу) отметки не снимает
+    key = ed.current.scene.target_headers[0].key
+    ed.toggle_target(key)
+    ed.toggle_target(key)
+    assert marked(ed)
+
+
+@pytest.mark.parametrize("action", ["edit", "undo", "redo", "direction", "save", "map"])
+def test_name_marks_last_until_next_edit_undo_redo_direction_or_save(window, action):
+    from midiremap.core.profile import REVERSE
+    page = window.profiles_page
+    ed = page.cables
+    _matched_with_marks(page)
+    if action == "edit":
+        page.toggle_strike([next(iter(ed.marks))[0]])
+    elif action == "undo":
+        assert page.undo()
+    elif action == "redo":
+        page.undo()
+        page.redo()
+    elif action == "direction":
+        page.set_direction(REVERSE)
+        assert not marked(ed) and not ed.marks
+        page.set_direction(page.direction)  # то же направление — ничего не меняет
+    elif action == "save":
+        page.answers["unassigned"] = set()
+        assert page.save()
+    else:
+        page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))
+    assert not ed.marks and not marked(ed)
+    assert not page.status.toolTip() and not page.select_marked()
+
+
+def test_clicking_match_status_selects_marked_cables(window, app):
+    page = window.profiles_page
+    ed = page.cables
+    _matched_with_marks(page)
+    assert page.status.toolTip()
+    QTest.mouseClick(page.status, Qt.MouseButton.LeftButton)
+    assert ed.selection == ed.marked_notes() and ed.selection
+    assert all(ed.source_items[n].selected for n in ed.selection)
+    ed.set_selection(set())
+    page._status_fx.setOpacity(0.0)  # статус погас — невидимый текст не кликается
+    assert not page.select_marked() and not ed.selection
+    page.set_status("Something else")  # другое сообщение — клик ничего не выделяет, отметки остаются
+    assert not page.select_marked() and marked(ed)
 
 
 def test_status_fades_after_last_message(window, app):

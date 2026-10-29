@@ -568,13 +568,23 @@ def number_matches(p: RemapProfile) -> list[int]:
     return [n for n in sorted(p.source_map.names) if n not in p.rules and n in p.target_map.names]
 
 
-def match_by_number(p: RemapProfile) -> tuple[RemapProfile, list[int]]:
+def names_differ(p: RemapProfile, src: int, dst: int) -> bool:
+    """Кабель src → dst соединяет разные имена (после normalize_name). Имя цели — имя ноты dst в целевой карте
+    (у алиасов — имя их артикуляции). Нет карты или ноты — не «разные»: сравнивать нечего."""
+    if p.source_map is None or p.target_map is None:
+        return False
+    a, b = p.source_map.names.get(src), p.target_map.names.get(dst)
+    return a is not None and b is not None and normalize_name(a) != normalize_name(b)
+
+
+def match_by_number(p: RemapProfile) -> tuple[RemapProfile, list[int], list[int]]:
     """n → n для всех number_matches(p) (как двойной клик по строке Unassigned: connect_same_numbers).
-    Возвращает новый профиль и подключённые ноты."""
+    Возвращает новый профиль, подключённые ноты и те из них, у которых имена разные (names_differ)."""
     notes = number_matches(p)
     if not notes:
-        return copy.deepcopy(p), []
-    return connect_same_numbers(p, notes, list(p.target_map.names))
+        return copy.deepcopy(p), [], []
+    out, done = connect_same_numbers(p, notes, list(p.target_map.names))
+    return out, done, [n for n in done if names_differ(p, n, n)]
 
 
 def legacy_profile() -> RemapProfile:

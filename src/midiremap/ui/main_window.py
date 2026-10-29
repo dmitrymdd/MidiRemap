@@ -116,8 +116,11 @@ def result_line(res: FileResult) -> str:
 
 
 def result_details(res: FileResult, head: str = "") -> str:
-    """Полный текст для окна Details: отчёт (с заголовком «Profile: …») или ошибка целиком."""
-    return head + format_report(res.report) if res.ok else (res.error or "Failed").strip()
+    """Полный текст для окна Details: отчёт (с заголовком «Profile: …») или ошибка + технические детали."""
+    if res.ok:
+        return head + format_report(res.report)
+    text = (res.error or "Failed").strip()
+    return f"{text}\n\nTechnical details:\n{res.details}" if res.details else text
 
 
 def batch_summary(ok: int, failed: int) -> str:

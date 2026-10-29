@@ -67,6 +67,7 @@ STATUS_MS, STATUS_FADE_MS = 4000, 600  # статус гаснет через ~4
 DIRECTION_W = 44  # кнопка направления между картами, px
 MATCH_TIP = ("Connect every unassigned note to the same number in the other map, if it is there\n"
              "(struck-through and connected notes are left alone; one undo step)")
+MARKS_TIP = "Click to select the cables marked ≠ (names differ)"
 
 SOURCE_TIP = "Source map: the layout the MIDI file was made for (e.g. Guitar Pro 8 export)\nClick to choose a map"
 TARGET_TIP = "Target map: the layout of the plugin the converted file is for\nClick to choose a map"
@@ -94,6 +95,7 @@ def _undoable(fn):
         if self.work is None or self._in_edit:
             return fn(self, *args, **kwargs)
         before = self._snapshot()
+        self._clear_marks()  # «≠» Match by number живут до следующей правки
         self._in_edit = True
         self._reverse_done = False
         try:
@@ -333,6 +335,7 @@ class ProfilesPage(QWidget):
         bar.addWidget(self.dismiss_btn)
         self.cables.to_head.addWidget(self.suggest_bar)
         self.cables.to_slot.installEventFilter(self)  # ширина колонки «to» — уместить панель подсказок
+        self.status.installEventFilter(self)  # клик по статусу Match by number — выделить кабели «≠»
 
         # отмена/повтор — на всё окно, пока видна вкладка Profiles (фокус может быть где угодно: комбобокс, кнопки,
         # вкладки); на других вкладках выключены (showEvent / hideEvent)
@@ -348,6 +351,8 @@ class ProfilesPage(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.cables.to_slot and event.type() == QEvent.Type.Resize:
             self._fit_suggest_bar()
+        if obj is self.status and event.type() == QEvent.Type.MouseButtonPress:
+            self.select_marked()
         return False
 
     def showEvent(self, event) -> None:
@@ -595,6 +600,7 @@ class ProfilesPage(QWidget):
         if self.work is None or not self._undo:
             return False
         snap = self._undo.pop()
+        self._clear_marks()
         self._redo.append(self._snapshot(snap[2]))
         self.set_direction(snap[2])
         self._restore(snap)
@@ -604,6 +610,7 @@ class ProfilesPage(QWidget):
         if self.work is None or not self._redo:
             return False
         snap = self._redo.pop()
+        self._clear_marks()
         self._undo.append(self._snapshot(snap[2]))
         self.set_direction(snap[2])
         self._restore(snap)
@@ -616,6 +623,7 @@ class ProfilesPage(QWidget):
         if direction == self.direction:
             self._show_direction(direction)
             return
+        self._clear_marks()
         self._show_direction(direction)
         self._sync_suggestions()
         self.cables.set_direction(direction)
@@ -1028,13 +1036,31 @@ class ProfilesPage(QWidget):
         стороны, — n -> n (core match_by_number; как двойной клик по каждой). Один шаг отмены."""
         if self.work is None:
             return 0
-        new, done = match_by_number(self._oriented())
+        new, done, differ = match_by_number(self._oriented())
         if not done:
             self.set_status("No notes match by number")
             return 0
         self._put_same_numbers(new, done)
-        self.set_status(f"Matched {len(done)} note{'' if len(done) == 1 else 's'} by number", "ok")
+        text = f"Matched {len(done)} note{'' if len(done) == 1 else 's'} by number"
+        self.set_status(text + (f" · {len(differ)} with different names" if differ else ""), "ok")
+        if differ:  # «≠» — только у только что сделанных кабелей; снимаются следующей правкой (_undoable)
+            self.cables.set_marks({(n, n) for n in differ})
+            self.status.setToolTip(MARKS_TIP)
+            self.status.setCursor(Qt.CursorShape.PointingHandCursor)
         return len(done)
+
+    def _clear_marks(self) -> None:
+        self.cables.set_marks(set())
+        self.status.setToolTip("")
+        self.status.unsetCursor()
+
+    def select_marked(self) -> bool:
+        """Клик по статусу Match by number: выделить строки кабелей «≠» (пока статус виден и отметки есть)."""
+        notes = self.cables.marked_notes()
+        if not notes or self._status_fx.opacity() == 0 or not self.status.toolTip():
+            return False
+        self.cables.set_selection(notes)
+        return True
 
     def _other_side(self) -> str:
         return DIRECTION_SIDES[REVERSE if self.direction == FORWARD else FORWARD]  # карта другой стороны
@@ -1148,6 +1174,8 @@ class ProfilesPage(QWidget):
     def set_status(self, text: str, state: str = "") -> None:
         """Отклик на действие (не счётчик): виден сразу, гаснет через STATUS_MS после последнего сообщения."""
         self.status.setText(text)
+        self.status.setToolTip("")  # клик выделяет «≠» только у статуса Match by number
+        self.status.unsetCursor()
         repolish(self.status, "state", state)
         self._status_fade.stop()
         self._status_fx.setOpacity(1.0)
