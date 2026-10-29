@@ -116,16 +116,13 @@ def map_summary(m: NoteMap | None) -> str:
     return m.name if m is not None else "no map"
 
 
-def profile_summary(p: RemapProfile, direction: str = FORWARD, rules: bool = True) -> str:
-    """«<исходная карта> → <целевая карта> · N rules» (или «no maps» без обеих карт) в направлении direction:
-    для REVERSE — карты наоборот и число обратных правил. rules=False — без числа правил (вкладка Convert)."""
+def profile_summary(p: RemapProfile, direction: str = FORWARD) -> str:
+    """«<исходная карта> → <целевая карта>» (или «no maps» без обеих карт) в направлении direction:
+    для REVERSE — карты наоборот."""
     p = p.oriented(direction)
-    maps = ("no maps" if p.source_map is None and p.target_map is None
-            else f"{map_summary(p.source_map)} → {map_summary(p.target_map)}")
-    if not rules:
-        return maps
-    n = len(p.rules)
-    return f"{maps} · {n} rule" + ("" if n == 1 else "s")
+    if p.source_map is None and p.target_map is None:
+        return "no maps"
+    return f"{map_summary(p.source_map)} → {map_summary(p.target_map)}"
 
 
 def _pair_key(p: RemapProfile) -> tuple:

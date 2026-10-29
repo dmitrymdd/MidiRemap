@@ -123,6 +123,8 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
                         font-weight: 600; }}
     QPushButton#link:hover {{ color: {t['accent_hover']}; }}
     QPushButton#link:disabled {{ color: {t['text_faint']}; }}
+    QPushButton#remove {{ background: transparent; border: none; padding: 0; color: {t['text_faint']}; }}
+    QPushButton#remove:hover {{ color: {t['accent']}; }}
     QGraphicsView#cables {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 8px; }}
     QLabel#mapTitle {{ font-size: 14pt; font-weight: 600; }}
     QLabel#chip {{ border: 1px solid {t['border']}; border-radius: 9px; padding: 1px 8px; font-size: 8pt;

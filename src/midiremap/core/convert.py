@@ -16,6 +16,8 @@ NOTE_TYPES = ('note_on', 'note_off')
 DEFAULT_RULE = Rule.keep()
 
 RuleOrigin = Literal["override", "profile", "default"]
+Category = Literal["moved", "unchanged", "deleted"]
+CATEGORIES: tuple[Category, ...] = ("moved", "unchanged", "deleted")
 
 
 def _is_note_on(msg) -> bool:
@@ -43,6 +45,29 @@ class NoteResult:
     dst: int | None     # итоговый номер (для keep — тот же); None для delete
     origin: RuleOrigin  # откуда правило: override / profile / default (keep по умолчанию)
 
+    @property
+    def category(self) -> Category:
+        """moved — номер изменился; unchanged — тот же номер (по правилу или без правила); deleted."""
+        if self.action == 'delete':
+            return "deleted"
+        return "moved" if self.dst != self.src else "unchanged"
+
+
+@dataclass(frozen=True)
+class CategoryCount:
+    hits: int = 0   # note_on (velocity > 0) в исходном файле
+    notes: int = 0  # различные номера нот
+
+
+@dataclass(frozen=True)
+class ReportTotals:
+    """Итоги отчёта в общей терминологии: hits — note_on, notes — различные номера нот."""
+    hits: int
+    notes: int
+    moved: CategoryCount
+    unchanged: CategoryCount
+    deleted: CategoryCount
+
 
 @dataclass
 class ConversionReport:
@@ -56,6 +81,16 @@ class ConversionReport:
     # совместимость со старым convert_midi: нотные события записаны / не записаны, прочие события
     stats: dict[str, int] = field(default_factory=lambda: {'mapped': 0, 'removed': 0, 'other': 0})
     warnings: list[str] = field(default_factory=list)
+
+    def totals(self) -> ReportTotals:
+        """Итоги по категориям moved / unchanged / deleted (hits и notes)."""
+        hits = dict.fromkeys(CATEGORIES, 0)
+        notes = dict.fromkeys(CATEGORIES, 0)
+        for r in self.notes.values():
+            hits[r.category] += r.count
+            notes[r.category] += 1
+        return ReportTotals(sum(hits.values()), sum(notes.values()),
+                            *(CategoryCount(hits[c], notes[c]) for c in CATEGORIES))
 
 
 def effective_rule(note: int, profile: RemapProfile,

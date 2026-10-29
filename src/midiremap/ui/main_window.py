@@ -11,14 +11,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl
+from PySide6.QtCore import QMimeData, QPoint, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QDrag, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from ..core import ConversionReport, RemapProfile, convert, legacy_profile
+from ..core import ConversionReport, FileResult, RemapProfile, convert_batch, legacy_profile, output_path_for
 from ..core.profile import FORWARD, REVERSE
 from ..storage import Storage
 from .maps_page import MapsPage
@@ -31,8 +31,6 @@ MIDI_EXTS = {".mid", ".midi"}
 
 PAGE_CONVERT, PAGE_PROFILES, PAGE_MAPS = 0, 1, 2
 
-ACTION_LABELS = {"map": "remapped", "delete": "deleted", "keep": "kept as is"}
-
 DIRECTION_KEY = "convert/direction"  # ui.ini: направление конвертации, общее для всех профилей
 DIRECTION_TIPS = {FORWARD: "Direction: source map → target map. Click to convert in reverse",
                   REVERSE: "Direction: target map → source map (reverse). Click to convert forward"}
@@ -42,29 +40,47 @@ def is_midi(path: str | Path | None) -> bool:
     return bool(path) and Path(path).suffix.lower() in MIDI_EXTS and Path(path).is_file()
 
 
+def expand_midi_paths(paths: list[Path]) -> list[Path]:
+    """Файлы .mid/.midi из списка; папка заменяется своими .mid/.midi верхнего уровня (без рекурсии), по имени."""
+    files: list[Path] = []
+    for p in paths:
+        if p.is_dir():
+            try:
+                files.extend(sorted((c for c in p.iterdir() if is_midi(c)), key=lambda c: c.name.casefold()))
+            except OSError:
+                continue
+        elif is_midi(p):
+            files.append(p)
+    return files
+
+
 def midi_paths_from_mime(mime: QMimeData) -> list[Path]:
-    """Локальные .mid/.midi из mime-данных (DnD или буфер обмена); иначе — путь в виде текста."""
+    """Локальные .mid/.midi (и содержимое папок) из mime-данных (DnD или буфер обмена); иначе — пути в тексте."""
     paths = [Path(u.toLocalFile()) for u in mime.urls() if u.isLocalFile()]
     if not paths and mime.hasText():
-        paths = [Path(mime.text().strip().strip('"'))]
-    return [p for p in paths if is_midi(p)]
+        paths = [Path(line.strip().strip('"')) for line in mime.text().splitlines() if line.strip()]
+    return expand_midi_paths(paths)
 
 
-def output_path_for(src: Path) -> Path:
-    return src.with_name(src.stem + "_remapped.mid")
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def _counts(hits: int, notes: int) -> str:
+    return f"{_plural(hits, 'hit')} ({_plural(notes, 'note')})"
 
 
 def format_report(report: ConversionReport) -> str:
-    """Текст отчёта о конвертации для показа пользователю."""
-    events = {a: 0 for a in ACTION_LABELS}
-    notes = {a: 0 for a in ACTION_LABELS}
-    for r in report.notes.values():
-        events[r.action] += r.count
-        notes[r.action] += 1
-    lines = [f"{ACTION_LABELS[a].capitalize()}: {events[a]} hits ({notes[a]} notes)" for a in ACTION_LABELS]
+    """Полный текст отчёта. hits — note_on, notes — различные номера нот; категории: moved (номер изменился),
+    unchanged (тот же номер — по правилу или без правила), deleted."""
+    t = report.totals()
+    lines = [f"Total: {_counts(t.hits, t.notes)}",
+             f"  Moved: {_counts(t.moved.hits, t.moved.notes)}",
+             f"  Unchanged: {_counts(t.unchanged.hits, t.unchanged.notes)}",
+             f"  Deleted: {_counts(t.deleted.hits, t.deleted.notes)}"]
     if report.unresolved_kept:
-        lines.append("  no rule in the profile, kept: " + ", ".join(map(str, report.unresolved_kept)))
-    lines.append(f"Merged duplicates (many-to-one, same tick): {report.merged} note_on, "
+        lines.append("  no rule in the profile, unchanged: " + ", ".join(map(str, report.unresolved_kept)))
+    lines.append(f"Merged duplicates (many-to-one, same tick): {_plural(report.merged, 'hit')}, "
                  f"{report.merged_note_offs} note_off")
     lines.append(f"Overlaps of one target note on different ticks: {report.overlaps}")
     if report.orphan_note_offs:
@@ -84,20 +100,18 @@ def format_report(report: ConversionReport) -> str:
 
 
 def report_summary(report: ConversionReport) -> str:
-    """Короткая строка отчёта: ноты всего, переставлены, удалены, оставлены на месте (keep и n → n), предупреждения."""
-    total = remapped = kept = deleted = 0
-    for r in report.notes.values():
-        total += r.count
-        if r.action == "delete":
-            deleted += r.count
-        elif r.action == "map" and r.dst != r.src:
-            remapped += r.count
-        else:
-            kept += r.count
+    """Итог одной строкой в той же терминологии, что и format_report."""
+    t = report.totals()
     w = len(report.warnings)
-    warnings = (f"{w} warning" + ("" if w == 1 else "s")) if w else "no warnings"
-    return (f"{total} notes converted · {remapped} remapped · {deleted} deleted · {kept} kept unchanged"
+    warnings = _plural(w, "warning") if w else "no warnings"
+    return (f"{_plural(t.hits, 'hit')} · {t.moved.hits} moved · {t.unchanged.hits} unchanged · {t.deleted.hits} deleted"
             f" · {warnings}")
+
+
+def batch_summary(ok: int, failed: int) -> str:
+    """«3 files converted, 1 failed»."""
+    text = f"{_plural(ok, 'file')} converted"
+    return text + (f", {failed} failed" if failed else "")
 
 
 def _label(text: str, name: str) -> QLabel:
@@ -107,14 +121,19 @@ def _label(text: str, name: str) -> QLabel:
 
 
 class SourceZone(QFrame):
-    """Зона исходного файла. Пустая — «перетащи сюда»; с файлом — имя и папка файла.
-    Клик открывает диалог выбора файла; сам drop и Ctrl+V принимает всё окно."""
+    """Зона исходных файлов. Пустая — «перетащи сюда»; один файл — имя и папка; несколько — компактный список
+    (имя и кнопка удаления, «Clear all»). Клик открывает диалог выбора файлов; сам drop и Ctrl+V принимает всё окно."""
 
-    def __init__(self, on_click) -> None:
+    ROW_H = 26
+    LIST_MAX_H = 4 * ROW_H + 2  # длиннее — прокрутка внутри списка
+
+    def __init__(self, on_click, on_remove=None, on_clear=None) -> None:
         super().__init__()
         self.setObjectName("drop")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._on_click = on_click
+        self._on_remove = on_remove or (lambda path: None)
+        self._on_clear = on_clear or (lambda: None)
         self.icon = _label("↓", "icon")
         self.name = _label("", "cardName")
         self.folder = _label("", "muted")
@@ -126,19 +145,82 @@ class SourceZone(QFrame):
         for w in (self.icon, self.name, self.folder):
             w.setAlignment(Qt.AlignmentFlag.AlignCenter)
             box.addWidget(w)
-        self.set_file(None)
+        # несколько файлов: заголовок «N files · Clear all» и список строк с кнопками удаления
+        self.files_box = QWidget()
+        self.count = _label("", "cardName")
+        self.clear_btn = QPushButton("Clear all")
+        self.clear_btn.setObjectName("link")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setToolTip("Remove all files (Esc)")
+        self.clear_btn.clicked.connect(lambda: self._on_clear())
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(self.count, stretch=1)
+        head.addWidget(self.clear_btn)
+        self.rows = QWidget()
+        self.rows_box = QVBoxLayout(self.rows)
+        self.rows_box.setContentsMargins(0, 0, 0, 0)
+        self.rows_box.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setWidget(self.rows)
+        files = QVBoxLayout(self.files_box)
+        files.setContentsMargins(0, 0, 0, 0)
+        files.setSpacing(4)
+        files.addLayout(head)
+        files.addWidget(self.scroll)
+        box.addWidget(self.files_box)
+        self.set_files([])
 
     def set_file(self, path: Path | None) -> None:
-        if path is None:
+        self.set_files([path] if path else [])
+
+    def set_files(self, paths: list[Path]) -> None:
+        many = len(paths) > 1
+        self.files_box.setVisible(many)
+        for w in (self.icon, self.name, self.folder):
+            w.setVisible(not many)
+        if not paths:
             self.icon.setText("↓")
             self.name.setText("Drop a MIDI file here")
             self.folder.setText("or click to browse  ·  Ctrl+V to paste a copied file")
-        else:
+        elif not many:
             self.icon.setText("♫")
-            self.name.setText(path.name)
-            self.folder.setText(str(path.parent))
-        self.setToolTip(f"{path}\nClick or drop to replace · Esc to clear" if path else "")
-        _repolish(self, "loaded", "true" if path else "false")
+            self.name.setText(paths[0].name)
+            self.folder.setText(str(paths[0].parent))
+        else:
+            self.count.setText(f"{len(paths)} files")
+            while self.rows_box.count():
+                item = self.rows_box.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+            for path in paths:
+                self.rows_box.addWidget(self._row(path))
+            self.scroll.setFixedHeight(min(len(paths) * self.ROW_H, self.LIST_MAX_H))
+        self.setToolTip((f"{paths[0]}\n" if len(paths) == 1 else "")
+                        + "Click or drop to replace · Esc to clear" if paths else "")
+        _repolish(self, "loaded", "true" if paths else "false")
+        self.updateGeometry()
+
+    def _row(self, path: Path) -> QWidget:
+        row = QWidget()
+        row.setFixedHeight(self.ROW_H)
+        name = _label(path.name, "muted")
+        name.setToolTip(str(path))
+        name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        remove = QPushButton("✕")
+        remove.setObjectName("remove")
+        remove.setFixedSize(24, 22)
+        remove.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove.setToolTip("Remove from the list")
+        remove.clicked.connect(lambda _=False, p=path: self._on_remove(p))
+        box = QHBoxLayout(row)
+        box.setContentsMargins(2, 0, 2, 0)
+        box.addWidget(name, stretch=1)
+        box.addWidget(remove)
+        return row
 
     def set_active(self, active: bool) -> None:
         """Подсветка во время перетаскивания файла над окном."""
@@ -151,14 +233,14 @@ class SourceZone(QFrame):
 
 
 class OutputCard(QFrame):
-    """Карточка результата: клик — показать файл в Проводнике, перетаскивание — в DAW/Проводник.
+    """Карточка результата: клик — показать файл в Проводнике, перетаскивание — в DAW/Проводник (все файлы).
     Клик от перетаскивания отличается стандартным порогом startDragDistance."""
 
     def __init__(self, on_click) -> None:
         super().__init__()
         self.setObjectName("card")
         self._on_click = on_click
-        self.path: Path | None = None
+        self.paths: list[Path] = []
         self.ready = False
         self._press_pos: QPoint | None = None
         self.name = _label("Output file", "cardName")
@@ -176,12 +258,31 @@ class OutputCard(QFrame):
         row.addLayout(text, stretch=1)
         self.set_file(None)
 
+    @property
+    def path(self) -> Path | None:
+        return self.paths[0] if self.paths else None
+
     def set_file(self, path: Path | None, ready: bool = False) -> None:
         """path — где будет (или уже лежит) результат; ready — файл готов (можно открыть и перетащить)."""
-        self.path, self.ready = path, ready
-        self.name.setText(path.name if path else "Output file")
-        self.folder.setText(str(path.parent) if path else "Not converted yet")
-        self.setToolTip(f"{path}\nClick to show in folder · drag into your DAW" if ready else "")
+        self.set_files([path] if path else [], ready)
+
+    def set_files(self, paths: list[Path], ready: bool = False, where: str = "") -> None:
+        """Несколько файлов — «N files» и where (папка результатов); один — имя и папка файла."""
+        self.paths, self.ready = list(paths), ready
+        if not paths:
+            self.name.setText("Output file")
+            self.folder.setText("Not converted yet")
+        elif len(paths) == 1:
+            self.name.setText(paths[0].name)
+            self.folder.setText(str(paths[0].parent))
+        else:
+            self.name.setText(f"{len(paths)} files")
+            self.folder.setText(where)
+        if ready:
+            tip = "\n".join(map(str, paths)) + "\nClick to show in folder · drag into your DAW"
+        else:
+            tip = ""
+        self.setToolTip(tip)
         _repolish(self, "state", "ok" if ready else "off")
         for label in self.findChildren(QLabel):  # цвет подписей зависит от state карточки
             label.style().unpolish(label)
@@ -189,7 +290,7 @@ class OutputCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor if ready else Qt.CursorShape.ArrowCursor)
 
     def _available(self) -> bool:
-        return self.ready and self.path is not None and self.path.is_file()
+        return self.ready and any(p.is_file() for p in self.paths)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._available():
@@ -202,7 +303,7 @@ class OutputCard(QFrame):
                 >= QApplication.startDragDistance()):
             self._press_pos = None  # это перетаскивание, а не клик
             mime = QMimeData()
-            mime.setUrls([QUrl.fromLocalFile(str(self.path))])
+            mime.setUrls([QUrl.fromLocalFile(str(p)) for p in self.paths if p.is_file()])
             drag = QDrag(self)
             drag.setMimeData(mime)
             drag.exec(Qt.DropAction.CopyAction)
@@ -217,12 +318,56 @@ class OutputCard(QFrame):
             self._on_click()
 
 
+class FileReportRow(QWidget):
+    """Строка отчёта пакета: имя файла, итог одной строкой (или ошибка) и свой переключатель Details."""
+
+    toggled = Signal()  # подробности раскрыты / свёрнуты — высота списка изменилась
+
+    def __init__(self, res: FileResult, details: str = "") -> None:
+        super().__init__()
+        self.name = _label(res.src.name, "cardName")
+        self.name.setToolTip(str(res.src))
+        self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.details_btn = QPushButton("Details")
+        self.details_btn.setObjectName("link")
+        self.details_btn.setCheckable(True)
+        self.details_btn.setVisible(res.ok)
+        self.details_btn.setToolTip("Show the full report")
+        self.summary = QLabel(report_summary(res.report) if res.ok else res.error)
+        self.summary.setObjectName("muted" if res.ok else "status")
+        self.summary.setWordWrap(True)
+        if not res.ok:
+            _repolish(self.summary, "state", "error")
+        self.view = QPlainTextEdit(details)
+        self.view.setReadOnly(True)
+        self.view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.view.setMaximumHeight(180)
+        self.view.setVisible(False)
+        self.details_btn.toggled.connect(self._toggle)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.addWidget(self.name, stretch=1)
+        head.addWidget(self.details_btn)
+        box = QVBoxLayout(self)
+        box.setContentsMargins(0, 4, 0, 4)
+        box.setSpacing(2)
+        box.addLayout(head)
+        box.addWidget(self.summary)
+        box.addWidget(self.view)
+
+    def _toggle(self, shown: bool) -> None:
+        self.view.setVisible(shown)
+        self.details_btn.setToolTip("Hide the full report" if shown else "Show the full report")
+        self.toggled.emit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, storage: Storage | None = None) -> None:
         super().__init__()
         self.storage = storage if storage is not None else Storage()
-        self.source: Path | None = None
-        self.output: Path | None = None  # готовый результат последней успешной конвертации
+        self.sources: list[Path] = []     # исходные файлы (один или несколько)
+        self.outputs: list[Path] = []     # готовые результаты последней конвертации (только успешные)
+        self.output_dir: Path | None = None  # None — результаты рядом с исходниками
         self.settings = ui_settings(self.storage)
         saved = self.settings.value(DIRECTION_KEY)
         self.direction = saved if saved in (FORWARD, REVERSE) else FORWARD
@@ -242,6 +387,16 @@ class MainWindow(QMainWindow):
         self.reload_profiles()
         if self._seed_error:
             self.set_status(self._seed_error, "error")
+
+    @property
+    def source(self) -> Path | None:
+        """Первый исходный файл (при одном файле — он же)."""
+        return self.sources[0] if self.sources else None
+
+    @property
+    def output(self) -> Path | None:
+        """Первый готовый результат."""
+        return self.outputs[0] if self.outputs else None
 
     def _default_size(self) -> None:
         """~1500×900, но не больше 90 % доступной области экрана (и не меньше минимального размера)."""
@@ -304,7 +459,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        self.drop = SourceZone(self.choose_file)
+        self.drop = SourceZone(self.choose_file, self.remove_source, self.clear)
         root.addWidget(self.drop)
         root.addSpacing(6)
 
@@ -347,7 +502,22 @@ class MainWindow(QMainWindow):
         root.addWidget(self.profile_stack)
         root.addSpacing(6)
 
-        root.addWidget(self._section("OUTPUT"))
+        self.folder_btn = QPushButton("Output folder…")
+        self.folder_btn.setObjectName("link")
+        self.folder_btn.setToolTip("Write all results into one folder")
+        self.folder_btn.clicked.connect(self.choose_output_folder)
+        self.folder_reset_btn = QPushButton("Next to sources")
+        self.folder_reset_btn.setObjectName("link")
+        self.folder_reset_btn.setToolTip("Write each result next to its source file")
+        self.folder_reset_btn.clicked.connect(lambda: self.set_output_dir(None))
+        self.folder_reset_btn.setVisible(False)
+        out_head = QHBoxLayout()
+        out_head.setContentsMargins(0, 0, 0, 0)
+        out_head.addWidget(self._section("OUTPUT"))
+        out_head.addStretch(1)
+        out_head.addWidget(self.folder_reset_btn)
+        out_head.addWidget(self.folder_btn)
+        root.addLayout(out_head)
         self.out_card = OutputCard(self.open_folder)
         root.addWidget(self.out_card)
         root.addSpacing(6)
@@ -384,6 +554,17 @@ class MainWindow(QMainWindow):
         self.report_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.report_view.setMaximumHeight(220)  # подробности — не на всю высоту окна
         root.addWidget(self.report_view)
+        # пакет: по строке на файл (итог + свой Details), список не длиннее BATCH_MAX_H
+        self.batch_host = QWidget()
+        self.batch_box = QVBoxLayout(self.batch_host)
+        self.batch_box.setContentsMargins(0, 0, 0, 0)
+        self.batch_box.setSpacing(0)
+        self.batch_area = QScrollArea()
+        self.batch_area.setWidgetResizable(True)
+        self.batch_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.batch_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.batch_area.setWidget(self.batch_host)
+        root.addWidget(self.batch_area)
         root.addStretch(1)
         self._set_report(None)
 
@@ -392,13 +573,42 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         root.addWidget(self.status)
 
+    BATCH_MAX_H = 300
+
     def _set_report(self, text: str | None, summary: str = "") -> None:
-        """Отчёт: короткая строка видна сразу, полный текст — по кнопке Details (свёрнут после каждой конвертации)."""
+        """Отчёт одного файла: короткая строка видна сразу, полный текст — по кнопке Details (свёрнут после каждой
+        конвертации). None — отчёта нет."""
+        self._clear_batch_rows()
         self.report_summary.setText(summary if text is not None else "The conversion report will appear here.")
         self.report_view.setPlainText(text or "")
         self.details_btn.setChecked(False)
         self._show_details(False)
         self.details_btn.setVisible(text is not None)
+
+    def _clear_batch_rows(self) -> None:
+        while self.batch_box.count():
+            item = self.batch_box.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self.batch_area.setVisible(False)
+
+    def _set_batch_report(self, files: list[FileResult], head: str) -> None:
+        """Отчёт пакета: общая строка сверху и по строке на файл (итог в той же терминологии + свой Details)."""
+        self._set_report(None)
+        ok = sum(1 for f in files if f.ok)
+        self.report_summary.setText(batch_summary(ok, len(files) - ok))
+        self.details_btn.setVisible(False)
+        for res in files:
+            row = FileReportRow(res, head + format_report(res.report) if res.ok else "")
+            row.toggled.connect(self._fit_batch_area)
+            self.batch_box.addWidget(row)
+        self.batch_area.setVisible(True)
+        self._fit_batch_area()
+
+    def _fit_batch_area(self) -> None:
+        """Высота списка — по содержимому, но не больше BATCH_MAX_H (дальше прокрутка внутри)."""
+        self.batch_box.activate()
+        self.batch_area.setFixedHeight(min(self.BATCH_MAX_H, self.batch_host.sizeHint().height() + 2))
 
     def _show_details(self, shown: bool) -> None:
         self.report_view.setVisible(shown)
@@ -473,7 +683,7 @@ class MainWindow(QMainWindow):
             self.profile_summary.setText("")
             return
         try:
-            text = profile_summary(self.storage.load_profile(profile_id), self.direction, rules=False)
+            text = profile_summary(self.storage.load_profile(profile_id), self.direction)
         except (OSError, ValueError) as e:
             text = f"Cannot read the profile: {e}"
         self.profile_summary.setText(text)
@@ -503,35 +713,56 @@ class MainWindow(QMainWindow):
 
     # --- файлы ---
 
+    def set_sources(self, paths: list[Path]) -> None:
+        """Заменить список исходных файлов (повторы убираются, порядок сохраняется); результат и отчёт сбрасываются."""
+        files: list[Path] = []
+        for path in paths:
+            path = Path(path).resolve()
+            if path not in files:
+                files.append(path)
+        self.sources, self.outputs = files, []
+        self.drop.set_files(files)
+        self._show_planned_outputs()
+        self._set_report(None)
+
+    def _where(self) -> str:
+        return str(self.output_dir) if self.output_dir is not None else "Next to the source files"
+
+    def _show_planned_outputs(self) -> None:
+        """Карточка результата до конвертации: куда лягут файлы."""
+        planned = [output_path_for(s, self.output_dir) for s in self.sources]
+        self.out_card.set_files(planned, ready=False, where=self._where())
+
     def load(self, path: str | Path) -> None:
         if not is_midi(path):
             self.set_status("Choose an existing .mid or .midi file.", "error")
             return
-        self.source = Path(path).resolve()
-        self.output = None
-        self.drop.set_file(self.source)
-        self.out_card.set_file(output_path_for(self.source))
-        self._set_report(None)
+        self.set_sources([Path(path)])
         self.set_status("File loaded. Click Convert or press Enter.")
 
     def clear(self) -> None:
-        self.source = self.output = None
-        self.drop.set_file(None)
-        self.out_card.set_file(None)
-        self._set_report(None)
+        self.set_sources([])
         self.set_status("Cleared.")
 
+    def remove_source(self, path: Path) -> None:
+        """Кнопка ✕ в списке файлов."""
+        self.set_sources([p for p in self.sources if p != path])
+        self.set_status(f"Removed {path.name}." if self.sources else "Cleared.")
+
     def choose_file(self) -> None:
-        start = str(self.source.parent) if self.source else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Open MIDI file", start,
-                                              "MIDI files (*.mid *.midi);;All files (*.*)")
-        if path:
-            self.load(path)
+        start = str(self.sources[0].parent) if self.sources else ""
+        paths, _ = QFileDialog.getOpenFileNames(self, "Open MIDI files", start,
+                                                "MIDI files (*.mid *.midi);;All files (*.*)")
+        files = [Path(p) for p in paths if is_midi(p)]
+        if files:
+            self._accept_files(files)
 
     def _accept_files(self, files: list[Path]) -> None:
-        self.load(files[0])
-        if len(files) > 1:
-            self.set_status(f"Loaded the first of {len(files)} files. MidiRemap converts one file at a time.")
+        self.set_sources(files)
+        if len(self.sources) == 1:
+            self.set_status("File loaded. Click Convert or press Enter.")
+        else:
+            self.set_status(f"{len(self.sources)} files loaded. Click Convert or press Enter.")
 
     def paste_file(self) -> None:
         files = midi_paths_from_mime(QGuiApplication.clipboard().mimeData())
@@ -540,17 +771,38 @@ class MainWindow(QMainWindow):
         else:
             self.set_status("No MIDI file in the clipboard. Copy a file in Explorer and press Ctrl+V.", "error")
 
+    def ask_output_folder(self, start: str) -> str:
+        """Диалог выбора папки результатов (пустая строка — отмена). Тесты подменяют."""
+        return QFileDialog.getExistingDirectory(self, "Output folder", start)
+
+    def choose_output_folder(self) -> None:
+        start = str(self.output_dir) if self.output_dir else (str(self.sources[0].parent) if self.sources else "")
+        folder = self.ask_output_folder(start)
+        if folder:
+            self.set_output_dir(Path(folder))
+
+    def set_output_dir(self, folder: Path | None) -> None:
+        """Папка для всех результатов; None — каждый рядом со своим исходником."""
+        self.output_dir = folder
+        self.outputs = []
+        self.folder_reset_btn.setVisible(folder is not None)
+        self._show_planned_outputs()
+        self.set_status(f"Results go to {folder}" if folder is not None
+                        else "Each result is written next to its source file.")
+
     def copy_output(self) -> None:
-        if self.output is None or not self.output.is_file():
+        files = [p for p in self.outputs if p.is_file()]
+        if not files:
             self.set_status("Convert a file first.", "error")
             return
         mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(str(self.output))])  # на Windows Qt кладёт CF_HDROP
-        mime.setText(str(self.output))
+        mime.setUrls([QUrl.fromLocalFile(str(p)) for p in files])  # на Windows Qt кладёт CF_HDROP
+        mime.setText("\n".join(map(str, files)))
         # Проводнику: вставка = копирование (DROPEFFECT_COPY), а не перемещение
         mime.setData('application/x-qt-windows-mime;value="Preferred DropEffect"', b"\x01\x00\x00\x00")
         QGuiApplication.clipboard().setMimeData(mime)
-        self.set_status("Output file copied. Paste it into a folder, or into a DAW that supports pasting files.", "ok")
+        what = "Output file" if len(files) == 1 else f"{len(files)} output files"
+        self.set_status(f"{what} copied. Paste into a folder, or into a DAW that supports pasting files.", "ok")
 
     def open_folder(self) -> None:
         """Показать файл результата в Проводнике (клик по карточке результата)."""
@@ -588,30 +840,49 @@ class MainWindow(QMainWindow):
             self.show_page(PAGE_CONVERT)
             self._accept_files(files)
         else:
-            self.set_status("Drop an existing .mid or .midi file.", "error")
+            self.set_status("Drop .mid or .midi files, or a folder with them.", "error")
 
     # --- конвертация ---
 
+    def show_error(self, text: str) -> None:
+        """Диалог ошибки (тесты подменяют)."""
+        QMessageBox.critical(self, "MidiRemap: error", text)
+
     def convert(self) -> None:
+        """Конвертация всех исходных файлов выбранным профилем и направлением; ошибка файла не останавливает остальные."""
         if self.profile_combo.currentData() is None:
             self.set_status("Create a remap profile in the Profiles tab first.", "error")
             return
-        if self.source is None or not self.source.is_file():
+        if not self.sources:
             self.set_status("Drop a MIDI file or click the area above to choose one.", "error")
             return
-        dst = output_path_for(self.source)
         try:
             profile = self.selected_profile()
-            report = convert(self.source, dst, profile, direction=self.direction)
-        except Exception as exc:  # показываем любую ошибку ядра/хранилища, окно не падает
-            QMessageBox.critical(self, "MidiRemap: error", f"Conversion failed:\n\n{exc}")
+        except Exception as exc:  # ошибка хранилища: окно не падает
+            self.show_error(f"Conversion failed:\n\n{exc}")
             self.set_status("Conversion failed.", "error")
             return
-        self.output = dst
-        self.out_card.set_file(dst, ready=True)
-        reverse = " (reverse)" if self.direction == REVERSE else ""
-        self._set_report(f"Profile: {profile.name}{reverse}\n\n" + format_report(report), report_summary(report))
-        self.set_status(f"Converted: {dst.name}", "ok")
+        result = convert_batch(self.sources, profile, self.direction, self.output_dir)
+        self.outputs = result.outputs
+        head = f"Profile: {profile.name}{' (reverse)' if self.direction == REVERSE else ''}\n\n"
+        if len(result.files) == 1:  # один файл — как раньше: итог, Details, окно ошибки
+            res = result.files[0]
+            if not res.ok:
+                self._show_planned_outputs()
+                self.show_error(f"Conversion failed:\n\n{res.error}")
+                self.set_status("Conversion failed.", "error")
+                return
+            self.out_card.set_file(res.dst, ready=True)
+            self._set_report(head + format_report(res.report), report_summary(res.report))
+            self.set_status(f"Converted: {res.dst.name}", "ok")
+            return
+        if result.outputs:
+            self.out_card.set_files(result.outputs, ready=True, where=self._where())
+        else:
+            self._show_planned_outputs()
+        self._set_batch_report(result.files, head)
+        self.set_status(batch_summary(len(result.succeeded), len(result.failed)),
+                        "error" if result.failed else "ok")
 
     def set_status(self, text: str, state: str = "") -> None:
         self.status.setText(text)

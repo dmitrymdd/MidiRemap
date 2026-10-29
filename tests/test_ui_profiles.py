@@ -489,7 +489,7 @@ def test_dirty_profile_marked_in_list(window):
     assert combo.itemText(index(pid)) == "Mark" and combo.currentIndex() == index(pid)
     saved_subtitle = combo.itemData(index(pid), SUBTITLE_ROLE)
     assert saved_subtitle in combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole)  # подсказка пункта
-    assert saved_subtitle == "EZdrummer 3 → Superior Drummer 3 · " + f"{len(page.base.rules)} rules"
+    assert saved_subtitle == "EZdrummer 3 → Superior Drummer 3"  # без числа правил
     page.clear_rules([sorted(page.work.source_map.names)[0]])
     assert combo.itemText(index(pid)) == "• Mark" and combo.itemText(index(LEGACY_ID)) == legacy_profile().name
     assert combo.currentText() == "• Mark"
