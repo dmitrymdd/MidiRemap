@@ -12,11 +12,12 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from midiremap.core.notemap import NoteMap  # noqa: E402
+from midiremap.core.pitch import pitch_name  # noqa: E402
 from midiremap.core.notenames import parse_notenames  # noqa: E402
 from midiremap.storage import Storage  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui.main_window import PAGE_MAPS, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import COL_NAME, COL_NOTE, COL_PITCH, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
 
@@ -300,7 +301,14 @@ def test_columns_without_write_to(window, storage):
     from midiremap.ui.maps_page import COLUMNS
     page = window.maps_page
     page.select(MapRef(TEMPLATE, "EZdrummer 3"))
-    assert COLUMNS == ("NOTE", "PITCH", "NAME") and page.model.columnCount() == 3
+    assert COLUMNS == ("NOTE", "NAME") and page.model.columnCount() == 2  # высоты (C#1) нет — только в подсказке
+    m = page.model
+    assert m.data(m.note_index(37, COL_NOTE), Qt.ItemDataRole.ToolTipRole) == "Note 37 · C#1"
+    alias = m.data(m.note_index(37, COL_NAME), Qt.ItemDataRole.ToolTipRole)  # «Snare: Sidestick» — на 3 нотах
+    assert alias == "Snare: Sidestick\nNote 37 · C#1\nOn notes 37, 67, 127"
+    single = next(n for n in m.map.names if len(m.group(n)) == 1)
+    assert m.data(m.note_index(single, COL_NAME), Qt.ItemDataRole.ToolTipRole) == f"Note {single} · {pitch_name(single)}"
+    assert not any("C#1" in str(m.data(m.note_index(37, c))) for c in (COL_NOTE, COL_NAME))
     assert "+N" in page.model.headerData(COL_NAME, Qt.Orientation.Horizontal, Qt.ItemDataRole.ToolTipRole)
 
 
@@ -320,7 +328,7 @@ def test_rows_grouped_by_instrument(window):
             assert instrument_group(page.work.names[r.note]) == current
     # строка-заголовок на всю ширину и не выделяется
     h = page.proxy.index(0, 0)
-    assert page.table.columnSpan(0, 0) == 3
+    assert page.table.columnSpan(0, 0) == 2
     assert not page.proxy.flags(h) & Qt.ItemFlag.ItemIsSelectable
     # General MIDI — группы по ключевым словам (префиксов нет)
     page.select(MapRef(TEMPLATE, "General MIDI"))
@@ -352,7 +360,7 @@ def test_note_table_sort_cycle_every_column(window, app):
         return m.note_at(page.proxy.mapToSource(page.table.currentIndex()).row())
 
     names = page.work.names
-    for col in (COL_NOTE, COL_PITCH):
+    for col in (COL_NOTE,):  # колонки PITCH нет
         header.sectionClicked.emit(col)
         notes = page.proxy.note_rows()
         assert m.sort == (col, False) and not m.grouped and notes == sorted(names)

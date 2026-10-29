@@ -501,9 +501,27 @@ def test_dirty_profile_marked_in_list(window):
     assert combo.itemText(index(pid)) == "Mark"
 
 
-def test_write_to_choice_shows_number_and_pitch(window, monkeypatch):
+def test_rows_show_number_without_pitch_pitch_in_tooltip(window):
+    from midiremap.ui.cable_view import note_tip
+    page = window.profiles_page
+    ed = page.cables
+    new_profile(page)
+    page.dismiss_suggestions()
+    page.assign_note([37], 37)
+    assert note_tip([37]) == "Note 37 · C#1" and note_tip([37, 76]) == "Notes 37 · C#1, 76 · E4"
+    alias = ed.pool_items[38]  # «Snare: Center» на нескольких нотах — высоты всех в подсказке
+    assert alias.number == "38" and not hasattr(alias, "pitch") and alias.lines == [(0, "38")]
+    assert note_tip(alias.notes) in alias.toolTip() and "38 · D1, 39 · D#1" in alias.toolTip()
+    single = next(i for i in ed.pool_rows if len(i.notes) == 1)
+    assert note_tip(single.notes) in single.toolTip().splitlines()[:2]  # первая строка (или вторая — после имени)
+    src = ed.source_items[37]
+    assert "Note 37 · C#1" in src.toolTip().splitlines()[:2]
+    tgt = next(t for t in ed.target_items.values() if 37 in t.notes)
+    assert all(len(line) == 2 for line in tgt.lines) and "37 · C#1" in tgt.toolTip()
+
+
+def test_write_to_choice_shows_numbers_only(window, monkeypatch):
     from PySide6.QtWidgets import QDialog, QInputDialog
-    from midiremap.core.pitch import pitch_name
     from midiremap.ui.profiles_page import ProfilesPage
     page = window.profiles_page
     new_profile(page)
@@ -515,7 +533,7 @@ def test_write_to_choice_shows_number_and_pitch(window, monkeypatch):
         return QDialog.DialogCode.Accepted
     monkeypatch.setattr(QInputDialog, "exec", fake_exec)
     assert ProfilesPage.ask_write_to(page, "Hi-Hat: Closed Tip", [11, 42, 61]) == 42
-    assert seen["items"] == [f"{n} · {pitch_name(n)}" for n in (11, 42, 61)]
+    assert seen["items"] == ["11", "42", "61"]  # высота ноты барабанам не нужна
 
 
 def test_hotkeys_in_tooltips_and_short_status(window, tmp_path):
@@ -1365,7 +1383,7 @@ def test_map_change_resets_reverse_rules_in_one_undo_step(window, app):
 
 
 def test_convert_direction_toggle(app, storage, tmp_path):
-    from midiremap.core.profile import REVERSE
+    from midiremap.core.profile import FORWARD, REVERSE
     from midiremap.ui.main_window import DIRECTION_KEY
     w = MainWindow(storage)
     page = w.profiles_page
@@ -1376,10 +1394,11 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     saved = storage.load_profile(pid)
     w.show_page(PAGE_CONVERT)
     w.profile_combo.setCurrentIndex(w.profile_combo.findData(pid))
-    assert w.direction_btn.text() == "→" and "Click to convert in reverse" in w.direction_btn.toolTip()
+    assert w.direction_btn.text() == "⇄" and w.direction_btn.toolTip() == "Swap source and target"
+    assert w.direction_btn.property("dir") == FORWARD
     assert w.profile_summary.text() == "EZdrummer 3 → Superior Drummer 3"
     w.direction_btn.click()
-    assert w.direction == REVERSE and w.direction_btn.text() == "←"
+    assert w.direction == REVERSE and w.direction_btn.text() == "⇄" and w.direction_btn.property("dir") == REVERSE
     assert w.profile_summary.text() == "Superior Drummer 3 → EZdrummer 3"
     assert w.settings.value(DIRECTION_KEY) == REVERSE
     src = tmp_path / "groove.mid"
@@ -1391,10 +1410,10 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     assert w.drop.single_result.text().startswith("✓ ")  # итог — под именем файла, полный — в Details
     w.close()
     w2 = MainWindow(storage)  # направление — между запусками
-    assert w2.direction == REVERSE and w2.direction_btn.text() == "←"
+    assert w2.direction == REVERSE and w2.direction_btn.property("dir") == REVERSE
     w2.direction_btn.click()
     w2.close()
-    assert MainWindow(storage).direction_btn.text() == "→"
+    assert MainWindow(storage).direction_btn.property("dir") == FORWARD
 
 
 # --- обратное направление в редакторе (8b3b2) ---
@@ -1527,24 +1546,23 @@ def test_direction_button_flips_and_is_not_an_undo_step(window, app):
     btn = page.direction_btn
     assert not btn.isEnabled() and btn.toolTip() == ""  # профиля нет
     new_profile(page, "Bare", None, None)
-    assert btn.toolTip() == "no map → no map. Click to switch to the reverse direction"
+    assert btn.toolTip() == "Swap source and target"
     page, ed = cables_page(window)
-    assert btn.isEnabled() and btn.text() == "→" and btn.property("dir") == FORWARD
-    assert btn.toolTip() == "EZdrummer 3 → Superior Drummer 3. Click to switch to the reverse direction"
+    assert btn.isEnabled() and btn.text() == "⇄" and btn.property("dir") == FORWARD
     steps = len(page._undo)
     btn.click()
     assert page.direction == REVERSE and ed.direction == REVERSE and len(page._undo) == steps and not page.redo()
-    assert btn.text() == "←" and btn.property("dir") == REVERSE  # цвет стрелки — цвет ←
-    assert btn.toolTip() == "Superior Drummer 3 → EZdrummer 3. Click to switch to the forward direction"
+    assert btn.text() == "⇄" and btn.property("dir") == REVERSE  # направление видно цветом ←
+    assert btn.toolTip() == "Swap source and target"
     page.toggle_strike([ed.pool_rows[0].notes[0]])  # правка в ←
     btn.click()
-    assert page.direction == FORWARD and btn.text() == "→"
+    assert page.direction == FORWARD and btn.property("dir") == FORWARD
     btn.click()
     # открытие профиля — снова в →
     page.answers["unassigned"] = set()
     assert page.save() and page.direction == REVERSE
     page.select(LEGACY_ID)
-    assert page.direction == FORWARD and btn.text() == "→" and ed.direction == FORWARD
+    assert page.direction == FORWARD and btn.property("dir") == FORWARD and ed.direction == FORWARD
 
 
 def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
@@ -1677,6 +1695,53 @@ def test_double_click_reverse_sets_forward_rule(window, app):
     assert page.direction == REVERSE
 
 
+def _scene_cables(ed):
+    return {c.ends for c in ed.cable_items}
+
+
+def test_double_click_forward_keeps_every_other_cable(window, app):
+    # → : у каждой ноты цели с несколькими кабелями — двойной клик по неосновному; прочие кабели на месте
+    page, ed = cables_page(window)
+    item = secondary_cable(ed)
+    before, rules = _scene_cables(ed), dict(page.work.rules)
+    double_click(app, ed.view, item.path().pointAtPercent(0.5))
+    assert any(c.cable.primary and c.ends == item.ends for c in ed.cable_items)
+    assert _scene_cables(ed) == before and page.work.rules == rules
+
+
+def test_double_click_reverse_keeps_every_other_cable(window, app):
+    from midiremap.core.profile import REVERSE
+    page, ed = cables_page(window, accept=False)
+    page.assign_note([38], 38)              # → 38 «Snare: Center» -> 38; в ← выведено 38 -> 38 (основной)
+    page.set_direction(REVERSE)
+    page.assign_note([40], 38)               # ← 40 «Snare: Rimshot» -> 38 (неосновной)
+    QApplication.processEvents()
+    item = next(c for c in ed.cable_items if c.ends == (40, 38))
+    assert not item.cable.primary
+    before = _scene_cables(ed)
+    double_click(app, ed.view, item.path().pointAtPercent(0.5))
+    assert page.work.rules[38] == Rule.map_to(40)  # основной сменился
+    assert _scene_cables(ed) == before  # кабель ← 38 -> 38 остаётся (неосновным)
+    assert any(c.cable.primary and c.ends == (40, 38) for c in ed.cable_items)
+    assert not any(c.cable.primary and c.ends == (38, 38) for c in ed.cable_items)
+
+
+def test_reverse_double_click_undo_restores_exactly(window, app):
+    from midiremap.core.profile import REVERSE
+    page, ed = cables_page(window, accept=False)
+    page.assign_note([38], 38)
+    page.set_direction(REVERSE)
+    page.assign_note([40], 38)
+    QApplication.processEvents()
+    snapshot, cables = page.work.to_dict(), _scene_cables(ed)
+    item = next(c for c in ed.cable_items if c.ends == (40, 38))
+    double_click(app, ed.view, item.path().pointAtPercent(0.5))
+    assert page.work.to_dict() != snapshot
+    assert page.undo()
+    assert page.work.to_dict() == snapshot and _scene_cables(ed) == cables  # в точности как было
+    assert page.redo() and page.work.rules[38] == Rule.map_to(40)
+
+
 def test_undo_redo_switch_to_direction_of_the_step(window, app):
     from midiremap.core.profile import FORWARD, REVERSE
     page, ed = reverse_page(window)
@@ -1690,7 +1755,7 @@ def test_undo_redo_switch_to_direction_of_the_step(window, app):
     assert page.undo() and page.direction == FORWARD and ed.direction == FORWARD and src in page.work.rules
     assert page.undo() and page.direction == REVERSE and ed.direction == REVERSE
     assert note not in page.work.effective_reverse()
-    assert page.direction_btn.text() == "←"
+    assert page.direction_btn.property("dir") == REVERSE
     page.set_direction(FORWARD)
     assert page.redo() and page.direction == REVERSE and page.work.effective_reverse()[note] == Rule.delete()
     assert page.redo() and page.direction == FORWARD and src not in page.work.rules
@@ -1926,7 +1991,7 @@ def test_direction_button_centered_between_map_buttons(window, app):
         assert right_of_a < btn.mapTo(page, btn.rect().topLeft()).x() and btn.mapTo(page, btn.rect().topRight()).x() < left_of_b
         assert abs(center - (right_of_a + left_of_b) / 2) <= 3  # по центру промежутка для кабелей
     page.set_direction(REVERSE)  # кнопки карт меняются местами по смыслу, направление — на месте
-    assert page.from_btn.text() == page.work.target_map.name and page.direction_btn.text() == "←"
+    assert page.from_btn.text() == page.work.target_map.name and page.direction_btn.property("dir") == REVERSE
 
 def test_comboboxes_draw_own_arrow_and_style_popup(window, app):
     from midiremap.ui.combo import ComboBox
@@ -2150,7 +2215,7 @@ def test_drop_on_single_note_articulation_number(window, app, direction):
 # --- полировка: Match by number, статус, горячие клавиши, прокрутка ---
 
 def test_match_by_number_button_one_undo_step(window, app):
-    from midiremap.core.profile import REVERSE, names_differ, number_matches, primary_pairs
+    from midiremap.core.profile import REVERSE, number_matches, primary_pairs
     page, ed = bare_page(window)
     t, u = shared_numbers(page.work, 2)
     page.work.rules = {u: Rule.map_to(t)}  # номер t уже занят кабелем от u
@@ -2164,9 +2229,7 @@ def test_match_by_number_button_one_undo_step(window, app):
     assert all(w.rules[n] == Rule.map_to(n) for n in expected) and w.rules[u] == Rule.map_to(t)
     assert w.rules[struck] == Rule.delete()
     assert (u, t) in primary_pairs(w)  # как двойной клик: занятый номер — новый кабель неосновной
-    differ = [n for n in expected if names_differ(page.work, n, n)]
-    tail = f" · {len(differ)} with different names" if differ else ""
-    assert page.status.text() == f"Matched {len(expected)} notes by number{tail}"
+    assert page.status.text() == f"Matched {len(expected)} notes by number"
     assert len(page._undo) == steps + 1 and all(n in ed.source_items for n in expected)
     page.match_btn.click()
     assert page.status.text() == "No notes match by number" and len(page._undo) == steps + 1
@@ -2178,13 +2241,12 @@ def test_match_by_number_button_one_undo_step(window, app):
     assert all(page.work.effective_reverse()[n] == Rule.map_to(n) for n in rev)
 
 
-def test_match_by_number_reports_different_names_on_real_maps(window):
+def test_names_differ_tooltip_on_real_maps(window):
     page = window.profiles_page
     new_profile(page)  # EZD3 -> SD3
     page.dismiss_suggestions()
     assert page.match_by_number() == 122
-    # «Snare: Sidestick» -> «Snare: Forward brushTrig» и т. п. — не молчаливый успех
-    assert page.status.text() == "Matched 122 notes by number · 79 with different names"
+    assert page.status.text() == "Matched 122 notes by number"  # без числа разных имён
     # подсказка кабеля — у любого кабеля с разными именами, в обоих направлениях
     from midiremap.core.profile import REVERSE, names_differ
     for direction in (None, REVERSE):
@@ -2196,89 +2258,6 @@ def test_match_by_number_reports_different_names_on_real_maps(window):
         for c in items:
             src, dst = shown.source_map.names[c.ends[0]], shown.target_map.names[c.ends[1]]
             assert c.toolTip().startswith(f"Names differ: {src} → {dst}\n") == (c in differ)
-
-
-def _matched_with_marks(page):
-    """EZD3 -> SD3, Match by number: отметки «≠» стоят. Возвращает пары (нота, цель) с разными именами."""
-    from midiremap.core.profile import names_differ
-    if page.current is None:
-        new_profile(page)
-        page.dismiss_suggestions()
-    page.match_by_number()
-    differ = {(n, n) for n in page.work.rules if page.work.rules[n].action == "map"
-              and page.work.rules[n].dst == n and names_differ(page.work, n, n)}
-    assert page.cables.marks and page.cables.marks <= differ
-    return differ
-
-
-def marked(ed):
-    return [c for c in ed.cable_items if c.marked]
-
-
-def test_match_by_number_marks_only_its_new_cables_with_different_names(window):
-    from midiremap.core.profile import names_differ
-    page = window.profiles_page
-    ed = page.cables
-    new_profile(page)
-    page.dismiss_suggestions()
-    before = 6  # «Snare: Zone Trigger» -> 38 «Snare: Center»: кабель до Match by number, имена разные
-    page.assign_note([before], 38)
-    page.match_by_number()
-    assert len(ed.marks) == 78 and (before, 38) not in ed.marks
-    cables = {c.ends: c for c in ed.cable_items}
-    assert not cables[(before, 38)].marked  # старый кабель — без «≠», но с подсказкой
-    assert cables[(before, 38)].toolTip().startswith("Names differ: Snare: Zone Trigger → Snare: Center")
-    assert marked(ed) and all(names_differ(ed.shown, *c.ends) and c.ends in ed.marks for c in marked(ed))
-    same = [c for c in ed.cable_items if c.ends[0] == c.ends[1] and not names_differ(ed.shown, *c.ends)]
-    assert same and not any(c.marked for c in same)  # одинаковые имена — без отметки
-    # отметка — не жёлтая подсветка проблем: строки не меняют фон
-    assert not any(ed.source_items[c.ends[0]].warn for c in marked(ed))
-    # перестройка без правки (свернуть/развернуть группу) отметки не снимает
-    key = ed.current.scene.target_headers[0].key
-    ed.toggle_target(key)
-    ed.toggle_target(key)
-    assert marked(ed)
-
-
-@pytest.mark.parametrize("action", ["edit", "undo", "redo", "direction", "save", "map"])
-def test_name_marks_last_until_next_edit_undo_redo_direction_or_save(window, action):
-    from midiremap.core.profile import REVERSE
-    page = window.profiles_page
-    ed = page.cables
-    _matched_with_marks(page)
-    if action == "edit":
-        page.toggle_strike([next(iter(ed.marks))[0]])
-    elif action == "undo":
-        assert page.undo()
-    elif action == "redo":
-        page.undo()
-        page.redo()
-    elif action == "direction":
-        page.set_direction(REVERSE)
-        assert not marked(ed) and not ed.marks
-        page.set_direction(page.direction)  # то же направление — ничего не меняет
-    elif action == "save":
-        page.answers["unassigned"] = set()
-        assert page.save()
-    else:
-        page.choose_map("target", MapRef(TEMPLATE, "General MIDI"))
-    assert not ed.marks and not marked(ed)
-    assert not page.status.toolTip() and not page.select_marked()
-
-
-def test_clicking_match_status_selects_marked_cables(window, app):
-    page = window.profiles_page
-    ed = page.cables
-    _matched_with_marks(page)
-    assert page.status.toolTip()
-    QTest.mouseClick(page.status, Qt.MouseButton.LeftButton)
-    assert ed.selection == ed.marked_notes() and ed.selection
-    assert all(ed.source_items[n].selected for n in ed.selection)
-    ed.set_selection(set())
-    page._status_fx.setOpacity(0.0)  # статус погас — невидимый текст не кликается
-    assert not page.select_marked() and not ed.selection
-    page.set_status("Something else")  # другое сообщение — клик ничего не выделяет, отметки остаются
-    assert not page.select_marked() and marked(ed)
 
 
 def test_status_fades_after_last_message(window, app):

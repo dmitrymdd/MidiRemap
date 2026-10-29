@@ -37,9 +37,9 @@ SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 1
 HEADER_ROLE = Qt.ItemDataRole.UserRole + 2
 OTHERS_ROLE = Qt.ItemDataRole.UserRole + 4  # сколько ещё нот карты с этим именем (бейдж «+N»)
 
-COL_NOTE, COL_PITCH, COL_NAME = range(3)
-COLUMNS = ("NOTE", "PITCH", "NAME")
-COLUMN_TIPS = ("MIDI note number", "Pitch name (60 = C3, Toontrack convention)",
+COL_NOTE, COL_NAME = range(2)
+COLUMNS = ("NOTE", "NAME")  # высота ноты (C#1) для барабанов смысла не несёт — только в подсказке ячейки
+COLUMN_TIPS = ("MIDI note number (the pitch name, 60 = C3, is in the cell tooltip)",
                "Articulation name. Empty = the note is not in the map. +N — the name is on N more notes")
 # клик по заголовку столбца: по возрастанию → по убыванию → по группам инструментов (вид по умолчанию)
 SORT_TIPS = ("Click to list notes in ascending order", "Click to list notes in ascending order",
@@ -171,7 +171,7 @@ class NoteTableModel(QAbstractTableModel):
             self.relayout()
 
     def _sorted_notes(self) -> list[int]:
-        """Ноты 0–127 по колонке сортировки. NOTE и PITCH — по номеру (высота растёт вместе с номером); NAME —
+        """Ноты 0–127 по колонке сортировки. NOTE — по номеру; NAME —
         по имени (без учёта регистра), равные — по номеру; ноты без имени — всегда в конце."""
         col, desc = self.sort
         notes = list(range(128))
@@ -254,8 +254,6 @@ class NoteTableModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             if col == COL_NOTE:
                 return str(n)
-            if col == COL_PITCH:
-                return pitch_name(n)
             if col == COL_NAME:
                 return name or ""
             return None
@@ -265,8 +263,11 @@ class NoteTableModel(QAbstractTableModel):
             return QColor(TOKENS["text_faint"])
         if role == Qt.ItemDataRole.TextAlignmentRole and col != COL_NAME:
             return int(Qt.AlignmentFlag.AlignCenter)
-        if role == Qt.ItemDataRole.ToolTipRole and col == COL_NAME and len(notes) > 1:
-            return f"{name}\nOn notes {', '.join(map(str, notes))}"
+        if role == Qt.ItemDataRole.ToolTipRole:
+            tip = f"Note {n} · {pitch_name(n)}"
+            if col == COL_NAME and len(notes) > 1:
+                tip = f"{name}\n{tip}\nOn notes {', '.join(map(str, notes))}"
+            return tip
         return None
 
     def flags(self, index):
@@ -555,7 +556,7 @@ class MapsPage(QWidget):
         right.addWidget(self.source_label)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search: name, note number or pitch (e.g. C1)")
+        self.search.setPlaceholderText("Search: name or note number")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._apply_filter)
         self.named_only = QCheckBox("Show only named notes")
@@ -585,9 +586,8 @@ class MapsPage(QWidget):
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)  # по умолчанию — группы, без стрелки
         header.sectionClicked.connect(self.sort_by)
-        for col, width in ((COL_NOTE, 64), (COL_PITCH, 64)):
-            header.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-            self.table.setColumnWidth(col, width)
+        header.setSectionResizeMode(COL_NOTE, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_NOTE, 64)
         header.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         self.table.setItemDelegateForColumn(COL_NAME, NameDelegate(self.table))
         self.table.installEventFilter(self)

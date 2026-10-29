@@ -40,7 +40,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import NoteMap, duplicate_map
-from ..core.pitch import pitch_name
 from ..core.profile import (
     FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
     keep_existing_primary, match_by_number, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
@@ -67,7 +66,6 @@ STATUS_MS, STATUS_FADE_MS = 4000, 600  # статус гаснет через ~4
 DIRECTION_W = 44  # кнопка направления между картами, px
 MATCH_TIP = ("Connect every unassigned note to the same number in the other map, if it is there\n"
              "(struck-through and connected notes are left alone; one undo step)")
-MARKS_TIP = "Click to select the cables marked ≠ (names differ)"
 
 SOURCE_TIP = "Source map: the layout the MIDI file was made for (e.g. Guitar Pro 8 export)\nClick to choose a map"
 TARGET_TIP = "Target map: the layout of the plugin the converted file is for\nClick to choose a map"
@@ -78,7 +76,7 @@ SUGGEST_TIP = ("Notes whose names match the target map, shown as dashed cables.\
 DISMISS_TIP = "Hide the suggestions for these maps"
 
 DIRECTION_SIDES = {FORWARD: "source", REVERSE: "target"}  # карта исходной стороны направления
-DIRECTION_TIP = "{maps}. Click to switch to the {other} direction"
+SWAP_TEXT, SWAP_TIP = "⇄", "Swap source and target"  # кнопка направления (здесь и на Convert); ← — цвет reverse
 MAP_BTN_MIN = 130  # кнопка выбора карты над колонкой не уже, px
 MAP_BTN_PAD = 48   # поля и стрелка меню кнопки выбора карты, px (сверх ширины текста)
 COMBO_CHARS = 30  # ширина комбобокса профилей — в символах (строка заголовка от него не прыгает)
@@ -95,7 +93,6 @@ def _undoable(fn):
         if self.work is None or self._in_edit:
             return fn(self, *args, **kwargs)
         before = self._snapshot()
-        self._clear_marks()  # «≠» Match by number живут до следующей правки
         self._in_edit = True
         self._reverse_done = False
         try:
@@ -335,7 +332,6 @@ class ProfilesPage(QWidget):
         bar.addWidget(self.dismiss_btn)
         self.cables.to_head.addWidget(self.suggest_bar)
         self.cables.to_slot.installEventFilter(self)  # ширина колонки «to» — уместить панель подсказок
-        self.status.installEventFilter(self)  # клик по статусу Match by number — выделить кабели «≠»
 
         # отмена/повтор — на всё окно, пока видна вкладка Profiles (фокус может быть где угодно: комбобокс, кнопки,
         # вкладки); на других вкладках выключены (showEvent / hideEvent)
@@ -351,8 +347,6 @@ class ProfilesPage(QWidget):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.cables.to_slot and event.type() == QEvent.Type.Resize:
             self._fit_suggest_bar()
-        if obj is self.status and event.type() == QEvent.Type.MouseButtonPress:
-            self.select_marked()
         return False
 
     def showEvent(self, event) -> None:
@@ -412,7 +406,7 @@ class ProfilesPage(QWidget):
     def write_to_dialog(self, name: str, notes: list[int], preselect: int | None = None
                         ) -> tuple[QInputDialog, list[str]]:
         """Диалог вопроса о Write to (без показа) и его пункты. В ← цель — исходная карта: выбор ляжет в её копию."""
-        items = [f"{n} · {pitch_name(n)}" for n in notes]
+        items = [str(n) for n in notes]
         dlg = QInputDialog(self)
         dlg.setWindowTitle("Write to")
         dlg.setLabelText(f'"{name}" is on several notes. Write converted notes to:')
@@ -600,7 +594,6 @@ class ProfilesPage(QWidget):
         if self.work is None or not self._undo:
             return False
         snap = self._undo.pop()
-        self._clear_marks()
         self._redo.append(self._snapshot(snap[2]))
         self.set_direction(snap[2])
         self._restore(snap)
@@ -610,7 +603,6 @@ class ProfilesPage(QWidget):
         if self.work is None or not self._redo:
             return False
         snap = self._redo.pop()
-        self._clear_marks()
         self._undo.append(self._snapshot(snap[2]))
         self.set_direction(snap[2])
         self._restore(snap)
@@ -623,7 +615,6 @@ class ProfilesPage(QWidget):
         if direction == self.direction:
             self._show_direction(direction)
             return
-        self._clear_marks()
         self._show_direction(direction)
         self._sync_suggestions()
         self.cables.set_direction(direction)
@@ -635,8 +626,8 @@ class ProfilesPage(QWidget):
 
     def _show_direction(self, direction: str) -> None:
         self.direction = direction
-        self.direction_btn.setText("→" if direction == FORWARD else "←")
-        repolish(self.direction_btn, "dir", direction)  # цвет стрелки — цвет направления
+        self.direction_btn.setText(SWAP_TEXT)
+        repolish(self.direction_btn, "dir", direction)  # направление видно цветом: в ← — цвет reverse
 
     @property
     def source_btn(self) -> QPushButton:
@@ -663,15 +654,9 @@ class ProfilesPage(QWidget):
             self.work.source_map, self.work.reverse_rules = new.target_map, dict(new.rules)
 
     def _update_direction(self) -> None:
-        """Подсказка кнопки направления — карты направления словами и куда переключит клик."""
+        """Кнопка направления «⇄»: есть профиль — активна (карты сторон видны над колонками)."""
         self.direction_btn.setEnabled(self.work is not None)
-        if self.work is None:
-            self.direction_btn.setToolTip("")
-            return
-        q = self.work.oriented(self.direction)
-        maps = f"{map_summary(q.source_map)} → {map_summary(q.target_map)}"
-        other = "reverse" if self.direction == FORWARD else "forward"
-        self.direction_btn.setToolTip(DIRECTION_TIP.format(maps=maps, other=other))
+        self.direction_btn.setToolTip(SWAP_TIP if self.work is not None else "")
 
     def unassigned(self) -> list[int]:
         """Ноты исходной карты без правила."""
@@ -974,15 +959,16 @@ class ProfilesPage(QWidget):
         moved = sum(1 for n, r in new.rules.items() if r != q.rules.get(n))
         self._put(new)
         self._changed()
-        self.set_status(f"Write to: {note} ({pitch_name(note)}) · {moved} rule(s) moved.")
+        self.set_status(f"Write to: {note} · {moved} rule(s) moved.")
         return True
 
     @_undoable
     def make_primary(self, src: int, dst: int) -> bool:
         """Двойной клик по кабелю (src -> dst ориентированного профиля) — сделать его основным.
         → (a -> b): обратное правило b -> a (with_primary_cable; алиасы-«дублёры» b — туда же).
-        ← (b -> a): прямое правило a -> b вместо прежнего a -> b' (with_forward_primary; выведенные для b'
-        обратные правила следуют за прямыми). Уже основной — ничего. Один шаг отмены."""
+        ← (b -> a): прямое правило a -> b вместо прежнего a -> b' (with_forward_primary; обратное правило b'
+        остаётся как было — keep_old_target_reverse, прочие кабели не меняются). Уже основной — ничего.
+        Один шаг отмены."""
         if self.work is None:
             return False
         a, b = (src, dst) if self.direction == FORWARD else (dst, src)
@@ -1036,31 +1022,13 @@ class ProfilesPage(QWidget):
         стороны, — n -> n (core match_by_number; как двойной клик по каждой). Один шаг отмены."""
         if self.work is None:
             return 0
-        new, done, differ = match_by_number(self._oriented())
+        new, done = match_by_number(self._oriented())
         if not done:
             self.set_status("No notes match by number")
             return 0
         self._put_same_numbers(new, done)
-        text = f"Matched {len(done)} note{'' if len(done) == 1 else 's'} by number"
-        self.set_status(text + (f" · {len(differ)} with different names" if differ else ""), "ok")
-        if differ:  # «≠» — только у только что сделанных кабелей; снимаются следующей правкой (_undoable)
-            self.cables.set_marks({(n, n) for n in differ})
-            self.status.setToolTip(MARKS_TIP)
-            self.status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_status(f"Matched {len(done)} note{'' if len(done) == 1 else 's'} by number", "ok")
         return len(done)
-
-    def _clear_marks(self) -> None:
-        self.cables.set_marks(set())
-        self.status.setToolTip("")
-        self.status.unsetCursor()
-
-    def select_marked(self) -> bool:
-        """Клик по статусу Match by number: выделить строки кабелей «≠» (пока статус виден и отметки есть)."""
-        notes = self.cables.marked_notes()
-        if not notes or self._status_fx.opacity() == 0 or not self.status.toolTip():
-            return False
-        self.cables.set_selection(notes)
-        return True
 
     def _other_side(self) -> str:
         return DIRECTION_SIDES[REVERSE if self.direction == FORWARD else FORWARD]  # карта другой стороны
@@ -1174,8 +1142,6 @@ class ProfilesPage(QWidget):
     def set_status(self, text: str, state: str = "") -> None:
         """Отклик на действие (не счётчик): виден сразу, гаснет через STATUS_MS после последнего сообщения."""
         self.status.setText(text)
-        self.status.setToolTip("")  # клик выделяет «≠» только у статуса Match by number
-        self.status.unsetCursor()
         repolish(self.status, "state", state)
         self._status_fade.stop()
         self._status_fx.setOpacity(1.0)

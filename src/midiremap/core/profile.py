@@ -309,17 +309,53 @@ def with_primary_cable(p: RemapProfile, a: int, b: int) -> RemapProfile:
 
 def with_forward_primary(p: RemapProfile, a: int, b: int) -> RemapProfile:
     """Новый профиль: обратный кабель b -> a — основной (двойной клик в направлении ←): прямое правило a -> b
-    (на какую ноту a пишется при прямой конвертации) вместо прежнего a -> b'. Обратные правила, выведенные для
-    b', следуют за прямыми (sync_reverse). Постусловие: (a, b) в primary_pairs() — если синхронизация сдвинула
-    правило b, b -> a ставится явно. Нет обратного правила b -> a — ValueError."""
+    (на какую ноту a пишется при прямой конвертации) вместо прежнего a -> b'. Меняется только то, какой кабель
+    основной: обратное правило прежней цели b' (и его копии у алиасов) остаётся как было (keep_old_target_reverse),
+    прочие выведенные обратные правила следуют за прямыми (sync_reverse). Постусловие: (a, b) в primary_pairs() —
+    если синхронизация сдвинула правило b, b -> a ставится явно. Нет обратного правила b -> a — ValueError."""
     if p.effective_reverse().get(b) != Rule.map_to(a):
         raise ValueError(f"target note {b} is not mapped back to {a}")
     out = copy.deepcopy(p)
     out.rules[a] = Rule.map_to(b)
     out.reverse_rules = sync_reverse(p, out)
+    keep_old_target_reverse(p, out, a)
     pin_primary(out, a, b)
     out.reverse_rules = normalized_reverse(out)
     return out
+
+
+def keep_old_target_reverse(before: RemapProfile, after: RemapProfile, a: int) -> list[int]:
+    """Прямое правило a сменило цель b' -> b (before -> after): обратное правило b' — каким было в before.
+
+    Без этого sync_reverse убрал бы выведенное b' -> a (на b' больше не идёт кабель от a) или перевёл бы его на
+    другой источник — в ← пропадал бы кабель, которого не трогали. Фиксируется (задаётся явно, значением из
+    before.effective_reverse()) только правило b' и копии его правила у алиасов артикуляции b' без своих кабелей
+    (b' — их донор по derive_reverse: это одно и то же правило). Только выведенные: ручное правило sync_reverse и
+    так не трогает. Остальные обратные правила остаются выведенными и дальше следуют за прямыми.
+    Фиксировать приходится ПОСЛЕ sync_reverse: правило, равное выведенному, она считает следующим за прямыми.
+    after меняется на месте; возвращает зафиксированные ноты (по возрастанию)."""
+    old_rule, new_rule = before.rules.get(a), after.rules.get(a)
+    if old_rule is None or old_rule.action != "map" or old_rule == new_rule:
+        return []
+    old = old_rule.dst
+    notes = [old]
+    tgt = before.target_map
+    if tgt is not None and old in tgt.names:
+        group = articulations(tgt)[normalize_name(tgt.names[old])]
+        incoming = _incoming(before)
+        if _donor(tgt, group, incoming) == old:
+            notes += [n for n in group if n != old and n not in incoming]
+    was, derived = before.effective_reverse(), derive_reverse(before)
+    manual = before.reverse_rules or {}
+    keep = [n for n in sorted(notes)
+            if n in was and (before.reverse_rules is None or manual.get(n) == derived.get(n))]
+    rev = after.effective_reverse()
+    keep = [n for n in keep if rev.get(n) != was[n]]
+    if keep:
+        for n in keep:
+            rev[n] = was[n]
+        after.reverse_rules = dict(sorted(rev.items()))
+    return keep
 
 
 def pin_primary(p: RemapProfile, a: int, b: int) -> None:
@@ -577,14 +613,13 @@ def names_differ(p: RemapProfile, src: int, dst: int) -> bool:
     return a is not None and b is not None and normalize_name(a) != normalize_name(b)
 
 
-def match_by_number(p: RemapProfile) -> tuple[RemapProfile, list[int], list[int]]:
+def match_by_number(p: RemapProfile) -> tuple[RemapProfile, list[int]]:
     """n → n для всех number_matches(p) (как двойной клик по строке Unassigned: connect_same_numbers).
-    Возвращает новый профиль, подключённые ноты и те из них, у которых имена разные (names_differ)."""
+    Возвращает новый профиль и подключённые ноты."""
     notes = number_matches(p)
     if not notes:
-        return copy.deepcopy(p), [], []
-    out, done = connect_same_numbers(p, notes, list(p.target_map.names))
-    return out, done, [n for n in done if names_differ(p, n, n)]
+        return copy.deepcopy(p), []
+    return connect_same_numbers(p, notes, list(p.target_map.names))
 
 
 def legacy_profile() -> RemapProfile:

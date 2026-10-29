@@ -50,7 +50,7 @@ def normalize_name(s: str) -> str:
 # совпавшая категория выигрывает — «bass drum» раньше барабанов, «ride bell» — Ride (Ride раньше перкуссии),
 # «Chinese Cymbal» — China (раньше Cymbal), «Hi Bongo» — не Hi-Hat (нужно «hat»).
 _KEYWORD_GROUPS: tuple[tuple[str, re.Pattern], ...] = tuple((label, re.compile(rx)) for label, rx in (
-    ("Kick", r"\bkick|\bbass ?drum|\bgrancassa"),
+    ("Kick", r"\bkick|\bbass ?drum"),  # «Grancassa» — оркестровый большой барабан, не бочка установки: Percussion
     ("Hi-Hat", r"\bhi-?hat|\bhi hat|\bhihat|\bhats?\b"),
     ("Snare", r"\bsnare|\bside ?stick|\brim ?shot|\brim\b"),
     ("Toms", r"\btoms?\b|floor ?tom|rack ?tom"),
@@ -61,7 +61,7 @@ _KEYWORD_GROUPS: tuple[tuple[str, re.Pattern], ...] = tuple((label, re.compile(r
     ("Cymbal", r"\bcymbal|\bpiatti\b"),
     ("Percussion", r"\bclap|tambourine|cowbell|\bconga|\bbongo|\bshaker|\bcabasa|\bmaraca|\bagogo|\btimbale"
                    r"|\bguiro|\bclaves?\b|\bwhistle|wood ?block|\btriangle|vibraslap|\bcuica|castanet|\bsurdo"
-                   r"|bell tree|jingle|tinkle|\bgolpe|\bcajon|\bchimes?\b"),
+                   r"|bell tree|jingle|tinkle|\bgolpe|\bcajon|\bchimes?\b|\bgrancassa"),
 ))
 
 

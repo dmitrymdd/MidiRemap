@@ -66,7 +66,7 @@ ROW = 28            # шаг строк, px (сама строка — ROW - 2 *
 ROW_INSET = 2
 RADIUS = 5
 PAD = 8             # поля сцены
-NUM_W, PITCH_W, MARK_W = 28, 38, 24
+NUM_W, MARK_W = 28, 24
 BADGE_W = 32        # бейдж «+N» строки цели (кликабельный)
 CHEVRON_W = 18      # шеврон раскрытия алиасов справа в строке
 INDENT = 14         # отступ строк нот под заголовком раскрытых алиасов
@@ -78,8 +78,6 @@ CABLE_THIN_W = CABLE_W / 2         # прочие кабели; превью о�
 CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
-MARK_R = 7          # «≠» на кабеле (имена разные у только что сделанного Match by number): радиус кружка
-MARK_OFFSET = 18    # центр «≠» — левее конца кабеля у строки цели
 POOL_WIDTH = 310    # начальная ширина пула
 SCENE_MIN = 460     # минимальная ширина сцены, px
 MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колонки и промежутка для кабелей
@@ -172,6 +170,13 @@ def _load_columns(settings: QSettings | None) -> tuple[float, float, float] | No
     return parts
 
 
+def note_tip(notes) -> str:
+    """Первая строка подсказки строки: «Note 37 · C#1» / «Notes 37 · C#1, 76 · E4» (высота — только здесь)."""
+    notes = list(notes)
+    text = ", ".join(f"{n} · {pitch_name(n)}" for n in notes)
+    return f"Note{'s' if len(notes) > 1 else ''} {text}"
+
+
 def _color(token: str, alpha: float = 1.0) -> QColor:
     c = QColor(TOKENS[token])
     c.setAlphaF(alpha)
@@ -237,15 +242,16 @@ class _Row(QGraphicsItem):
     port — сторона точек кабеля ("left" / "right"; точка — на каждом номере из lines); tone — токены цвета
     направления (обычный, под курсором)."""
 
-    def __init__(self, rect: QRectF, role: str, model: SourceRow | TargetRow, number: str, pitch: str, name: str,
+    def __init__(self, rect: QRectF, role: str, model: SourceRow | TargetRow, number: str, name: str,
                  *, name_color="text", strike=False, italic=False, marker="", pill="", chevron: str | None = None,
                  badge=False, port: str | None = None, dashed=False, warn=False, tooltip="",
-                 lines: list[tuple[int, str, str]] | None = None, tone: tuple[str, str] = TONES[FORWARD]) -> None:
+                 lines: list[tuple[int, str]] | None = None, tone: tuple[str, str] = TONES[FORWARD]) -> None:
         super().__init__()
         self.rect, self.role, self.model = rect, role, model
-        self.number, self.pitch, self.name = number, pitch, name
-        # номера по строкам блока: (смещение, номер, высота); по умолчанию — один, на первой строке
-        self.lines = lines if lines is not None else [(0, number, pitch)]
+        self.number, self.name = number, name
+        # номера по строкам блока: (смещение, номер); по умолчанию — один, на первой строке. Высота ноты (C#1) для
+        # барабанов смысла не несёт — только в подсказке (note_tip)
+        self.lines = lines if lines is not None else [(0, number)]
         self.name_color, self.strike, self.italic, self.marker = name_color, strike, italic, marker
         self.pill, self.chevron, self.badge = pill, chevron, badge  # chevron: collapsed / expanded / fixed
         self.port, self.dashed, self.warn, self.tone = port, dashed, warn, tone
@@ -263,8 +269,8 @@ class _Row(QGraphicsItem):
         return self.model.notes
 
     def number_rect(self, off: int) -> QRectF:
-        """Зона номера на строке off блока (номер и высота ноты) — цель drop «ровно на эту ноту»."""
-        return QRectF(self.rect.left(), self.rect.top() + off * ROW, 6 + NUM_W + 8 + PITCH_W, ROW)
+        """Зона номера на строке off блока — цель drop «ровно на эту ноту»."""
+        return QRectF(self.rect.left(), self.rect.top() + off * ROW, 6 + NUM_W + 8, ROW)
 
     def zone_at(self, pt: QPointF) -> tuple:
         """Зона drop строки цели под точкой сцены: ("badge",) — бейдж «+N» / «…» (меню нот артикуляции);
@@ -305,7 +311,7 @@ class _Row(QGraphicsItem):
 
     def name_room(self) -> float:
         """Ширина под имя, px (имя длиннее — обрезается, полное — в подсказке)."""
-        x = self.rect.left() + 6 + NUM_W + 8 + PITCH_W
+        x = self.rect.left() + 6 + NUM_W + 8
         return max(0.0, self._pill_right() - (BADGE_W if self.pill else 8) - x)
 
     def chevron_rect(self) -> QRectF | None:
@@ -353,16 +359,11 @@ class _Row(QGraphicsItem):
         x = r.left() + 6
         left_mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         right_mid = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        num_font, pitch_font = _font(base, weight=QFont.Weight.Medium), _font(base, size_delta=-1.5)
-        for off, number, pitch in self.lines:  # у строки цели — номер на уровне своего кабеля
-            top = line.top() + off * ROW
-            p.setFont(num_font)
-            p.setPen(_color("text"))  # номера акцентом не выделяются
-            p.drawText(QRectF(x, top, NUM_W, line.height()), right_mid, number)
-            p.setFont(pitch_font)
-            p.setPen(_color("text_muted"))
-            p.drawText(QRectF(x + NUM_W + 8, top, PITCH_W, line.height()), left_mid, pitch)
-        x += NUM_W + 8 + PITCH_W
+        p.setFont(_font(base, weight=QFont.Weight.Medium))
+        p.setPen(_color("text"))  # номера акцентом не выделяются
+        for off, number in self.lines:  # у строки цели — номер на уровне своего кабеля
+            p.drawText(QRectF(x, line.top() + off * ROW, NUM_W, line.height()), right_mid, number)
+        x += NUM_W + 8
         name_w = self.name_room()
         font = _font(base, strike=self.strike, italic=self.italic)
         text = QFontMetrics(font).elidedText(self.name, Qt.TextElideMode.ElideRight, int(name_w))
@@ -490,7 +491,6 @@ class _CableItem(QGraphicsPathItem):
                  tooltip: str, tone: tuple[str, str] = TONES[FORWARD]) -> None:
         super().__init__(path)
         self.cable, self.editor, self.src, self.dst, self.tone = cable, editor, src, dst, tone
-        self.marked = False  # «≠» у конца: Match by number только что соединил разные имена
         self.setZValue(0.5)
         self.setAcceptHoverEvents(not cable.suggested)
         if not cable.suggested:
@@ -515,31 +515,6 @@ class _CableItem(QGraphicsPathItem):
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self.setPen(pen)
         self.setZValue(0.6 if hovered else 0.5)
-
-    def set_marked(self, marked: bool) -> None:
-        if marked != self.marked:
-            self.prepareGeometryChange()
-            self.marked = marked
-            self.update()
-
-    def _mark_rect(self) -> QRectF:
-        end = self.path().currentPosition()
-        return QRectF(end.x() - MARK_OFFSET - MARK_R, end.y() - MARK_R, 2 * MARK_R, 2 * MARK_R)
-
-    def boundingRect(self) -> QRectF:
-        rect = super().boundingRect()
-        return rect.united(self._mark_rect().adjusted(-1, -1, 1, 1)) if self.marked else rect
-
-    def paint(self, p: QPainter, option, widget=None) -> None:
-        super().paint(p, option, widget)
-        if not self.marked:
-            return
-        r = self._mark_rect()
-        p.setPen(QPen(_color(self.tone[0], 0.6), 1))
-        p.setBrush(_color("bg"))
-        p.drawEllipse(r)
-        p.setPen(_color(self.tone[0]))
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, "≠")
 
     def shape(self) -> QPainterPath:
         if self.cable.suggested:
@@ -788,7 +763,6 @@ class CableEditor(QWidget):
         self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}  # свёрнутость — своя у направления
         self.selection: set[int] = set()                   # выделенные ноты (строки пула и колонки «from»)
         self.suggested: dict[int, str] = {}                # подсказки: нота без правила -> артикуляция цели
-        self.marks: set[tuple[int, int]] = set()           # кабели со «≠»: (нота, цель) ориентированного профиля
         self.current: CableLayout | None = None  # последняя построенная раскладка
         # доли ширины сцены: колонка «from», промежуток для кабелей, колонка «to» (None — по умолчанию от ширины)
         self.columns: tuple[float, float, float] | None = _load_columns(settings)
@@ -878,7 +852,6 @@ class CableEditor(QWidget):
         group = self._top_group()
         self.cancel_drag()
         self.selection.clear()
-        self.marks = set()  # пары другого направления не совпадают с этими
         self.direction = direction
         self._build(anchor=False)
         self._scroll_to_group(group)
@@ -906,7 +879,6 @@ class CableEditor(QWidget):
         if direction is not None:
             self.direction = direction
         self.selection.clear()
-        self.marks = set()
         if reset_collapsed:
             self._state = {FORWARD: _ViewState(), REVERSE: _ViewState()}
         self._build(anchor=reset_collapsed is False)
@@ -931,20 +903,6 @@ class CableEditor(QWidget):
     def refresh(self) -> None:
         """Правила (или подсказки) изменились: раскладка заново, прокрутка — за якорь."""
         self._build()
-
-    def set_marks(self, pairs: set[tuple[int, int]]) -> None:
-        """Пометить «≠» кабели (нота, цель) текущего направления; пустое — снять. Без перестройки: только кабели.
-        Отметки живут до set_marks(set()), смены направления или профиля (их снимает страница)."""
-        self.marks = set(pairs)
-        for item in self.cable_items:
-            item.set_marked(self._is_marked(item.cable))
-
-    def marked_notes(self) -> set[int]:
-        """Ноты строк «from» помеченных кабелей (для выделения)."""
-        return {n for n, _ in self.marks if n in self.source_items}
-
-    def _is_marked(self, c: Cable) -> bool:
-        return not c.suggested and any((n, c.dst) in self.marks for n in c.notes)
 
     def toggle_pool(self, key: str) -> None:
         """Свернуть/развернуть группу пула: перестраивается только пул."""
@@ -1335,12 +1293,12 @@ class CableEditor(QWidget):
         return self._notes_menu("Write to", t, at)
 
     def notes_menu(self, title: str, t: TargetRow) -> QMenu:
-        """Меню нот артикуляции t (номер, высота) под заголовком title; текущий Write to отмечен галочкой.
+        """Меню нот артикуляции t (номера) под заголовком title; текущий Write to отмечен галочкой.
         Общее для «Write to» (клик по бейджу) и «Connect to» (drop на бейдж)."""
         menu = QMenu(self)
         menu.addSection(title)
         for n in t.notes:
-            action = menu.addAction(f"{n}   {pitch_name(n)}")
+            action = menu.addAction(str(n))
             action.setCheckable(True)
             action.setChecked(n == t.write_to)
             action.setData(n)
@@ -1603,7 +1561,6 @@ class CableEditor(QWidget):
             if tip and not c.primary:
                 tip += f"\n{PRIMARY_HINT}"
             item = _CableItem(cable_path(a, b), c, self, src, self.target_items[c.target.slot], tip, self.tone)
-            item.set_marked(self._is_marked(c))
             scene.addItem(item)
             (self.suggestion_items if c.suggested else self.cable_items).append(item)
         self.view.end()
@@ -1628,7 +1585,8 @@ class CableEditor(QWidget):
             if row.block == UNASSIGNED and row.state != DELETE:
                 tip += f"\n{SAME_NUMBER_HINT}"
         if len(row.notes) > 1:
-            tip = f"Notes {', '.join(map(str, row.notes))}\n{tip}\n{MIXED_HINT if row.mixed else ALIAS_HINT}"
+            tip = f"{tip}\n{MIXED_HINT if row.mixed else ALIAS_HINT}"
+        tip = f"{note_tip(row.notes)}\n{tip}"
         issues = [i for n in row.notes for i in self._issues.get(n, [])]
         if issues:
             tip = "\n".join(issues + [tip])
@@ -1637,7 +1595,7 @@ class CableEditor(QWidget):
             chevron = "fixed" if row.mixed else "expanded" if row.expanded else "collapsed"
         n = row.shown
         cabled = (row.connected or row.suggested) and not row.expanded
-        return _Row(r, role, row, str(n), pitch_name(n), row.name or "—",
+        return _Row(r, role, row, str(n), row.name or "—",
                     name_color="text_faint" if row.state == DELETE or row.name is None else "text",
                     strike=row.state == DELETE, marker="=" if row.state == KEEP else "",
                     pill=f"+{len(row.notes) - 1}" if len(row.notes) > 1 and not row.expanded else "",
@@ -1649,18 +1607,17 @@ class CableEditor(QWidget):
         port = "left" if connected else None
         if not t.in_map:
             side = f"{self.sides[1]} map"
-            tip = f"Note {t.notes[0]} is not in the {side}" if tgt is not None else f"No {side}"
-            return _Row(r, TARGET, t, str(t.notes[0]), pitch_name(t.notes[0]), "—", name_color="text_faint",
+            tip = note_tip(t.notes) + "\n" + (f"Not in the {side}" if tgt is not None else f"No {side}")
+            return _Row(r, TARGET, t, str(t.notes[0]), "—", name_color="text_faint",
                         italic=True, port=port, dashed=dashed, tooltip=tip, tone=self.tone)
         many = len(t.notes) > 1
-        lines = [(off, str(n), pitch_name(n)) for off, n in t.numbers]
-        tip = ""
+        lines = [(off, str(n)) for off, n in t.numbers]
+        tip = note_tip(t.notes)
         if many:
             wt = WRITE_TO_HINT.format(n=t.write_to) if t.write_to is not None else "Write to: not chosen"
-            tip = f"On notes {', '.join(map(str, t.notes))}\n{wt}\n{BADGE_HINT}"
-        tip = f"{tip}\n{NUMBER_DROP_HINT}".lstrip("\n")
-        _, number, pitch = lines[0]
-        return _Row(r, TARGET, t, number, pitch, t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
+            tip = f"{tip}\n{wt}\n{BADGE_HINT}"
+        tip = f"{tip}\n{NUMBER_DROP_HINT}"
+        return _Row(r, TARGET, t, lines[0][1], t.label, pill=(f"+{t.hidden}" if t.hidden else "…") if many else "",
                     badge=many, port=port, dashed=dashed, tooltip=tip, lines=lines, tone=self.tone)
 
     def _names_differ_tip(self, src: int, dst: int) -> str:

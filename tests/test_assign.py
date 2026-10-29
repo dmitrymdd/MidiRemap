@@ -104,13 +104,12 @@ def test_number_matches_only_notes_without_rule_with_number_in_target():
     # 33, 39, 70 — нет в цели; 38 — зачёркнута; 40 — уже подключена; 66, 41, 43 — без правила и есть в цели
     p = profile({38: Rule.delete(), 40: Rule.map_to(41)})
     assert number_matches(p) == [41, 43, 66]
-    out, done, differ = match_by_number(p)
+    out, done = match_by_number(p)
     assert done == [41, 43, 66]
-    assert differ == [43]  # «Tom: Center» -> «Tom: Low»; 41 и 66 — те же имена
     assert out.rules == {38: Rule.delete(), 40: Rule.map_to(41), 41: Rule.map_to(41), 43: Rule.map_to(43),
                          66: Rule.map_to(66)}
     assert p.rules == {38: Rule.delete(), 40: Rule.map_to(41)}  # исходный профиль не меняется
-    assert match_by_number(out)[1:] == ([], [])  # повторно — нечего
+    assert match_by_number(out)[1] == []  # повторно — нечего
 
 
 def test_names_differ_after_normalize_and_by_target_note_name():

@@ -33,10 +33,10 @@ GM = {
     "Percussion": [39, 54, 56, 58, *range(60, 82)],
 }
 GP8 = {
-    "Kick": [35, 36, 114], "Snare": [31, 37, 38, 40, 91], "Hi-Hat": [42, 44, 46, 92],
+    "Kick": [35, 36], "Snare": [31, 37, 38, 40, 91], "Hi-Hat": [42, 44, 46, 92],
     "Toms": [41, 43, 45, 47, 48, 50], "Crash": [49, 57, 97, 98], "Ride": [29, 51, 53, 59, 93, 94, 126, 127],
     "China": [52, 96], "Splash": [55, 95], "Cymbal": [30, 115, 116], "Other": [33, 34],
-    "Percussion": [39, 54, 56, 58, *range(60, 88), 99, 100, 101, 102, 103, *range(104, 114), 117, 118, 119, 120,
+    "Percussion": [39, 54, 56, 58, *range(60, 88), 99, 100, 101, 102, 103, *range(104, 115), 117, 118, 119, 120,
                    122, 123, 124, 125],
 }
 
@@ -64,3 +64,9 @@ def test_prefixed_templates_unchanged():
     assert instrument_group(sd3.names[36]) == "Kick" and instrument_group(ezd3.names[38]) == "Snare"
     # регистр в именах групп сравнивается через normalize_name
     assert normalize_name(instrument_group("hi-hat: Closed")) == normalize_name(instrument_group(sd3.names[42]))
+
+
+def test_grancassa_is_orchestral_percussion_not_kit_kick():
+    m = load_map_template("Guitar Pro 8")
+    assert m.names[114] == "Grancassa (hit)" and instrument_group(m.names[114]) == "Percussion"
+    assert [instrument_group(m.names[n]) for n in (35, 36)] == ["Kick", "Kick"]  # «Kick (hit)» — бочка

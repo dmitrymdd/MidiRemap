@@ -22,7 +22,7 @@ from ..core import ConversionReport, FileResult, RemapProfile, convert_batch, le
 from ..core.profile import FORWARD, REVERSE
 from ..storage import Storage
 from .maps_page import MapsPage
-from .profiles_page import ProfilesPage, profile_summary
+from .profiles_page import SWAP_TEXT, SWAP_TIP, ProfilesPage, profile_summary
 from .settings import ui_settings
 from .combo import ComboBox
 from .theme import repolish as _repolish, stylesheet
@@ -32,8 +32,6 @@ MIDI_EXTS = {".mid", ".midi"}
 PAGE_CONVERT, PAGE_PROFILES, PAGE_MAPS = 0, 1, 2
 
 DIRECTION_KEY = "convert/direction"  # ui.ini: направление конвертации, общее для всех профилей
-DIRECTION_TIPS = {FORWARD: "Direction: source map → target map. Click to convert in reverse",
-                  REVERSE: "Direction: target map → source map (reverse). Click to convert forward"}
 
 
 def is_midi(path: str | Path | None) -> bool:
@@ -678,12 +676,12 @@ class MainWindow(QMainWindow):
         self.profile_summary.setText(text)
 
     def _show_direction(self) -> None:
-        self.direction_btn.setText("←" if self.direction == REVERSE else "→")
-        self.direction_btn.setToolTip(DIRECTION_TIPS[self.direction])
-        _repolish(self.direction_btn, "dir", self.direction)  # цвет стрелки — цвет направления, как на Profiles
+        self.direction_btn.setText(SWAP_TEXT)  # как на Profiles; карты направления — в строке под профилем
+        self.direction_btn.setToolTip(SWAP_TIP)
+        _repolish(self.direction_btn, "dir", self.direction)  # в ← — цвет reverse
 
     def toggle_direction(self) -> None:
-        """→ / ←: прямое или обратное направление конвертации (запоминается в ui.ini)."""
+        """«⇄»: прямое или обратное направление конвертации (запоминается в ui.ini)."""
         self.direction = FORWARD if self.direction == REVERSE else REVERSE
         self.settings.setValue(DIRECTION_KEY, self.direction)
         self._show_direction()
