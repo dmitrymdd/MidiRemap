@@ -861,20 +861,105 @@ def test_preview_spring_follows_cursor():
     assert abs(d.pos.x() - 200) < 1 and abs(d.pos.y() - 100) < 1
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_first_cable_does_not_collapse_target_groups(window, app, reverse):
+    """Новый профиль: группы цели раскрыты. Первый кабель (drag) ничего не сворачивает; режим групп меняет только
+    пользователь (клик по заголовку), и он сохраняется при следующих правках."""
+    from midiremap.core.profile import REVERSE
+    page, ed = cables_page(window, accept=False)
+    if reverse:
+        page.set_direction(REVERSE)
+    keys = {h.key for h in ed.current.scene.target_headers}
+    assert keys and ed.show_all == keys and not any(h.collapsed for h in ed.current.scene.target_headers)
+    rows = {r.slot for r in ed.current.scene.target_rows}
+    top = ed.view.verticalScrollBar().value() + ed.view.viewport().height()
+    slot = next(s for s in sorted(rows, key=lambda s: ed.target_items[s].rect.top())
+                if s.startswith("a:") and len(ed.target_items[s].notes) == 1
+                and ed.target_items[s].rect.bottom() < top)  # одна нота (без вопроса Write to), видна
+    note = pool_row(ed, lambda i: len(i.notes) == 1).notes[0]
+    drop(app, ed, [note], target_point(ed, slot))
+    assert page.work.oriented(page.direction).rules[note].action == "map"
+    assert ed.show_all == keys and {r.slot for r in ed.current.scene.target_rows} == rows  # ничего не свернулось
+    # пользователь свернул группу — так и остаётся после следующих правок
+    head = next(h.key for h in ed.current.scene.target_headers if h.shown < h.count)  # есть что скрыть
+    ed.toggle_target(head)
+    assert head not in ed.show_all and ed.current.header(head).collapsed
+    page.toggle_strike([pool_row(ed, lambda i: True).notes[0]])
+    page.undo()
+    assert head not in ed.show_all and (ed.show_all | {head}) == keys
+
+
+def test_existing_profile_opens_with_connected_only_groups(window, app):
+    page, ed = cables_page(window)  # с кабелями
+    pid = page.current
+    page.answers["unassigned"] = set()
+    assert page.save()
+    page.open(pid)
+    assert ed.show_all == set() and any(h.collapsed for h in ed.current.scene.target_headers)
+
+
 def test_autoscroll_near_edge(window, app):
     from PySide6.QtCore import QPointF
     page, ed = cables_page(window, accept=False, size=(1200, 600))
-    bar = ed.pool.verticalScrollBar()
-    assert bar.maximum() > 0 and bar.value() == 0
+    pool_bar, scene_bar = ed.pool.verticalScrollBar(), ed.view.verticalScrollBar()
+    assert pool_bar.maximum() > 0 and scene_bar.maximum() > 0 and pool_bar.value() == scene_bar.value() == 0
+    # у нижнего края пула — пул НЕ прокручивается (в него не бросают; строки пула не уезжают)
     vp = ed.pool.viewport()
     bottom = QPointF(vp.mapTo(ed, vp.rect().bottomLeft()))
-    at = QPointF(bottom.x() + 40, bottom.y() - 4)
-    ed.begin_drag({ed.pool_rows[0].notes[0]}, at)
+    ed.begin_drag({ed.pool_rows[0].notes[0]}, QPointF(bottom.x() + 40, bottom.y() - 4))
     ed._tick()
     ed._tick()
-    assert bar.value() > 0
-    assert ed.view.verticalScrollBar().value() == 0  # прокручивается только колонка под курсором
+    assert pool_bar.value() == 0 and scene_bar.value() == 0
+    # у нижнего края сцены — сцена прокручивается
+    vp = ed.view.viewport()
+    bottom = QPointF(vp.mapTo(ed, vp.rect().bottomLeft()))
+    ed.drag_to(QPointF(bottom.x() + 40, bottom.y() - 4))
+    ed._tick()
+    ed._tick()
+    assert scene_bar.value() > 0 and pool_bar.value() == 0
     ed.cancel_drag()
+
+
+def test_pool_items_never_move_during_drag_and_keep_place_after_drop(window, app):
+    """Тащат строку у нижнего края пула вдоль края и через весь экран: ни одна строка пула не двигается
+    (ни прокрутки, ни перестройки); после drop пул держит прокрутку (строка ушла — соседние на месте)."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QMouseEvent
+    page, ed = cables_page(window, accept=False, size=(1200, 600))
+    bar = ed.pool.verticalScrollBar()
+    bar.setValue(bar.maximum() // 2)
+    vp = ed.pool.viewport()
+    top = bar.value()
+    row = max((i for i in ed.pool_rows if i.rect.bottom() < top + vp.height() - 2), key=lambda i: i.rect.top())
+    note = row.notes[0]
+
+    def send(kind, pos, buttons):
+        QApplication.sendEvent(vp, QMouseEvent(kind, pos, QPointF(vp.mapToGlobal(pos.toPoint())),
+                                               Qt.MouseButton.LeftButton, buttons, Qt.KeyboardModifier.NoModifier))
+
+    def pool_state():
+        return bar.value(), [(i.notes, i.rect.top()) for i in ed.pool_rows]
+
+    before = pool_state()
+    start = QPointF(ed.pool.mapFromScene(row.rect.center()))
+    send(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    for k in range(1, 25):  # вдоль нижнего края пула (зона автопрокрутки) и дальше в сцену
+        send(QEvent.Type.MouseMove, start + QPointF(k * 30, 0), Qt.MouseButton.LeftButton)
+        ed._tick()
+        assert pool_state() == before
+    slot, dst = single_note_articulation(page.work.target_map)
+    at = QPointF(vp.mapFrom(ed, target_point(ed, "a:" + slot).toPoint()))
+    send(QEvent.Type.MouseMove, at, Qt.MouseButton.LeftButton)
+    ed._tick()
+    assert pool_state() == before
+    neighbours = {i.notes[0]: i.rect.top() - bar.value() for i in ed.pool_rows if i.notes[0] != note
+                  and top <= i.rect.top() < top + vp.height() - cable_view.ROW}
+    send(QEvent.Type.MouseButtonRelease, at, Qt.MouseButton.NoButton)
+    app.processEvents()
+    assert page.work.rules[note] == Rule.map_to(dst)
+    after = {i.notes[0]: i.rect.top() - bar.value() for i in ed.pool_rows if i.notes[0] in neighbours}
+    above = {n: y for n, y in neighbours.items() if y < row.rect.top() - top}
+    assert above and all(after[n] == y for n, y in above.items())  # строки выше ушедшей — на тех же местах
 
 
 def test_right_click_cable_removes_connection(window, app):
@@ -889,6 +974,108 @@ def test_right_click_cable_removes_connection(window, app):
     # сразу обратно в свою группу пула
     assert notes[0] in ed.pool_items and notes[0] not in ed.source_items
     assert ed.current.source_row(notes[0]).block == UNASSIGNED
+
+def _swipe_page(window, reverse=False):
+    from midiremap.core.profile import REVERSE
+    page, ed = cables_page(window)  # подсказки применены — много кабелей
+    if reverse:
+        page.set_direction(REVERSE)
+        page.apply_suggestions()
+    QApplication.processEvents()
+    assert len(ed.cable_items) > 6
+    return page, ed
+
+
+def _gap_x(ed):
+    """x середины промежутка между колонками (там проходят все кабели)."""
+    c = ed.cable_items[0]
+    return (c.src.rect.right() + c.dst.rect.left()) / 2
+
+
+def _crossing(ed, x, y0, y1):
+    """Кабели, чья линия пересекает вертикаль x между y0 и y1 (по самому пути кабеля)."""
+    from PySide6.QtGui import QPainterPath
+    out = set()
+    for c in ed.cable_items:
+        path = c.path()
+        ys = [path.pointAtPercent(t / 200).y() for t in range(201)
+              if abs(path.pointAtPercent(t / 200).x() - x) < 1.5]
+        if ys and y0 <= min(ys) <= y1:
+            out.add(c.ends)
+    return out
+
+
+def _right(view, kind, pt):
+    from PySide6.QtCore import QEvent
+    send_mouse(view, getattr(QEvent.Type, kind), pt, Qt.MouseButton.RightButton)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_swipe_marks_crossed_cables_and_deletes_them_in_one_undo_step(window, app, reverse):
+    page, ed = _swipe_page(window, reverse)
+    x = _gap_x(ed)
+    cables = sorted(ed.cable_items, key=lambda c: c.path().pointAtPercent(0.5).y())
+    y0, y1 = cables[1].src.rect.top() - 2, cables[5].src.rect.bottom() + 2
+    expected = _crossing(ed, x, y0, y1)
+    assert len(expected) >= 3
+    before_items, before_rules = list(ed.cable_items), page.work.to_dict()
+    steps = len(page._undo)
+    _right(ed.view, "MouseButtonPress", QPointF(x, y0))
+    assert ed.swiping and not ed.swiped_cables()
+    for k in range(1, 9):  # протяжка вниз через кабели
+        _right(ed.view, "MouseMove", QPointF(x + (k % 2) * 3, y0 + (y1 - y0) * k / 8))
+    marked = {c.ends for c in ed.swiped_cables()}
+    assert marked == expected  # отмечено ровно то, что пересёк путь
+    assert all(c.pen().color().name() == cable_view.TOKENS["error"].lower() for c in ed.swiped_cables())
+    # во время росчерка — ни перестройки, ни правки
+    assert ed.cable_items == before_items and page.work.to_dict() == before_rules
+    _right(ed.view, "MouseButtonRelease", QPointF(x, y1))
+    app.processEvents()
+    oriented = page.work.oriented(page.direction)
+    gone = {n for c in before_items if c.ends in marked for n in c.cable.notes}
+    assert gone and all(oriented.rules.get(n) is None or oriented.rules[n].action != "map" for n in gone)
+    assert not ed.swiping and not ed.swiped_cables()
+    assert len(page._undo) == steps + 1  # один шаг отмены на весь росчерк
+    assert page.undo() and page.work.to_dict() == before_rules
+    assert {c.ends for c in ed.cable_items} >= marked
+
+
+def test_fast_swipe_hits_cables_between_mouse_events(window, app):
+    """Одно движение через много кабелей (между событиями мыши нет промежуточных точек) — отмечены все."""
+    page, ed = _swipe_page(window)
+    x = _gap_x(ed)
+    cables = sorted(ed.cable_items, key=lambda c: c.path().pointAtPercent(0.5).y())
+    y0, y1 = cables[0].src.rect.top() - 2, cables[6].src.rect.bottom() + 2
+    _right(ed.view, "MouseButtonPress", QPointF(x - 20, y0))
+    _right(ed.view, "MouseMove", QPointF(x + 20, y1))  # один длинный отрезок
+    assert {c.ends for c in ed.swiped_cables()} == _crossing(ed, x, y0, y1) and len(ed.swiped_cables()) >= 5
+    ed.cancel_swipe()
+
+
+def test_swipe_esc_cancels_and_plain_right_click_deletes_one(window, app):
+    page, ed = _swipe_page(window)
+    x = _gap_x(ed)
+    cables = sorted(ed.cable_items, key=lambda c: c.path().pointAtPercent(0.5).y())
+    y0, y1 = cables[0].src.rect.top() - 2, cables[4].src.rect.bottom() + 2
+    before, steps = page.work.to_dict(), len(page._undo)
+    _right(ed.view, "MouseButtonPress", QPointF(x, y0))
+    _right(ed.view, "MouseMove", QPointF(x, y1))
+    assert ed.swiped_cables()
+    QTest.keyClick(ed.view, Qt.Key.Key_Escape)
+    assert not ed.swiping and not ed.swiped_cables()
+    _right(ed.view, "MouseButtonRelease", QPointF(x, y1))  # отпускание после Esc — ничего
+    app.processEvents()
+    assert page.work.to_dict() == before and len(page._undo) == steps
+    # правый клик без сдвига — как раньше: один кабель
+    one = cables[2]
+    notes = one.cable.notes
+    pt = one.path().pointAtPercent(0.5)
+    _right(ed.view, "MouseButtonPress", pt)
+    _right(ed.view, "MouseButtonRelease", pt)
+    app.processEvents()
+    assert all(n not in page.work.rules for n in notes) and len(page._undo) == steps + 1
+    assert len(ed.cable_items) == len(cables) - 1
+
 
 def test_right_click_pool_row_and_group_toggle_strike(window, app):
     from midiremap.ui.cable_layout import KEEP, UNASSIGNED
@@ -956,10 +1143,14 @@ def test_target_groups_connected_only_and_toggle(window, app):
     assert heads and not any(h.collapsed or h.shown for h in heads)
     assert len(ed.current.scene.target_rows) == sum(h.count for h in heads)
     key, notes = three_note_articulation(page.work)
-    assert page.connect_to(notes[:1], "a:" + key)  # первый кабель — «только подключённые»
+    assert page.connect_to(notes[:1], "a:" + key)  # первый кабель режим групп не меняет — всё ещё раскрыты
     heads = [h for h in ed.current.scene.target_headers if not h.shown]
-    assert heads and all(h.collapsed for h in heads)
+    assert heads and not any(h.collapsed for h in ed.current.scene.target_headers)
+    # клик по заголовку — «только подключённые» (группа без кабелей — один заголовок), ещё клик — снова «все»
+    ed.show_all.clear()
+    ed.refresh()
     head = heads[0]
+    assert ed.current.header(head.key).collapsed
     item = header_item(ed.view, head.key)
     QTest.mouseClick(ed.view.viewport(), Qt.MouseButton.LeftButton, pos=ed.view.mapFromScene(item.rect.center()))
     app.processEvents()
@@ -975,7 +1166,9 @@ def test_target_groups_connected_only_and_toggle(window, app):
 
 
 def test_spring_loaded_group_opens_while_dragging(window, app):
-    page, ed = cables_page(window)  # подсказки применены — группы «только подключённые»
+    page, ed = cables_page(window)
+    ed.show_all.clear()  # пользователь перевёл группы в «только подключённые»
+    ed.refresh()
     head = next(h for h in ed.current.scene.target_headers if h.collapsed)
     item = header_item(ed.view, head.key)
     at = editor_point(ed, ed.view, item.rect.center())

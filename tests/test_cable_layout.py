@@ -9,7 +9,7 @@ from midiremap.core.profile import RemapProfile, Rule
 from midiremap.templates import load_map_template
 from midiremap.ui.cable_layout import (
     DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Header, Placement, TargetRow, build_layout,
-    placement, slot_key,
+    initial_show_all, placement, slot_key, target_group_keys,
 )
 
 SRC = NoteMap("Src", {36: "Kick: Hit", 37: "Kick: Soft", 38: "Snare: Center", 40: "Snare: Rim",
@@ -287,17 +287,25 @@ def test_target_row_hidden_once_its_cable_is_removed():
     assert rows_by_note(lay)[42].block == UNASSIGNED
 
 
-def test_all_target_groups_expanded_while_nothing_is_connected():
+def test_initial_target_groups_all_expanded_only_without_cables():
     p = profile()
-    lay = build_layout(p, no_collapse())
-    assert lay.scene.target_headers and not any(h.collapsed for h in lay.scene.target_headers)
+    keys = target_group_keys(p)
+    assert keys and initial_show_all(p) == set(keys)  # новый профиль — все группы «все»
+    lay = build_layout(p, no_collapse(), show_all=initial_show_all(p))
+    assert not any(h.collapsed for h in lay.scene.target_headers)
     assert {r.slot for r in lay.scene.target_rows} == {"a:" + k for k in articulations(TGT)}
-    p.rules[42] = Rule.map_to(42)  # первый кабель — группы «только подключённые»
-    lay = build_layout(p, no_collapse())
-    assert [r.slot for r in lay.scene.target_rows] == ["a:hat: closed"]
-    # подсказка — тоже кабель (пунктир)
-    lay = build_layout(profile(), no_collapse(), suggested={36: "kick: hit"})
+    # раскладка сама ничего не раскрывает: режим групп — только из show_all (его ведёт виджет)
+    p.rules[42] = Rule.map_to(42)
+    assert initial_show_all(p) == set()  # профиль с кабелями открывается «только подключённые»
+    lay = build_layout(p, no_collapse(), show_all=set(keys))  # первый кабель режим групп не меняет
+    assert {r.slot for r in lay.scene.target_rows} == {"a:" + k for k in articulations(TGT)}
+    assert [r.slot for r in build_layout(p, no_collapse()).scene.target_rows] == ["a:hat: closed"]
+    # подсказки — не кабели: начальный режим тот же, что у пустого профиля
+    q = profile()
+    assert initial_show_all(q) == set(keys)
+    lay = build_layout(q, no_collapse(), suggested={36: "kick: hit"})
     assert [r.slot for r in lay.scene.target_rows] == ["a:kick: hit"]
+    assert target_group_keys(None) == [] and initial_show_all(None) == set()
 
 
 def test_flat_target_shows_all_rows():
@@ -556,3 +564,36 @@ def test_bundle_primary_first_in_reverse_kick_case():
     assert [c.notes for c in children] == [(34,), (36,)]
     assert [c.primary for c in lay.scene.cables if c.target.slot == slot] == [True, False, False]
     assert lay.target_row(slot).lines[0] == (0, 35)
+
+
+def _ranks(headers):
+    from midiremap.core.notemap import group_rank
+    return [group_rank(None if h.label in ("Other", "Not in the source map", "Not in the target map") else h.label)
+            for h in headers]
+
+
+def test_group_order_same_in_pool_and_target_both_directions():
+    """Один порядок групп везде: ранг GROUP_ORDER (keyword_group подписи), одинаковый ранг — порядок карты."""
+    ezd, sd3 = load_map_template("EZdrummer 3"), load_map_template("Superior Drummer 3")
+    for p in (RemapProfile("p", ezd, sd3), RemapProfile("p", ezd, sd3).reversed()):
+        lay = build_layout(p, no_collapse(), show_all=initial_show_all(p))
+        for heads, names in ((lay.pool.headers, p.source_map.names), (lay.scene.target_headers, p.target_map.names)):
+            labels = [h.label for h in heads]
+            assert labels[:3] == ["Kick", "Snare", "Hi-Hat"]
+            ranks = _ranks(heads)
+            assert ranks == sorted(ranks)
+            # одинаковый ранг (Floortom 2, Floortom 1, Racktom 3 …) — по первой ноте группы в карте
+            for r in set(ranks):
+                same = [h for h, k in zip(heads, ranks) if k == r]
+                assert [min(h.notes) for h in same] == sorted(min(h.notes) for h in same)
+        # тома — перед Ride, тарелки SD3 «Cymbal N» — в конце, после Ride
+        to = [h.label for h in lay.scene.target_headers]
+        assert to.index("Racktom 1") < to.index("Ride")
+
+
+def test_group_order_maps_table_matches():
+    from midiremap.ui.maps_page import group_rows
+    sd3 = load_map_template("Superior Drummer 3")
+    heads = [r.label for r in group_rows(sd3.names, list(range(128))) if r.is_header]
+    lay = build_layout(RemapProfile("p", None, sd3), no_collapse(), show_all=initial_show_all(RemapProfile("p", None, sd3)))
+    assert heads[:-1] == [h.label for h in lay.scene.target_headers]  # Maps — тот же порядок (+ «Not in the map»)

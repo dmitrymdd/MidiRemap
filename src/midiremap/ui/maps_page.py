@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import (
-    NoteMap, articulations, duplicate_map, finalize_edit, instrument_group, normalize_name, validate_map,
+    NoteMap, articulations, duplicate_map, finalize_edit, group_rank, instrument_group, normalize_name, validate_map,
 )
 from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import pitch_name
@@ -78,7 +78,8 @@ def group_rows(names: dict[int, str], notes: list[int], unnamed_label: str = "No
                ) -> list[LayoutRow]:
     """Строки с заголовками групп instrument_group() (только для показа).
 
-    Группы — по первой (меньшей) ноте, ноты внутри — в порядке notes. Если ни у одного имени нет группы
+    Группы — в общем порядке GROUP_ORDER (group_rank, как на Profiles), одинаковый ранг — по первой (меньшей) ноте;
+    ноты внутри — в порядке notes. Если ни у одного имени нет группы
     (General MIDI) — плоский список без заголовков. Именованные ноты без группы — в «Other»,
     ноты без имени — в последней группе unnamed_label.
     """
@@ -92,7 +93,8 @@ def group_rows(names: dict[int, str], notes: list[int], unnamed_label: str = "No
         else:
             key, label = UNNAMED_GROUP, unnamed_label
         groups.setdefault(key, (label, []))[1].append(n)
-    order = sorted(groups, key=lambda k: (k == UNNAMED_GROUP, k == OTHER_GROUP, groups[k][1][0]))
+    order = sorted(groups, key=lambda k: (k == UNNAMED_GROUP,
+                                          group_rank(None if k == OTHER_GROUP else groups[k][0]), groups[k][1][0]))
     rows: list[LayoutRow] = []
     for key in order:
         label, members = groups[key]

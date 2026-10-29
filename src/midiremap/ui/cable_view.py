@@ -24,10 +24,14 @@ write_to_requested / primary_requested) — правила меняет ядро
 Мышь: строки пула и колонки «from» выделяются (Ctrl/Shift — несколько) и перетаскиваются на строку цели (назначение
 по совпадению номеров, см. assign_plan) или на заголовок группы цели (n → n для совпавших номеров); заголовок
 группы пула тоже можно перетащить — со всеми его нотами. Кабель-превью
-догоняет курсор с лёгкой пружиной (таймер ~60 кадров/с), у края любой колонки — автопрокрутка, Esc — отмена.
+догоняет курсор с лёгкой пружиной (таймер ~60 кадров/с), у края сцены — автопрокрутка (пул не прокручивается:
+в него не бросают, строки пула во время перетаскивания не двигаются), Esc — отмена.
 Наведение на заголовок группы цели во время перетаскивания (~500 мс) показывает все её артикуляции.
 Правый клик: кабель (или подключённая строка) — снять кабель; строка или группа пула — зачеркнуть
-(правило delete) / вернуть (без правила). Бейдж «+N» строки цели — меню выбора Write to.
+(правило delete) / вернуть (без правила). Правая кнопка с протяжкой по сцене — «росчерк» (_Swipe): каждый кабель,
+который пересёк путь курсора (отрезки между событиями мыши, а не точки — быстрый росчерк ничего не пропускает),
+отмечается; отпустили — все отмеченные снимаются одним шагом отмены; Esc — отмена. Во время росчерка раскладка
+не перестраивается. Бейдж «+N» строки цели — меню выбора Write to.
 Строка цели показывает номера, на которые идут кабели (TargetRow.lines); Write to — цветом акцента.
 
 Подсказки (set_suggestions) — пунктирные кабели (на мышь не реагируют), у строки-подсказки — кольцо вместо точки.
@@ -58,7 +62,7 @@ from ..core.pitch import pitch_name
 from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, names_differ, validate_profile
 from .cable_layout import (
     DELETE, KEEP, MIXED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header,
-    SourceRow, TargetRow, build_layout,
+    SourceRow, TargetRow, build_layout, initial_show_all, target_group_keys,
 )
 from .theme import TOKENS
 
@@ -78,6 +82,7 @@ CABLE_THIN_W = CABLE_W / 2         # прочие кабели; превью о�
 CABLE_HOVER_EXTRA = 1.0            # кабель под курсором — толще на столько
 CABLE_HIT = 16      # ширина зоны попадания по кабелю (по 8 px в стороны)
 DIMMED = 0.3        # прозрачность прочих кабелей, пока один под курсором
+SWIPE_W = 6         # росчерк: ширина полосы пути курсора и кабеля при проверке пересечения, px
 POOL_WIDTH = 310    # начальная ширина пула
 SCENE_MIN = 460     # минимальная ширина сцены, px
 MIN_COL, MIN_GAP = 140.0, 40.0  # минимальные ширины колонки и промежутка для кабелей
@@ -491,6 +496,7 @@ class _CableItem(QGraphicsPathItem):
                  tooltip: str, tone: tuple[str, str] = TONES[FORWARD]) -> None:
         super().__init__(path)
         self.cable, self.editor, self.src, self.dst, self.tone = cable, editor, src, dst, tone
+        self.swiped = False  # отмечен росчерком правой кнопкой: снимется при отпускании
         self.setZValue(0.5)
         self.setAcceptHoverEvents(not cable.suggested)
         if not cable.suggested:
@@ -511,10 +517,27 @@ class _CableItem(QGraphicsPathItem):
             self.setZValue(0.4)
             return
         width = CABLE_PRIMARY_W if self.cable.primary else CABLE_THIN_W
+        if self.swiped:  # снимется при отпускании правой кнопки — цвет ошибки, толще
+            pen = QPen(_color("error"), width + CABLE_HOVER_EXTRA, Qt.PenStyle.DashLine)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            self.setPen(pen)
+            self.setZValue(0.7)
+            return
         pen = QPen(_color(hover if hovered else normal), width + CABLE_HOVER_EXTRA if hovered else width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self.setPen(pen)
         self.setZValue(0.6 if hovered else 0.5)
+
+    def set_swiped(self, on: bool) -> None:
+        if on != self.swiped:
+            self.swiped = on
+            self.set_style(False)
+
+    def swipe_shape(self) -> QPainterPath:
+        """Полоса кабеля для проверки пересечения с путём росчерка (уже, чем зона наведения)."""
+        stroker = QPainterPathStroker()
+        stroker.setWidth(SWIPE_W)
+        return stroker.createStroke(self.path())
 
     def shape(self) -> QPainterPath:
         if self.cable.suggested:
@@ -600,9 +623,13 @@ class _ColumnView(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key.Key_Escape and self.handler is not None and self.handler.dragging:
-            self.handler.cancel_drag()
-            return
+        if event.key() == Qt.Key.Key_Escape and self.handler is not None:
+            if self.handler.dragging:
+                self.handler.cancel_drag()
+                return
+            if self.handler.swiping:
+                self.handler.cancel_swipe()
+                return
         super().keyPressEvent(event)
 
     def begin(self, height_rows: int, minimum: int) -> float:
@@ -667,6 +694,16 @@ class _Press:
 
 
 @dataclass
+class _Swipe:
+    """Правая кнопка нажата в сцене: без сдвига — обычный правый клик (item), со сдвигом — росчерк."""
+    item: object                 # элемент под курсором при нажатии (для обычного правого клика)
+    start: QPointF               # в координатах viewport
+    last: QPointF                # точка сцены прошлого события — начало следующего отрезка пути
+    active: bool = False         # сдвинули дальше startDragDistance — это росчерк
+    shapes: dict = field(default_factory=dict)  # кабель -> полоса для пересечения (считается один раз)
+
+
+@dataclass
 class _Drag:
     """Перетаскивание кабеля: ноты, курсор и конец превью (догоняет курсор пружиной) в координатах CableEditor."""
     notes: tuple[int, ...]
@@ -689,6 +726,7 @@ class _ViewState:
     collapsed: set[str] = field(default_factory=set)  # свёрнутые группы пула
     show_all: set[str] = field(default_factory=set)   # группы цели в режиме «все»
     expanded: set[str] = field(default_factory=set)   # раскрытые алиасы («<место>|<имя>»)
+    seen: set[str] = field(default_factory=set)       # группы цели, начальный режим которых уже задан
 
 
 def _row_box(widget: QWidget) -> QHBoxLayout:
@@ -782,6 +820,7 @@ class CableEditor(QWidget):
         self._press: _Press | None = None
         self._anchor: tuple[_ColumnView, frozenset[int]] | None = None  # начало диапазона Shift+клика
         self._drag: _Drag | None = None
+        self._swipe: _Swipe | None = None
         self._frame = QTimer(self)
         self._frame.setInterval(FRAME_MS)
         self._frame.timeout.connect(self._tick)
@@ -851,6 +890,7 @@ class CableEditor(QWidget):
             return
         group = self._top_group()
         self.cancel_drag()
+        self.cancel_swipe()
         self.selection.clear()
         self.direction = direction
         self._build(anchor=False)
@@ -875,6 +915,7 @@ class CableEditor(QWidget):
         """Другой профиль (или тот же после сохранения/отката, смены карты). reset_collapsed — свёрнутость по умолчанию в обоих направлениях (открытие профиля);
         direction — сразу в этом направлении (None — в текущем)."""
         self.cancel_drag()
+        self.cancel_swipe()
         self.profile = p
         if direction is not None:
             self.direction = direction
@@ -948,7 +989,7 @@ class CableEditor(QWidget):
 
     def hover_cable(self, item: _CableItem | None) -> None:
         """Кабель под курсором: он толще и ярче, его строки подсвечены, прочие кабели приглушены."""
-        if self._drag is not None:
+        if self._drag is not None or self._swipe is not None:
             item = None
         self.hovered = item
         for c in self.cable_items:
@@ -985,7 +1026,12 @@ class CableEditor(QWidget):
                 return True
         item = self._item_at(view, pos.toPoint())
         if event.button() == Qt.MouseButton.RightButton:
-            self.right_click(item)
+            if view is self.view and self._drag is None:  # в сцене: клик или росчерк — решит сдвиг
+                view.setFocus()  # Esc — отмена росчерка
+                self.hover_cable(None)
+                self._swipe = _Swipe(item, pos, view.mapToScene(pos.toPoint()))
+            else:
+                self.right_click(item)
             return True
         if event.button() != Qt.MouseButton.LeftButton or self._drag is not None:
             return self._drag is not None
@@ -1048,6 +1094,10 @@ class CableEditor(QWidget):
 
     def view_move(self, view: _ColumnView, event) -> bool:
         pos = event.position()
+        if self._swipe is not None:
+            if view is self.view and event.buttons() & Qt.MouseButton.RightButton:
+                self._swipe_to(pos)
+            return True
         if self._resize is not None:
             self._resize_to(pos.x())
             return True
@@ -1074,6 +1124,9 @@ class CableEditor(QWidget):
         return False
 
     def view_release(self, view: _ColumnView, event) -> bool:
+        if event.button() == Qt.MouseButton.RightButton and self._swipe is not None:
+            self.end_swipe()
+            return True
         if event.button() != Qt.MouseButton.LeftButton:
             return self._drag is not None
         if self._resize is not None:
@@ -1095,6 +1148,70 @@ class CableEditor(QWidget):
                 self._anchor = (press.view, press.notes)
             return True
         return False
+
+    # --- росчерк правой кнопкой ---
+
+    @property
+    def swiping(self) -> bool:
+        """Правая кнопка нажата в сцене (клик или росчерк ещё не решён / идёт росчерк)."""
+        return self._swipe is not None
+
+    def swiped_cables(self) -> list[_CableItem]:
+        return [c for c in self.cable_items if c.swiped]
+
+    def _swipe_to(self, pos: QPointF) -> None:
+        """Курсор росчерка сдвинулся (pos — viewport сцены): отметить кабели, которые пересёк отрезок от прошлой
+        точки до этой. Перестройки нет — только стиль кабелей."""
+        sw = self._swipe
+        if not sw.active:
+            if (pos - sw.start).manhattanLength() < QApplication.startDragDistance():
+                return
+            sw.active = True
+        point = self.view.mapToScene(pos.toPoint())
+        self.swipe_segment(sw.last, point)
+        sw.last = point
+
+    def swipe_segment(self, a: QPointF, b: QPointF) -> list[_CableItem]:
+        """Отметить кабели, которые пересекает отрезок a–b (координаты сцены); вернуть новые отмеченные."""
+        sw = self._swipe
+        if sw is None:
+            return []
+        line = QPainterPath(a)
+        line.lineTo(b)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(SWIPE_W)
+        band = stroker.createStroke(line)
+        box = band.boundingRect()
+        hit = []
+        for c in self.cable_items:
+            if c.swiped or not c.boundingRect().intersects(box):
+                continue
+            shape = sw.shapes.get(c)
+            if shape is None:
+                shape = sw.shapes[c] = c.swipe_shape()
+            if shape.intersects(band):
+                c.set_swiped(True)
+                hit.append(c)
+        return hit
+
+    def end_swipe(self) -> None:
+        """Отпустили правую кнопку: без сдвига — обычный правый клик; росчерк — снять все отмеченные кабели
+        одним сигналом (одна правка — один шаг отмены)."""
+        sw, self._swipe = self._swipe, None
+        if sw is None:
+            return
+        if not sw.active:
+            self.right_click(sw.item)
+            return
+        notes = sorted({n for c in self.swiped_cables() for n in c.cable.notes})
+        if notes:
+            self.disconnect_requested.emit(notes)
+
+    def cancel_swipe(self) -> None:
+        """Esc во время росчерка: отметки сняты, ничего не удаляется."""
+        self._swipe = None
+        for c in self.swiped_cables():
+            c.set_swiped(False)
 
     def right_click(self, item) -> None:
         """Кабель или подключённая строка — снять кабель; строка или группа пула, строка без кабеля — зачеркнуть
@@ -1251,8 +1368,10 @@ class CableEditor(QWidget):
         return out[:MAX_PREVIEW]
 
     def _autoscroll(self, at: QPointF) -> None:
-        """Курсор у верхнего/нижнего края колонки (или за ним) — прокрутить её; быстрее, чем ближе к краю."""
-        for view in (self.pool, self.view):
+        """Курсор у верхнего/нижнего края сцены (или за ним) — прокрутить её; быстрее, чем ближе к краю.
+        Пул не прокручивается никогда: в него не бросают, а строка, которую тащат, не должна уезжать из-под курсора
+        (кабель начинается у края пула — прокрутка там двигала бы все строки пула)."""
+        for view in (self.view,):
             vp = view.viewport()
             top_left = vp.mapTo(self, QPoint(0, 0))
             if not top_left.x() <= at.x() <= top_left.x() + vp.width():
@@ -1319,6 +1438,7 @@ class CableEditor(QWidget):
         """Раскладка заново; pool / scene — какие колонки перерисовать; anchor — удержать прокрутку за якорь."""
         p = self.profile
         self.shown = p.oriented(self.direction) if p is not None else None
+        self._init_target_groups()
         lay = build_layout(self.shown, self.collapsed, show_all=self.show_all, expanded=self.expanded,
                            suggested=self.suggested)
         if self.current is not None:  # нетронутая колонка остаётся как есть
@@ -1344,6 +1464,15 @@ class CableEditor(QWidget):
         visible = {n for item in self.pool_rows + self.scene_rows for n in item.notes}
         self.set_selection(self.selection & visible)
 
+    def _init_target_groups(self) -> None:
+        """Группам цели, которых вид ещё не показывал, — начальный режим (initial_show_all); уже виденные не
+        трогаются: режим группы меняет только пользователь (клик по заголовку, пружина при перетаскивании)."""
+        state = self._state[self.direction]
+        new = set(target_group_keys(self.shown)) - state.seen
+        if new:
+            state.seen |= new
+            state.show_all |= new & initial_show_all(self.shown)
+
     # --- якорь прокрутки ---
 
     def _anchor_items(self, view: _ColumnView) -> list[tuple[tuple, QRectF]]:
@@ -1357,13 +1486,16 @@ class CableEditor(QWidget):
 
     def _anchors(self, view: _ColumnView) -> list[tuple[tuple, float]]:
         """Якоря: элемент под курсором (или верхний видимый) и следующие за ним — ключ и смещение от верха
-        видимой части. После перестройки берётся первый уцелевший (строка могла уйти из пула)."""
+        видимой части. После перестройки берётся первый уцелевший (строка могла уйти из пула). Курсор не над
+        колонкой и она в самом верху — якоря нет: колонка остаётся вверху (первые строки не уезжают за край)."""
         items = sorted(self._anchor_items(view), key=lambda kr: kr[1].top())
         if not items:
             return []
         top = view.verticalScrollBar().value()
         vp = view.viewport()
         cursor = vp.mapFromGlobal(QCursor.pos())
+        if not vp.rect().contains(cursor) and top == 0:
+            return []  # курсор не здесь, а колонку не прокручивали — она и остаётся в самом верху
         y = view.mapToScene(cursor).y() if vp.rect().contains(cursor) else top
         start = next((i for i, (_, r) in enumerate(items) if r.bottom() > y), len(items))
         return [(k, r.top() - top) for k, r in items[start:]]
@@ -1521,9 +1653,7 @@ class CableEditor(QWidget):
             return QRectF(x, PAD + y * ROW, col2 if x == lx else col3, h * ROW)
 
         for h in sc.target_headers:
-            if not lay.placement.slots:  # кабелей нет — все группы раскрыты (клик ничего не скрывает)
-                tip = "All articulations shown until something is connected"
-            elif h.key in self.show_all:
+            if h.key in self.show_all:
                 tip = "All articulations shown. Click to show connected only"
             else:
                 tip = "Connected only. Click to show all articulations"

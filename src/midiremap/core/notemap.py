@@ -72,6 +72,23 @@ def keyword_group(name: str) -> str | None:
     return next((label for label, rx in _KEYWORD_GROUPS if rx.search(low)), None)
 
 
+# Порядок групп инструментов при показе (пул, колонки «from» и «to», таблица Maps — во всех направлениях)
+GROUP_ORDER = ("Kick", "Snare", "Hi-Hat", "Toms", "Ride", "Crash", "Cymbal", "China", "Splash", "Percussion",
+               "Other")
+
+
+def group_rank(group: str | None) -> int:
+    """Место группы (подписи instrument_group: «Kick», «Crash 2», «Floortom 1») в GROUP_ORDER — по keyword_group
+    подписи (сама подпись — категория: «Percussion» -> Percussion); не узнали или None — Other. Только для показа:
+    одинаковый ранг — порядок карты (по первой ноте группы)."""
+    if not group:
+        return GROUP_ORDER.index("Other")
+    exact = {g.casefold(): i for i, g in enumerate(GROUP_ORDER)}.get(normalize_name(group))
+    if exact is not None:
+        return exact
+    return GROUP_ORDER.index(keyword_group(group) or "Other")
+
+
 def instrument_group(name: str) -> str | None:
     """Инструмент из имени ноты — ТОЛЬКО для показа строк под заголовками (не для сопоставления и подсказок).
 
@@ -87,12 +104,31 @@ def instrument_group(name: str) -> str | None:
 
 # --- артикуляции и основные ноты ---
 
+_ARTICULATIONS: dict[int, tuple[tuple, dict[str, tuple[int, ...]]]] = {}  # id(карты) -> (снимок имён, группы)
+_ARTICULATIONS_MAX = 16
+
+
 def articulations(m: NoteMap) -> dict[str, list[int]]:
-    """Нормализованное имя -> ноты с этим именем (по возрастанию)."""
-    groups: dict[str, list[int]] = {}
-    for n in sorted(m.names):
-        groups.setdefault(normalize_name(m.names[n]), []).append(n)
-    return groups
+    """Нормализованное имя -> ноты с этим именем (по возрастанию).
+
+    Вызывается сотни раз за одну перестройку вида (primary_note, derive_reverse — по каждой строке), а
+    normalize_name всех имён дорог: результат запоминается по СОДЕРЖИМОМУ имён карты (снимок names) — правка
+    имён даёт новый снимок, устаревшего ответа не бывает. Каждый вызов — новые списки (вызывающий может менять)."""
+    return {k: list(v) for k, v in _articulation_index(m).items()}
+
+
+def _articulation_index(m: NoteMap) -> dict[str, tuple[int, ...]]:
+    """articulations() без копии (только для чтения): общий запомненный результат."""
+    snap = tuple(m.names.items())
+    hit = _ARTICULATIONS.get(id(m))
+    if hit is None or hit[0] != snap:
+        groups: dict[str, list[int]] = {}
+        for n in sorted(m.names):
+            groups.setdefault(normalize_name(m.names[n]), []).append(n)
+        if len(_ARTICULATIONS) >= _ARTICULATIONS_MAX:
+            _ARTICULATIONS.clear()
+        hit = _ARTICULATIONS[id(m)] = (snap, {k: tuple(v) for k, v in groups.items()})
+    return hit[1]
 
 
 def primary_note(m: NoteMap, name: str) -> int | None:
@@ -100,7 +136,7 @@ def primary_note(m: NoteMap, name: str) -> int | None:
 
     None — имени нет в карте, либо нот несколько и основная не отмечена (или отмечено больше одной).
     """
-    notes = articulations(m).get(normalize_name(name), [])
+    notes = _articulation_index(m).get(normalize_name(name), ())
     if len(notes) == 1:
         return notes[0]
     flagged = [n for n in notes if n in m.primary]

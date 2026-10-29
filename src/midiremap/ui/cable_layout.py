@@ -34,14 +34,17 @@ SourceRow.same), иначе — наименьшую; остальные — з�
 
 Сворачивание пула: ключи групп «unassigned/<группа>» (POOL_PREFIX). Группы цели — два режима: «только подключённые»
 (по умолчанию; видны артикуляции, напротив которых есть строки, группа без них — один заголовок) и «все»
-(ключ «target/<группа>» в show_all). Пока кабелей (и подсказок) нет совсем — все группы цели раскрыты. Заголовок показывает число нот (пул) или артикуляций (цель).
+(ключ «target/<группа>» в show_all). Начальное состояние групп цели — initial_show_all(): пока кабелей нет
+совсем — все раскрыты; виджет применяет его ОДИН раз, к группам, которых ещё не видел, дальше режим
+меняет только пользователь (первый кабель ничего не сворачивает). Заголовок показывает число нот (пул) или
+артикуляций (цель).
 """
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 
-from ..core.notemap import NoteMap, articulations, instrument_group, normalize_name, primary_note
+from ..core.notemap import NoteMap, articulations, group_rank, instrument_group, normalize_name, primary_note
 from ..core.profile import RemapProfile, Rule, primary_pairs
 from ..core.suggest import plan_suggestions
 
@@ -215,15 +218,17 @@ def _source_group(names: dict[int, str], n: int) -> tuple[str, str]:
 
 
 def _grouped(notes: Iterable[int], names: dict[int, str]) -> list[int]:
-    """Ноты по группам: группы — по первой (меньшей) ноте, «Other» и «Not in the source map» — в конце."""
+    """Ноты по группам: группы — в общем порядке GROUP_ORDER (group_rank подписи), одинаковый ранг — по первой
+    (меньшей) ноте; «Other» — после всех, «Not in the source map» — в самом конце."""
     notes = sorted(notes)
-    first: dict[str, int] = {}
+    first: dict[str, tuple[int, int]] = {}
     for n in notes:
-        first.setdefault(_source_group(names, n)[0], n)
+        key, label = _source_group(names, n)
+        first.setdefault(key, (group_rank(None if key == OTHER else label), n))
 
     def key(n: int) -> tuple:
         g = _source_group(names, n)[0]
-        return g == MISSING, g == OTHER, first[g], n
+        return g == MISSING, first[g], n
     return sorted(notes, key=key)
 
 
@@ -239,9 +244,8 @@ def _wanted_slot(p: RemapProfile, n: int, suggested: Mapping[int, str]) -> str |
     return None
 
 
-def _bundle_order(p: RemapProfile, notes: Iterable[int]) -> tuple[int, ...]:
-    """Ноты напротив одной цели: сначала с основным кабелем, затем остальные — по номеру."""
-    primary = {a for a, _ in primary_pairs(p)}
+def _bundle_order(primary: set[int], notes: Iterable[int]) -> tuple[int, ...]:
+    """Ноты напротив одной цели: сначала с основным кабелем (primary — их ноты), затем остальные — по номеру."""
     return tuple(sorted(notes, key=lambda n: (n not in primary, n)))
 
 
@@ -257,7 +261,8 @@ def placement(p: RemapProfile, suggested: Mapping[int, str] = {}) -> Placement:
             slots.setdefault(key, []).append(n)
         else:
             pool.append(n)
-    return Placement(tuple(_grouped(pool, names)), {k: _bundle_order(p, v) for k, v in slots.items()})
+    primary = {a for a, _ in primary_pairs(p)} if slots else set()  # один раз, а не на каждую связку
+    return Placement(tuple(_grouped(pool, names)), {k: _bundle_order(primary, v) for k, v in slots.items()})
 
 
 # --- раскладка ---
@@ -282,8 +287,25 @@ def _target_groups(p: RemapProfile) -> list[tuple[str | None, str, list[TargetRo
     groups: dict[str | None, tuple[str, list[TargetRow]]] = {}
     for gkey, glabel, row in rows:
         groups.setdefault(gkey, (glabel, []))[1].append(row)
-    keys = sorted(groups, key=lambda k: (k == MISSING, k == OTHER))  # устойчиво: иначе — по первой ноте
+    # общий порядок групп (GROUP_ORDER, как в пуле); одинаковый ранг — по первой ноте (устойчивая сортировка)
+    keys = sorted(groups, key=lambda k: (k == MISSING, group_rank(None if k in (OTHER, None) else groups[k][0])))
     return [(k, groups[k][0], groups[k][1]) for k in keys]
+
+
+def target_group_keys(p: RemapProfile | None) -> list[str]:
+    """Ключи групп цели («target/<группа>») в порядке показа; плоская цель (без групп) — пусто."""
+    if p is None:
+        return []
+    return [TARGET_PREFIX + k for k, _, _ in _target_groups(p) if k is not None]
+
+
+def initial_show_all(p: RemapProfile | None) -> set[str]:
+    """Начальный режим групп цели: ни одного кабеля (правила map; новый профиль) — все группы «все», иначе —
+    «только подключённые». Подсказки не в счёт: их строки встают напротив своих целей и в раскрытых группах.
+    Только для групп, которых вид ещё не показывал (см. CableEditor)."""
+    if p is None or any(r.action == "map" for r in p.rules.values()):
+        return set()
+    return set(target_group_keys(p))
 
 
 def build_layout(p: RemapProfile | None, collapsed: Iterable[str] = (), *, show_all: Iterable[str] = (),
@@ -412,7 +434,7 @@ def _scene_layout(ctx: _Ctx, order: Placement, show_all: set[str], expanded: set
         if gkey is not None:
             key = TARGET_PREFIX + gkey
             occupied = [r for r in rows if order.slots.get(r.slot)]
-            if key not in show_all and order.slots:  # ни одного кабеля (новый профиль) — все группы раскрыты
+            if key not in show_all:
                 visible = occupied
             notes = tuple(sorted(n for r in rows if r.in_map for n in r.notes))
             t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), y, notes,

@@ -70,3 +70,15 @@ def test_grancassa_is_orchestral_percussion_not_kit_kick():
     m = load_map_template("Guitar Pro 8")
     assert m.names[114] == "Grancassa (hit)" and instrument_group(m.names[114]) == "Percussion"
     assert [instrument_group(m.names[n]) for n in (35, 36)] == ["Kick", "Kick"]  # «Kick (hit)» — бочка
+
+
+def test_group_rank_order_for_display():
+    from midiremap.core.notemap import GROUP_ORDER, group_rank
+    assert GROUP_ORDER == ("Kick", "Snare", "Hi-Hat", "Toms", "Ride", "Crash", "Cymbal", "China", "Splash",
+                           "Percussion", "Other")
+    ranks = [group_rank(g) for g in ("Kick", "Snare", "Hi-Hat", "Racktom 1", "Floortom 2", "Ride", "Crash 2",
+                                     "Cymbal 3", "China", "Splash", "Percussion", "Other")]
+    assert ranks == sorted(ranks) and ranks[3] == ranks[4] == GROUP_ORDER.index("Toms")
+    assert group_rank("Tambourine") == GROUP_ORDER.index("Percussion")  # по ключевым словам подписи
+    assert group_rank("Cymbal 1") == GROUP_ORDER.index("Cymbal")         # SD3: тарелки «Cymbal N» — после Crash
+    assert group_rank(None) == group_rank("Metronome") == group_rank("Other") == len(GROUP_ORDER) - 1
