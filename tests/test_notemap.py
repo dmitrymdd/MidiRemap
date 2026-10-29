@@ -4,7 +4,7 @@ import pytest
 
 from midiremap.core.notemap import (
     MapFormatError, MapMeta, NoteMap, articulations, duplicate_map, finalize_edit, map_from_json,
-    map_to_dict, map_to_json, primary_note, validate_map,
+    map_to_dict, map_to_json, primary_note, set_note_name, validate_map,
 )
 from midiremap.core.pitch import OCTAVE_OFFSET, note_tip, pitch_name
 from midiremap.core.profile import RemapProfile, Rule
@@ -203,3 +203,13 @@ def test_finalize_clears_primary_of_single_note_names():
     out = finalize_edit(base, edited)
     assert out.primary == {51}
     assert validate_map(out) == [i for i in validate_map(out) if i.severity == 'warning']
+
+
+def test_set_note_name_drops_primary_only_when_articulation_changes():
+    m = NoteMap('m', {38: 'Snare', 40: 'Snare', 42: 'Hat'}, primary={38})
+    assert not set_note_name(m, 42, ' Hat ')  # то же имя (края обрезаются) — без изменений
+    assert set_note_name(m, 38, '  SNARE ') and m.names[38] == 'SNARE' and m.primary == {38}  # та же артикуляция
+    assert set_note_name(m, 38, 'Tom') and m.primary == set()  # другая артикуляция — флаг снят
+    m.primary = {40}
+    assert set_note_name(m, 40, '') and 40 not in m.names and m.primary == set()  # нота убрана
+    assert set_note_name(m, 50, 'Ride') and m.names[50] == 'Ride'  # новая нота

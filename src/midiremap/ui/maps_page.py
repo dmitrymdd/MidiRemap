@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import (
-    NoteMap, articulations, duplicate_map, finalize_edit, group_rank, instrument_group, normalize_name, validate_map,
+    NoteMap, articulations, duplicate_map, finalize_edit, group_rank, instrument_group, normalize_name, set_note_name,
+    validate_map,
 )
 from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import note_tip, pitch_name
@@ -294,17 +295,9 @@ class NoteTableModel(QAbstractTableModel):
         return False
 
     def set_name(self, n: int, label: str) -> bool:
-        """Пустое имя — нота удаляется из карты. Смена артикуляции снимает флаг primary с ноты."""
-        label = label.strip()
-        old = self.map.names.get(n)
-        if label == (old or ""):
+        """Пустое имя — нота удаляется из карты; смена артикуляции снимает с ноты primary (core set_note_name)."""
+        if not set_note_name(self.map, n, label):
             return False
-        if label:
-            self.map.names[n] = label
-        else:
-            del self.map.names[n]
-        if n in self.map.primary and (not label or normalize_name(label) != normalize_name(old)):
-            self.map.primary.discard(n)
         self._changed()
         return True
 

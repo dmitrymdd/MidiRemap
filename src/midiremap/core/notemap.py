@@ -185,6 +185,23 @@ def duplicate_map(m: NoteMap, name: str, from_template: bool = False) -> NoteMap
     return c
 
 
+def set_note_name(m: NoteMap, n: int, label: str) -> bool:
+    """Правка имени ноты на месте (таблица Maps). Пустое имя — нота убирается из карты. Нота сменила артикуляцию
+    (имя другое и после normalize_name) или убрана — флаг primary с неё снимается: Write to чужой артикуляции ей не
+    достаётся. False — имя не изменилось."""
+    label = label.strip()
+    old = m.names.get(n)
+    if label == (old or ""):
+        return False
+    if label:
+        m.names[n] = label
+    else:
+        del m.names[n]
+    if n in m.primary and (not label or old is None or normalize_name(label) != normalize_name(old)):
+        m.primary.discard(n)
+    return True
+
+
 def finalize_edit(base: NoteMap, edited: NoteMap) -> NoteMap:
     """Карта для сохранения после правки base -> edited (возвращается копия, аргументы не меняются).
 
