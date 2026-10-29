@@ -1,11 +1,11 @@
 """Менеджер и редактор профилей ремапа (PySide6). Раскладка — две строки над видом «кабелями» (cable_view.py):
 [профиль ▾] [New] [Duplicate] [Rename] [Delete] … статус [Revert] [Save]; над колонками — «Unassigned» и
-«Match by number» над пулом | [карта «from» ▾] [→/←] [карта «to» ▾] над сценой (кнопка направления — по центру
+«Match by number» над пулом | [карта «from» ▾] [⇄] [карта «to» ▾] над сценой (кнопка направления — по центру
 промежутка для кабелей), над «to» справа — панель подсказок. Статус — отклик на последнее действие (не счётчик),
 гаснет через ~4 с.
 
-Направление: кнопка показывает текущее (→ / ←, цветом направления), клик переключает; карты направления
-словами — в подсказке. Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
+Направление: кнопка «⇄» (Swap source and target) переключает → / ←; в ← она цвета обратного направления, карты
+сторон видны над колонками. Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
 на нём (assign_plan, assign_to_articulation, with_write_to, connect_same_numbers, apply_suggested), результат
 пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
 обратные правила (_put). Подсказки, свёрнутость вида и «скрыть подсказки» — свои у каждого направления.
@@ -289,7 +289,7 @@ class ProfilesPage(QWidget):
         self.cables.note_drop_requested.connect(self.assign_note)
         root.addWidget(self.cables, stretch=1)
 
-        # строка над колонками: «Unassigned» + Match by number | [карта «from» ▾] [→/←] [карта «to» ▾]
+        # строка над колонками: «Unassigned» + Match by number | [карта «from» ▾] [⇄] [карта «to» ▾]
         self.match_btn = self._button("Match by number", MATCH_TIP, self.match_by_number)
         self.match_btn.setObjectName("link")
         self.cables.pool_head.addWidget(self.match_btn)
@@ -447,7 +447,7 @@ class ProfilesPage(QWidget):
                 continue
             self._item(p.name, profile_summary(p), e.id)
         self.combo.setPlaceholderText("Select a profile" if entries else "No profiles yet")
-        self.combo.setToolTip("" if entries else "Create one: ⋯ → New")
+        self.combo.setToolTip("" if entries else "Create one with New")
         if issues:
             self.set_status(f"Skipped unreadable profiles ({len(issues)}): "
                             + ", ".join(i.path.name for i in issues), "error")

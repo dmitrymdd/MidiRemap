@@ -2,7 +2,7 @@
 
 Штатная стрелка Qt при стилизованном QComboBox стоит в отдельной рамке (::drop-down) — справа получалась двойная
 граница. В таблице стилей у ::drop-down рамки нет, ::down-arrow скрыт, а стрелку (маленький треугольник, как у
-меню кнопок выбора карты) рисует paintEvent — так же, как три точки DotsButton."""
+меню кнопок выбора карты) рисует paintEvent."""
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt
