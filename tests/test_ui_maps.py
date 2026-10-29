@@ -1,35 +1,21 @@
 """Смоук-тесты менеджера/редактора карт (PySide6, платформа Qt offscreen, диалоги подменены)."""
-import os
 import shutil
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from midiremap.core.notemap import NoteMap  # noqa: E402
 from midiremap.core.pitch import pitch_name  # noqa: E402
 from midiremap.core.notenames import parse_notenames  # noqa: E402
-from midiremap.storage import Storage  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui.main_window import PAGE_MAPS, MainWindow  # noqa: E402
 from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
-
-
-@pytest.fixture(scope="module")
-def app():
-    return QApplication.instance() or QApplication([])
-
-
-@pytest.fixture
-def storage(tmp_path):
-    return Storage(tmp_path / "store")
 
 
 @pytest.fixture

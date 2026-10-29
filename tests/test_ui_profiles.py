@@ -1,11 +1,9 @@
 """Смоук-тесты вкладки Profiles и связанных частей вкладки Convert (PySide6, offscreen, диалоги подменены)."""
-import os
 import shutil
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
@@ -14,8 +12,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from midiremap.core.notemap import NoteMap, articulations, normalize_name  # noqa: E402
 from midiremap.core.profile import RemapProfile, Rule, legacy_profile  # noqa: E402
-from midiremap.core.suggest import suggest_rules  # noqa: E402
-from midiremap.storage import Storage, sanitize_id  # noqa: E402
+from midiremap.storage import sanitize_id  # noqa: E402
 from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui import cable_view  # noqa: E402
 from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow  # noqa: E402
@@ -25,18 +22,6 @@ from midiremap.ui.profiles_page import ID_ROLE  # noqa: E402
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
 LEGACY_ID = sanitize_id(legacy_profile().name)
-
-
-@pytest.fixture(scope="module")
-def app():
-    app = QApplication.instance() or QApplication([])
-    yield app
-    app.clipboard().clear()
-
-
-@pytest.fixture
-def storage(tmp_path):
-    return Storage(tmp_path / "store")
 
 
 def stub_dialogs(page):
@@ -125,7 +110,6 @@ def test_summary_line_and_edit_jumps_to_profiles(window, storage):
     combo.setCurrentIndex(combo.findData(LEGACY_ID))
     assert window.profile_summary.text() == "no maps"  # на Convert — без числа правил
     combo.setCurrentIndex(combo.findData(pid))
-    n = len(storage.load_profile(pid).rules)
     assert window.profile_summary.text() == "EZdrummer 3 → Superior Drummer 3"
     window.show_page(PAGE_PROFILES)
     page.select(LEGACY_ID)
@@ -171,7 +155,7 @@ def test_source_zone_and_output_card(window, tmp_path):
 
 def test_create_profile_with_two_templates(window, storage):
     page = window.profiles_page
-    pid = new_profile(page)
+    new_profile(page)
     w = page.work
     assert w.source_map.name == "EZdrummer 3" and w.target_map.name == "Superior Drummer 3"
     assert w.source_map.meta.source == load_map_template("EZdrummer 3").meta.source
@@ -557,7 +541,7 @@ def test_hotkeys_in_tooltips_and_short_status(window, tmp_path):
     assert not hasattr(page, "edit_hint")
 
 
-# --- вид «кабелями» (8b2a) ---
+# --- вид «кабелями» ---
 
 def map_rule_count(p):
     return sum(r.action == "map" for r in p.rules.values())
@@ -658,7 +642,7 @@ def test_cables_pool_is_separate_column(window):
     assert ed.view.verticalScrollBar() is not ed.pool.verticalScrollBar()
     ed.pool.verticalScrollBar().setValue(ed.pool.verticalScrollBar().maximum())
     assert ed.view.verticalScrollBar().value() == 0
-    # слой для кабеля-превью (8b2b): поверх обоих, мышь не перехватывает
+    # слой для кабеля-превью: поверх обоих, мышь не перехватывает
     assert ed.overlay.geometry() == ed.rect()
     assert ed.overlay.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     a = ed.source_anchor(lay.pool.rows[0].note)
@@ -698,7 +682,7 @@ def test_removed_cable_row_goes_straight_to_pool(window):
     assert len(page.cables.pool_items) == pool_count + 1
     assert page.undo() and n in page.cables.source_items and n not in page.cables.pool_items  # отмена — тоже сразу
 
-# --- вид «кабелями»: правка (8b2b) ---
+# --- вид «кабелями»: правка ---
 
 def cables_page(window, accept=True, size=(1300, 900)):
     """Новый профиль EZD3 → SD3; accept — применить подсказки; подсказки затем скрыты (✕)."""
@@ -791,7 +775,7 @@ def test_drag_with_real_mouse_events(window, app):
     at = QPointF(ed.pool.viewport().mapFrom(ed, target_point(ed, "a:" + slot).toPoint()))
     send(QEvent.Type.MouseMove, at, Qt.MouseButton.LeftButton)
     ed._tick()
-    assert tgt.drop_zone == ("row",) and ed.overlay.preview and ed.overlay.valid  # середина строки — зона 8b2c
+    assert tgt.drop_zone == ("row",) and ed.overlay.preview and ed.overlay.valid  # середина строки — зона назначения
     send(QEvent.Type.MouseButtonRelease, at, Qt.MouseButton.NoButton)
     app.processEvents()
     assert not ed.dragging and ed.overlay.preview is None
@@ -899,7 +883,7 @@ def test_existing_profile_opens_with_connected_only_groups(window, app):
 
 def test_autoscroll_near_edge(window, app):
     from PySide6.QtCore import QPointF
-    page, ed = cables_page(window, accept=False, size=(1200, 600))
+    _page, ed = cables_page(window, accept=False, size=(1200, 600))
     pool_bar, scene_bar = ed.pool.verticalScrollBar(), ed.view.verticalScrollBar()
     assert pool_bar.maximum() > 0 and scene_bar.maximum() > 0 and pool_bar.value() == scene_bar.value() == 0
     # у нижнего края пула — пул НЕ прокручивается (в него не бросают; строки пула не уезжают)
@@ -993,7 +977,6 @@ def _gap_x(ed):
 
 def _crossing(ed, x, y0, y1):
     """Кабели, чья линия пересекает вертикаль x между y0 и y1 (по самому пути кабеля)."""
-    from PySide6.QtGui import QPainterPath
     out = set()
     for c in ed.cable_items:
         path = c.path()
@@ -1041,7 +1024,7 @@ def test_swipe_marks_crossed_cables_and_deletes_them_in_one_undo_step(window, ap
 
 def test_fast_swipe_hits_cables_between_mouse_events(window, app):
     """Одно движение через много кабелей (между событиями мыши нет промежуточных точек) — отмечены все."""
-    page, ed = _swipe_page(window)
+    _page, ed = _swipe_page(window)
     x = _gap_x(ed)
     cables = sorted(ed.cable_items, key=lambda c: c.path().pointAtPercent(0.5).y())
     y0, y1 = cables[0].src.rect.top() - 2, cables[6].src.rect.bottom() + 2
@@ -1165,7 +1148,7 @@ def test_target_groups_connected_only_and_toggle(window, app):
 
 
 def test_spring_loaded_group_opens_while_dragging(window, app):
-    page, ed = cables_page(window)
+    _page, ed = cables_page(window)
     ed.show_all.clear()  # пользователь перевёл группы в «только подключённые»
     ed.refresh()
     head = next(h for h in ed.current.scene.target_headers if h.collapsed)
@@ -1201,7 +1184,7 @@ def test_alias_expand_in_pool_leaves_scene_untouched(window, app):
 
 
 def test_pool_collapse_rebuilds_only_pool(window, app):
-    page, ed = cables_page(window)
+    _page, ed = cables_page(window)
     scene_items = list(ed.scene_rows)
     key = ed.current.pool.headers[0].key
     ed.toggle_pool(key)
@@ -1211,7 +1194,7 @@ def test_pool_collapse_rebuilds_only_pool(window, app):
 
 
 
-# --- назначение по номерам, группа, номера цели, отмена (8b2c) ---
+# --- назначение по номерам, группа, номера цели, отмена ---
 
 def three_note_articulation(p):
     """Артикуляция цели на трёх+ нотах, все номера которых есть в исходной карте."""
@@ -1249,7 +1232,7 @@ def test_drop_single_match_becomes_write_to_silently(window, app):
 
 
 def test_drop_several_matches_asks_once_with_preselect(window, app):
-    page, ed = cables_page(window, accept=False)
+    page, _ed = cables_page(window, accept=False)
     key, notes = three_note_articulation(page.work)
     (other,) = notes_off(page.work, notes, 1)
     page.answers["write_to"] = [notes[2]]
@@ -1347,10 +1330,10 @@ def test_undo_redo_stack(window, app, storage):
     assert not page.undo() and not page.redo()
 
 
-# --- полировка (8b2d): «+N» у алиасов, список профилей, ширины колонок, полные имена ---
+# --- полировка: «+N» у алиасов, список профилей, ширины колонок, полные имена ---
 
 def test_alias_row_badge_and_shown_number(window, app):
-    page, ed = cables_page(window)
+    _page, ed = cables_page(window)
     # свёрнутая строка алиасов: «+N» и номер ноты n → n
     item = next((i for i in ed.scene_rows if len(i.notes) > 1 and not i.model.expanded and i.model.same), None)
     assert item is not None
@@ -1505,7 +1488,7 @@ def test_old_column_width_keys_are_ignored(app, storage):
 
 
 def test_truncated_names_in_tooltips(window, app):
-    page, ed = cables_page(window, size=(900, 700))
+    _page, ed = cables_page(window, size=(900, 700))
     ed.columns = (0.2, 0.6, 0.2)  # узкие колонки — длинные имена обрезаются
     ed.refresh()
     from midiremap.ui.cable_view import _font
@@ -1543,11 +1526,11 @@ def test_drag_preview_thin_from_unassigned_notes(window):
     ed.cancel_drag()
 
 
-# --- двунаправленные профили (8b3a) ---
+# --- двунаправленные профили ---
 
 def test_reverse_rules_follow_connect_with_undo_redo(window, app):
     from midiremap.core.profile import derive_reverse
-    page, ed = cables_page(window, accept=False)
+    page, _ed = cables_page(window, accept=False)
     page.work.reverse_rules = derive_reverse(page.work)  # заданы явно (как после сохранения формата 2)
     key, notes = three_note_articulation(page.work)
     n = notes[0]
@@ -1564,7 +1547,7 @@ def test_reverse_rules_follow_connect_with_undo_redo(window, app):
 
 
 def test_map_change_resets_reverse_rules_in_one_undo_step(window, app):
-    page, ed = cables_page(window)
+    page, _ed = cables_page(window)
     manual = {36: Rule.delete(), 38: Rule.map_to(40)}
     page.work.reverse_rules = dict(manual)
     assert page.choose_map("target", EZD3)
@@ -1583,7 +1566,6 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     pid = new_profile(page, "Kit")
     page.apply_suggestions()
     assert page.save()
-    saved = storage.load_profile(pid)
     w.show_page(PAGE_CONVERT)
     w.profile_combo.setCurrentIndex(w.profile_combo.findData(pid))
     assert w.direction_btn.text() == "⇄" and w.direction_btn.toolTip() == "Swap source and target"
@@ -1608,7 +1590,7 @@ def test_convert_direction_toggle(app, storage, tmp_path):
     assert MainWindow(storage).direction_btn.property("dir") == FORWARD
 
 
-# --- обратное направление в редакторе (8b3b2) ---
+# --- обратное направление в редакторе ---
 
 def reverse_page(window, accept=True):
     """EZD3 → SD3 (подсказки применены, если accept), вид — в ←."""
@@ -1714,7 +1696,7 @@ def test_suggestion_bar_over_to_column_yields_to_map_button(window, app):
 def test_empty_from_column_shows_hint(window, app):
     from midiremap.core.profile import FORWARD, REVERSE
     page, ed = cables_page(window, accept=False)
-    lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
+    lx, _rx, col2, _col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
     assert ed.current.scene.source_rows == []
     assert ed.view.hint == (lx, col2, "Drag notes from Unassigned onto the target map")
     page.set_direction(REVERSE)
@@ -1997,7 +1979,7 @@ def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
     assert key in ed.collapsed
 
 
-# --- доработки 8b3b2: основной первым, двойной клик по Unassigned, заголовок, комбобоксы ---
+# --- основной кабель и вид: основной первым, двойной клик по Unassigned, заголовок, комбобоксы ---
 
 def shared_numbers(p, k):
     """k номеров, которые есть в обеих картах и принадлежат разным артикуляциям цели (и источника)."""
@@ -2172,7 +2154,7 @@ def test_double_click_unassigned_scrolls_row_into_view(window, app):
 
 def test_direction_button_centered_between_map_buttons(window, app):
     from midiremap.core.profile import REVERSE
-    page, ed = cables_page(window)
+    page, _ed = cables_page(window)
     for size in ((1300, 900), (1500, 900)):
         window.resize(*size)
         app.processEvents()
@@ -2259,7 +2241,7 @@ def test_drop_on_number_line_maps_exactly_forward(window, app):
 def test_drop_alias_row_on_number_line_sends_all_notes(window, app):
     page, ed = cables_page(window, accept=False)
     row = pool_row(ed, lambda i: len(i.notes) > 1)
-    key, notes = three_note_articulation(page.work)
+    key, _notes = three_note_articulation(page.work)
     slot = "a:" + key
     show_target_group(ed, slot)
     target = ed.target_items[slot].model.numbers[0][1]  # без кабелей — Write to или первая нота
@@ -2301,14 +2283,14 @@ def test_zone3_row_drop_unchanged(window, app):
     show_target_group(ed, slot)
     (x,) = notes_off(page.work, notes, 1)
     page.answers["write_to"] = [notes[1]]
-    drop(app, ed, [x], target_point(ed, slot))  # имя / пустое место — логика 8b2c: вопрос о Write to
+    drop(app, ed, [x], target_point(ed, slot))  # имя / пустое место — логика назначения (assign_plan): вопрос о Write to
     assert [a[0] for a in page.answers["asked"]] == ["write_to"]
     assert page.work.rules[x] == Rule.map_to(notes[1]) and notes[1] in page.work.target_map.primary
 
 
 def test_crash_bow_case_exact_notes_in_reverse(window, app):
     """← : EZD3 «Crash 1: Bow» на 84 и 87; SD3 84 и 87 подключены n -> n (номера 84 и 87 на строке).
-    SD3 88 и 85 через логику 8b2c легли бы оба на Write to (87); drop на номер — 88 -> 84, 85 -> 87."""
+    SD3 88 и 85 по логике назначения (assign_plan) легли бы оба на Write to (87); drop на номер — 88 -> 84, 85 -> 87."""
     page, ed = reverse_page(window, accept=False)
     ezd = page.work.source_map
     slot = "a:" + normalize_name(ezd.names[84])
@@ -2357,7 +2339,7 @@ def test_drop_on_write_to_number_without_cables(window, app, direction):
     show_target_group(ed, slot)
     assert page.set_write_to(wt)
     assert ed.current.target_row(slot).numbers == ((0, wt),)  # Write to — на первой строке, без кабелей
-    x = notes[0]  # номер x есть среди нот артикуляции: логика 8b2c дала бы x -> x
+    x = notes[0]  # номер x есть среди нот артикуляции: логика назначения (assign_plan) дала бы x -> x
     ed.begin_drag({x}, line_point(ed, slot, wt))
     assert ed._drag.zone == ("line", 0, wt)
     ed.cancel_drag()
@@ -2468,7 +2450,7 @@ def test_status_fades_after_last_message(window, app):
 
 def test_undo_redo_hotkeys_work_with_focus_anywhere_on_profiles(window, app):
     from PySide6.QtGui import QKeySequence
-    page, ed = cables_page(window, accept=False)
+    page, _ed = cables_page(window, accept=False)
     assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.revert_btn.toolTip()
     assert "Ctrl+Shift+Z" in page.revert_btn.toolTip()
     n = sorted(page.work.source_map.names)[0]

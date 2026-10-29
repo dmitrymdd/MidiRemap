@@ -121,7 +121,7 @@ def test_templates_ezd3_to_sd3_consistent_with_data():
     assert profile.rules == {s.src: Rule.map_to(s.dst) for s in result if s.kind in ('exact', 'probable')}
 
 
-# --- подсказки в редакторе профиля (8b2d): логика назначения 8b2c ---
+# --- подсказки в редакторе профиля: логика назначения (assign_plan) ---
 
 def test_plan_and_apply_suggested_follow_assignment_logic():
     from midiremap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets

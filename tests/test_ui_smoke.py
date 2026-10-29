@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QMimeData, QUrl  # noqa: E402
@@ -20,15 +19,6 @@ from midiremap.ui.main_window import (  # noqa: E402
 )
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
-
-
-@pytest.fixture(scope="module")
-def app():
-    app = QApplication.instance() or QApplication([])
-    yield app
-    # платформа offscreen падает (segfault) при выходе, если в буфере обмена остались данные
-    # (test_load_convert_and_copy кладёт туда файл); обычная платформа windows — нет
-    app.clipboard().clear()
 
 
 @pytest.fixture

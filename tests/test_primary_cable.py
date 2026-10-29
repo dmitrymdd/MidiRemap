@@ -1,4 +1,4 @@
-"""Основной кабель (8b3b2): with_primary_cable (→), with_forward_primary (←), нормализация обратных правил,
+"""Основной кабель: with_primary_cable (→), with_forward_primary (←), нормализация обратных правил,
 тексты замечаний validate_profile в обратном направлении."""
 import copy
 from dataclasses import replace

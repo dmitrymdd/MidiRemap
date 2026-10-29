@@ -8,7 +8,7 @@ from midiremap.core.notemap import NoteMap, articulations, normalize_name
 from midiremap.core.profile import RemapProfile, Rule
 from midiremap.templates import load_map_template
 from midiremap.ui.cable_layout import (
-    DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Header, Placement, TargetRow, build_layout,
+    DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Placement, TargetRow, build_layout,
     initial_show_all, placement, slot_key, target_group_keys,
 )
 
@@ -223,7 +223,7 @@ def test_no_qt_imports():
     subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
 
-# --- пул и сцена (8b2a.1) ---
+# --- пул и сцена ---
 
 def test_scene_starts_at_top_regardless_of_pool():
     lay = build_layout(profile({42: Rule.map_to(42)}), no_collapse())
@@ -259,7 +259,7 @@ def test_pool_collapse_does_not_move_scene():
     assert a.scene == b.scene
 
 
-# --- группы цели: «только подключённые» / «все» (8b2b) ---
+# --- группы цели: «только подключённые» / «все» ---
 
 def test_target_groups_connected_only_by_default():
     p = profile({42: Rule.map_to(42), 36: Rule.map_to(42)})
@@ -314,7 +314,7 @@ def test_flat_target_shows_all_rows():
     assert len(lay.scene.target_rows) == 2
 
 
-# --- алиасы источника (8b2b) ---
+# --- алиасы источника ---
 
 ALIAS_SRC = NoteMap("Src", {36: "Kick: Hit", 38: "Snare: Center", 39: "Snare: Center", 40: "snare:  center",
                             42: "Hat: Closed"})
@@ -371,7 +371,7 @@ def test_connecting_alias_row_moves_all_notes_together():
     assert [r.notes for r in lay.pool.rows] == [(36,), (42,)]
 
 
-# --- номера на стороне цели, заголовки групп цели (8b2c) ---
+# --- номера на стороне цели, заголовки групп цели ---
 
 SNARES = NoteMap("Src", {38: "Snare: Center", 39: "Snare: Center", 40: "Snare: Rim", 53: "Snare: Flam",
                          60: "Snare: Center"})
@@ -411,7 +411,7 @@ def test_target_group_header_lists_its_notes():
     assert lay.header(TARGET_PREFIX + "\0missing").notes == ()  # номера вне карты — не цель для drop
 
 
-# --- подсказки и номер строки алиасов (8b2d) ---
+# --- подсказки и номер строки алиасов ---
 
 def test_suggestions_placed_opposite_target_with_dashed_cables():
     p = profile({49: Rule.delete()})
@@ -529,7 +529,7 @@ def test_single_cable_is_primary_and_suggestions_are_not():
     assert [c.primary for c in sugg.scene.cables] == [False]
 
 
-# --- основной кабель — первым в связке (8b3b2) ---
+# --- основной кабель — первым в связке ---
 
 def test_bundle_primary_row_first_then_ascending():
     src = NoteMap("S", {33: "A", 34: "B", 35: "C", 36: "D"})
@@ -577,7 +577,7 @@ def test_group_order_same_in_pool_and_target_both_directions():
     ezd, sd3 = load_map_template("EZdrummer 3"), load_map_template("Superior Drummer 3")
     for p in (RemapProfile("p", ezd, sd3), RemapProfile("p", ezd, sd3).reversed()):
         lay = build_layout(p, no_collapse(), show_all=initial_show_all(p))
-        for heads, names in ((lay.pool.headers, p.source_map.names), (lay.scene.target_headers, p.target_map.names)):
+        for heads in (lay.pool.headers, lay.scene.target_headers):
             labels = [h.label for h in heads]
             assert labels[:3] == ["Kick", "Snare", "Hi-Hat"]
             ranks = _ranks(heads)
