@@ -2,7 +2,7 @@ import pytest
 
 from midiremap.core.notemap import NoteMap
 from midiremap.core.profile import RemapProfile, Rule
-from midiremap.storage import Storage, default_root, sanitize_id
+from midiremap.storage import Storage, default_root, id_taken, sanitize_id
 
 
 @pytest.fixture
@@ -162,3 +162,43 @@ def test_garbage_map_does_not_crash_listing(st):
     entries, issues = st.list_maps()
     assert [e.id for e in entries] == ['garbage', 'good']
     assert sorted(i.path.name for i in issues) == ['broken.json', 'profile.json']
+
+
+def test_id_taken_ignores_case_and_the_renamed_entry():
+    ids = ['Kit', 'GM → SD3']
+    assert id_taken('kit', ids) and id_taken('  KIT ', ids)
+    assert id_taken('GM → SD3', ids) and not id_taken('GM -> SD3', ids)
+    assert not id_taken('Kit', ids, exclude_id='kit')  # переименование самой записи
+    assert id_taken('a/b', ['a_b'])  # сравнивается ID (имя файла), а не имя
+
+
+def test_rename_profile_moves_file(st):
+    pid = st.save_profile(RemapProfile('Old', rules={36: Rule.keep()}))
+    new = RemapProfile('New', rules={36: Rule.keep()})
+    assert st.rename_profile(pid, new) == 'New'
+    assert [e.id for e in st.list_profiles()[0]] == ['New'] and st.load_profile('New') == new
+
+
+def test_rename_profile_case_only_keeps_file_and_id(st):
+    pid = st.save_profile(RemapProfile('kit'))
+    assert st.rename_profile(pid, RemapProfile('Kit')) == 'kit'
+    assert [(e.id, e.name) for e in st.list_profiles()[0]] == [('kit', 'Kit')]
+
+
+def test_rename_onto_existing_fails_and_keeps_old(st):
+    st.save_profile(RemapProfile('A'))
+    st.save_profile(RemapProfile('B'))
+    with pytest.raises(FileExistsError):
+        st.rename_profile('A', RemapProfile('B'))
+    assert [(e.id, e.name) for e in st.list_profiles()[0]] == [('A', 'A'), ('B', 'B')]
+
+
+def test_rename_map_moves_file_and_legacy_txt(st):
+    st.maps_dir.mkdir(parents=True)
+    (st.maps_dir / 'Old.txt').write_text('# MIDI note/CC name map\n36 Kick\n', encoding='utf-8')
+    m, _ = st.load_map('Old')
+    m.name = 'New'
+    assert st.rename_map('Old', m) == 'New'
+    assert [e.id for e in st.list_maps()[0]] == ['New'] and not (st.maps_dir / 'Old.txt').exists()
+    m.name = 'NEW'
+    assert st.rename_map('New', m) == 'New' and st.load_map('New')[0].name == 'NEW'

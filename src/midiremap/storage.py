@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,13 @@ def sanitize_id(name: str) -> str:
     if s.split(".")[0].strip().upper() in _RESERVED:  # CON, nul.txt, "COM1 .x" и т.п.
         s = "_" + s
     return s
+
+
+def id_taken(name: str, ids: Iterable[str], exclude_id: str | None = None) -> bool:
+    """Запись с именем name заняла бы файл одной из ids (кроме exclude_id — переименуемой записи).
+    Сравнение без учёта регистра: Windows не различает «Kit» и «kit»."""
+    taken = {i.casefold() for i in ids} - {(exclude_id or "").casefold()}
+    return sanitize_id(name).casefold() in taken
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,11 @@ class Storage:
             legacy.unlink()
         return map_id
 
+    def rename_map(self, map_id: str, m: NoteMap) -> str:
+        """Карта m (с новым именем) вместо map_id; возвращает её ID (см. _rename)."""
+        return self._rename(map_id, sanitize_id(m.name),
+                            lambda i, ow: self.save_map(m, map_id=i, overwrite=ow), self.delete_map)
+
     def delete_map(self, map_id: str) -> None:
         """Удаляет карту (и .json, и legacy .txt с этим ID). Нет ни того, ни другого — FileNotFoundError."""
         paths = [self._path(self.maps_dir, map_id, ext) for ext in (MAP_EXT, LEGACY_MAP_EXT)]
@@ -157,8 +170,25 @@ class Storage:
         _atomic_write(path, p.to_json().encode("utf-8"), overwrite)
         return profile_id
 
+    def rename_profile(self, profile_id: str, p: RemapProfile) -> str:
+        """Профиль p (с новым именем) вместо profile_id; возвращает его ID (см. _rename)."""
+        return self._rename(profile_id, sanitize_id(p.name),
+                            lambda i, ow: self.save_profile(p, profile_id=i, overwrite=ow), self.delete_profile)
+
     def delete_profile(self, profile_id: str) -> None:
         self._path(self.profiles_dir, profile_id, PROFILE_EXT).unlink()
+
+    @staticmethod
+    def _rename(old_id: str, new_id: str, save, delete) -> str:
+        """Новый ID отличается от старого только регистром — тот же файл (Windows регистр не различает):
+        перезапись на месте, ID прежний. Иначе — запись под новым ID (занят — FileExistsError, старый файл цел),
+        затем удаление старого."""
+        if new_id.casefold() == old_id.casefold():
+            save(old_id, True)
+            return old_id
+        save(new_id, False)
+        delete(old_id)
+        return new_id
 
     @staticmethod
     def _path(folder: Path, entry_id: str, ext: str) -> Path:
