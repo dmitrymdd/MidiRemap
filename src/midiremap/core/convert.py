@@ -135,7 +135,15 @@ class _Group:
 
 def _convert_track(track: mido.MidiTrack, rule_for: Callable[[int], Rule],
                    report: ConversionReport, window: int) -> mido.MidiTrack:
-    # 1) Решение по каждому событию: None — удалить, иначе сообщение (time подставляется в шаге 3).
+    out, groups = _decide(track, rule_for, report, window)
+    _merge_groups(out, groups, report)
+    return _rebuild(track, out, report.stats)
+
+
+def _decide(track: mido.MidiTrack, rule_for: Callable[[int], Rule], report: ConversionReport,
+            window: int) -> tuple[list, list[_Group]]:
+    """1) Решение по каждому событию: None — удалить, иначе сообщение (time подставляет _rebuild).
+    Заодно — группы note_on одной целевой ноты в окне слияния и их note_off."""
     out: list = []
     pending: dict[tuple[int, int], deque[_Group]] = {}  # (канал, исх. нота) -> группы её незакрытых note_on
     last_group: dict[tuple[int, int], _Group] = {}      # (канал, цел. нота) -> последняя группа
@@ -172,8 +180,12 @@ def _convert_track(track: mido.MidiTrack, rule_for: Callable[[int], Rule],
                 sounding[tgt_key] -= 1
             else:
                 report.orphan_note_offs += 1
+    return out, groups
 
-    # 2) Многие-в-одну: один note_on с максимальной velocity, из note_off группы — только самый поздний.
+
+def _merge_groups(out: list, groups: list[_Group], report: ConversionReport) -> None:
+    """2) Многие-в-одну: один note_on с максимальной velocity, из note_off группы — только самый поздний
+    (out меняется на месте)."""
     for group in groups:
         if len(group.ons) < 2:
             continue
@@ -186,9 +198,10 @@ def _convert_track(track: mido.MidiTrack, rule_for: Callable[[int], Rule],
             out[j] = None
         report.merged_note_offs += max(len(group.offs) - 1, 0)
 
-    # 3) Сборка дорожки. Логика carry — эталон: время удалённых событий переносится на следующее,
-    #    абсолютное время оставшихся событий и длина дорожки не меняются.
-    stats = report.stats
+
+def _rebuild(track: mido.MidiTrack, out: list, stats: dict[str, int]) -> mido.MidiTrack:
+    """3) Сборка дорожки. Логика carry — эталон: время удалённых событий переносится на следующее,
+    абсолютное время оставшихся событий и длина дорожки не меняются."""
     new_track = mido.MidiTrack()
     carry = 0
     for msg, new in zip(track, out):
