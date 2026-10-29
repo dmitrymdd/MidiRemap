@@ -200,7 +200,7 @@ class SourceZone(QFrame):
                 self.rows_box.addWidget(self._row(path))
             self.scroll.setFixedHeight(min(len(paths) * self.ROW_H, self.LIST_MAX_H))
         self.setToolTip((f"{paths[0]}\n" if len(paths) == 1 else "")
-                        + "Click or drop to replace · Esc to clear" if paths else "")
+                        + "Click or drop to add files · Esc to clear" if paths else "")
         _repolish(self, "loaded", "true" if paths else "false")
         self.updateGeometry()
 
@@ -328,15 +328,20 @@ class FileReportRow(QWidget):
         self.name = _label(res.src.name, "cardName")
         self.name.setToolTip(str(res.src))
         self.name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # ошибка: под именем — её первая строка; полный текст — в подсказке и (если строк несколько) в Details
+        error = (res.error or "").strip()
+        if not res.ok and "\n" in error:
+            details = error
         self.details_btn = QPushButton("Details")
         self.details_btn.setObjectName("link")
         self.details_btn.setCheckable(True)
-        self.details_btn.setVisible(res.ok)
+        self.details_btn.setVisible(bool(details))
         self.details_btn.setToolTip("Show the full report")
-        self.summary = QLabel(report_summary(res.report) if res.ok else res.error)
+        self.summary = QLabel(report_summary(res.report) if res.ok else error.splitlines()[0] if error else "Failed")
         self.summary.setObjectName("muted" if res.ok else "status")
         self.summary.setWordWrap(True)
         if not res.ok:
+            self.summary.setToolTip(error)
             _repolish(self.summary, "state", "error")
         self.view = QPlainTextEdit(details)
         self.view.setReadOnly(True)
@@ -526,9 +531,9 @@ class MainWindow(QMainWindow):
         self.convert_btn.setObjectName("primary")
         self.convert_btn.setToolTip("Convert (Enter)")
         self.convert_btn.clicked.connect(self.convert)
-        self.copy_btn = QPushButton("Copy file  ⧉")
-        self.copy_btn.setToolTip("Copy file (Ctrl+C)")
+        self.copy_btn = QPushButton()
         self.copy_btn.clicked.connect(self.copy_output)
+        self._show_copy()
         actions = QHBoxLayout()
         actions.addWidget(self.convert_btn)
         actions.addStretch(1)
@@ -691,6 +696,7 @@ class MainWindow(QMainWindow):
     def _show_direction(self) -> None:
         self.direction_btn.setText("←" if self.direction == REVERSE else "→")
         self.direction_btn.setToolTip(DIRECTION_TIPS[self.direction])
+        _repolish(self.direction_btn, "dir", self.direction)  # цвет стрелки — цвет направления, как на Profiles
 
     def toggle_direction(self) -> None:
         """→ / ←: прямое или обратное направление конвертации (запоминается в ui.ini)."""
@@ -714,7 +720,8 @@ class MainWindow(QMainWindow):
     # --- файлы ---
 
     def set_sources(self, paths: list[Path]) -> None:
-        """Заменить список исходных файлов (повторы убираются, порядок сохраняется); результат и отчёт сбрасываются."""
+        """Заменить список исходных файлов (повторы убираются, порядок сохраняется); результат и отчёт сбрасываются.
+        Drop, диалог и Ctrl+V добавляют к списку (add_sources), load() и «Clear all» — заменяют."""
         files: list[Path] = []
         for path in paths:
             path = Path(path).resolve()
@@ -724,6 +731,14 @@ class MainWindow(QMainWindow):
         self.drop.set_files(files)
         self._show_planned_outputs()
         self._set_report(None)
+        self._show_copy()
+
+    def _show_copy(self) -> None:
+        """«Copy files», когда результатов несколько (готовых, а до конвертации — будущих)."""
+        n = len(self.outputs) if self.outputs else len(self.sources)
+        what = "Copy files" if n > 1 else "Copy file"
+        self.copy_btn.setText(f"{what}  ⧉")
+        self.copy_btn.setToolTip(f"{what} (Ctrl+C)")
 
     def _where(self) -> str:
         return str(self.output_dir) if self.output_dir is not None else "Next to the source files"
@@ -758,9 +773,17 @@ class MainWindow(QMainWindow):
             self._accept_files(files)
 
     def _accept_files(self, files: list[Path]) -> None:
-        self.set_sources(files)
-        if len(self.sources) == 1:
+        """Drop, диалог, Ctrl+V: файлы добавляются к списку (уже добавленные не повторяются)."""
+        before = len(self.sources)
+        self.set_sources(self.sources + list(files))
+        added = len(self.sources) - before
+        if not added:
+            self.set_status("Already in the list.")
+        elif len(self.sources) == 1:
             self.set_status("File loaded. Click Convert or press Enter.")
+        elif before:
+            self.set_status(f"Added {_plural(added, 'file')} · {len(self.sources)} in the list. "
+                            "Click Convert or press Enter.")
         else:
             self.set_status(f"{len(self.sources)} files loaded. Click Convert or press Enter.")
 
@@ -787,6 +810,7 @@ class MainWindow(QMainWindow):
         self.outputs = []
         self.folder_reset_btn.setVisible(folder is not None)
         self._show_planned_outputs()
+        self._show_copy()
         self.set_status(f"Results go to {folder}" if folder is not None
                         else "Each result is written next to its source file.")
 
@@ -864,6 +888,7 @@ class MainWindow(QMainWindow):
             return
         result = convert_batch(self.sources, profile, self.direction, self.output_dir)
         self.outputs = result.outputs
+        self._show_copy()
         head = f"Profile: {profile.name}{' (reverse)' if self.direction == REVERSE else ''}\n\n"
         if len(result.files) == 1:  # один файл — как раньше: итог, Details, окно ошибки
             res = result.files[0]

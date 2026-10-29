@@ -176,6 +176,53 @@ def test_several_files_list_remove_and_clear(window, tmp_path):
     assert window.sources == [] and window.drop.name.text() == "Drop a MIDI file here"
 
 
+def test_drop_dialog_and_paste_add_to_the_list(window, tmp_path, app, monkeypatch):
+    from PySide6.QtCore import QMimeData, QUrl
+    from PySide6.QtWidgets import QFileDialog
+    a, b, c = _files(tmp_path, "a.mid", "b.mid", "c.mid")
+    window._accept_files([a])
+    monkeypatch.setattr(QFileDialog, "getOpenFileNames", lambda *args: ([str(b), str(a)], ""))
+    window.choose_file()  # диалог — добавляет, повтор a не дублируется
+    assert window.sources == [a.resolve(), b.resolve()]
+    assert window.status.text().startswith("Added 1 file · 2 in the list")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(c))])
+    app.clipboard().setMimeData(mime)
+    window.paste_file()  # Ctrl+V — тоже добавляет
+    assert window.sources == [a.resolve(), b.resolve(), c.resolve()]
+    window._accept_files([c])
+    assert window.status.text() == "Already in the list." and len(window.sources) == 3
+    window.drop.clear_btn.click()  # «Clear all» — заново
+    assert window.sources == []
+    window._accept_files([b])
+    assert window.sources == [b.resolve()]
+    window.load(a)  # load() заменяет
+    assert window.sources == [a.resolve()]
+
+
+def test_copy_button_says_files_for_several_outputs(window, tmp_path):
+    a, b = _files(tmp_path, "a.mid", "b.mid")
+    assert window.copy_btn.text() == "Copy file  ⧉" and window.copy_btn.toolTip() == "Copy file (Ctrl+C)"
+    window._accept_files([a, b])
+    assert window.copy_btn.text() == "Copy files  ⧉" and window.copy_btn.toolTip() == "Copy files (Ctrl+C)"
+    window.convert()
+    assert len(window.outputs) == 2 and window.copy_btn.text() == "Copy files  ⧉"
+    window.remove_source(b.resolve())
+    assert window.copy_btn.text() == "Copy file  ⧉"
+
+
+def test_failed_file_shows_first_error_line_under_its_name(window, tmp_path):
+    from midiremap.core import FileResult
+    from midiremap.ui.main_window import FileReportRow
+    res = FileResult(tmp_path / "x.mid", tmp_path / "x_remapped.mid", error="Bad header\nat byte 14\nchunk MThd")
+    row = FileReportRow(res)
+    assert row.summary.text() == "Bad header" and row.summary.toolTip() == res.error
+    assert not row.summary.isHidden() and row.view.isHidden()  # видно без раскрытия
+    assert not row.details_btn.isHidden() and row.view.toPlainText() == res.error  # полный текст — в Details
+    one = FileReportRow(FileResult(tmp_path / "y.mid", tmp_path / "y_remapped.mid", error="Cannot read"))
+    assert one.summary.text() == "Cannot read" and one.details_btn.isHidden()
+
+
 def test_single_file_zone_looks_as_before(window, tmp_path):
     (a,) = _files(tmp_path, "a.mid")
     window.load(a)

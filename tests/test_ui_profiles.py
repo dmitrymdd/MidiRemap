@@ -151,7 +151,7 @@ def test_source_zone_and_output_card(window, tmp_path):
     src = tmp_path / "groove.mid"
     shutil.copy(SAMPLE, src)
     window.load(src)
-    assert window.drop.name.text() == "groove.mid" and "Click or drop to replace" in window.drop.toolTip()
+    assert window.drop.name.text() == "groove.mid" and "Click or drop to add files" in window.drop.toolTip()
     assert not hasattr(window.drop, "hint") and not hasattr(window.out_card, "hint")
     assert window.drop.cursor().shape() == Qt.CursorShape.PointingHandCursor
     assert window.out_card.property("state") == "off"
@@ -258,7 +258,9 @@ def test_profile_without_maps(window):
     lay = page.cables.current
     # без исходной карты — строка на правило, без групп; без целевой — цель по номерам
     shown = {n for r in lay.pool.rows + lay.scene.source_rows for n in r.notes}
-    assert shown == {n for n, r in legacy_profile().rules.items() if r != Rule.delete()}  # Delete свёрнут
+    assert shown == set(legacy_profile().rules)  # удалённые — тоже, зачёркнутыми
+    deleted = {n for n, r in legacy_profile().rules.items() if r == Rule.delete()}
+    assert deleted and all(page.cables.pool_items[n].strike for n in deleted)
     assert lay.scene.target_rows and all(t.slot.startswith("n:") for t in lay.scene.target_rows)
     n, dst = next((n, r.dst) for n, r in sorted(page.work.rules.items()) if r.action == "map")
     other = next(t.notes[0] for t in lay.scene.target_rows if t.notes[0] != dst)
@@ -307,18 +309,19 @@ def test_cancel_write_to_choice_keeps_rule(window):
 
 
 def test_delete_and_clear_rules(window):
-    from midiremap.ui.cable_layout import DELETE
+    from midiremap.ui.cable_layout import DELETE, UNASSIGNED
     page = window.profiles_page
     new_profile(page)
     page.dismiss_suggestions()
     a, b = sorted(page.work.source_map.names)[:2]
+    y = page.cables.current.source_row(a).y
     page.delete_notes([a, b])
     assert page.work.rules[a] == Rule.delete() and page.cables.pool_items[a].strike
-    page.refresh_btn.click()
-    head = page.cables.current.header(DELETE)
-    assert head.count == 2 and head.collapsed and page.cables.current.source_row(a) is None
+    page.refresh_btn.click()  # после пересортировки — на том же месте в своей группе, зачёркнута
+    row = page.cables.current.source_row(a)
+    assert row.block == UNASSIGNED and row.state == DELETE and row.y == y and page.cables.pool_items[b].strike
     page.clear_rules([a])
-    assert a not in page.work.rules
+    assert a not in page.work.rules and not page.cables.pool_items[a].strike
 
 
 def test_issues_highlighted_in_rows(window):
@@ -571,8 +574,8 @@ def test_cables_frozen_order_and_resort(window):
     assert row.y == y and row.block is None and not row.connected
     assert cabled_note_count(page.cables) == map_rule_count(page.work)
     page.refresh_btn.click()
-    assert page.cables.current.source_row(n) is None  # блок Delete свёрнут по умолчанию
-    assert page.cables.current.header(DELETE).count == 1
+    row = page.cables.current.source_row(n)  # после пересортировки — в пуле, зачёркнута
+    assert row.block is not None and row.state == DELETE and page.cables.pool_items[n].strike
 
 
 def test_cables_toolbar(window):
@@ -599,22 +602,22 @@ def test_cables_resort_button_reflows(window):
 
 def test_cables_header_click_collapses(window, app):
     from PySide6.QtCore import QPointF
-    from midiremap.ui.cable_layout import UNASSIGNED
     from midiremap.ui.cable_view import PAD, ROW
     page = window.profiles_page
     window.resize(1200, 800)
     window.show()
     new_profile(page)
     page.dismiss_suggestions()
-    head = page.cables.current.header(UNASSIGNED)
+    head = page.cables.current.pool.headers[0]  # первая группа пула (блоков состояний нет)
     assert head.y == 0 and not head.collapsed
     pool = page.cables.pool
     pos = pool.mapFromScene(QPointF(PAD + 30, PAD + ROW / 2))
     QTest.mouseClick(pool.viewport(), Qt.MouseButton.LeftButton, pos=pos)
     app.processEvents()
-    head = page.cables.current.header(UNASSIGNED)
-    assert head.collapsed and head.count == len(page.work.source_map.names)
-    assert page.cables.current.pool.rows == []
+    lay = page.cables.current
+    assert lay.header(head.key).collapsed and lay.header(head.key).count == head.count
+    assert not {n for r in lay.pool.rows for n in r.notes} & set(head.notes)
+    assert lay.pool.headers[1].y == 1  # следующая группа — сразу под свёрнутой
 
 
 def test_cables_view_saves_with_same_dialog(window, storage):
@@ -627,7 +630,8 @@ def test_cables_view_saves_with_same_dialog(window, storage):
     assert page.save() and page.answers["asked"][-1][0] == "unassigned"
     saved = storage.load_profile(pid)
     assert page.cables.profile is page.work and page.work.to_dict() == saved.to_dict()
-    assert page.cables.current.header(DELETE).count == sum(r == Rule.delete() for r in saved.rules.values())
+    struck = {n for r in page.cables.current.pool.rows if r.state == DELETE for n in r.notes}
+    assert struck == {n for n, r in saved.rules.items() if r == Rule.delete()}  # зачёркнутые — в пуле
 
 
 def test_cables_pool_is_separate_column(window):
@@ -639,7 +643,8 @@ def test_cables_pool_is_separate_column(window):
     ed = page.cables
     lay = ed.current
     # пул — своя view со своей прокруткой; сцена начинается сверху
-    assert ed.pool is not ed.view and ed.splitter.count() == 3  # левый пул | сцена | правый пул (8b3b1)
+    assert ed.pool is not ed.view and ed.splitter.count() == 2  # пул | сцена
+    assert not hasattr(ed, "pool_right") and not hasattr(ed, "inactive_pool") and not hasattr(ed, "mirrored")
     assert set(ed.pool_items) == {n for r in lay.pool.rows for n in r.notes}
     assert min(t.y for t in lay.scene.target_rows + lay.scene.target_headers) == 0
     assert ed.view.verticalScrollBar() is not ed.pool.verticalScrollBar()
@@ -886,11 +891,14 @@ def test_right_click_pool_row_and_group_toggle_strike(window, app):
     QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(row.rect.center()))
     assert all(page.work.rules[n] == Rule.delete() for n in notes)
     row = ed.pool_items[notes[0]]
-    assert row.strike and row.model.block == UNASSIGNED  # в Delete — только после пересортировки
+    assert row.strike and row.model.block == UNASSIGNED
+    page.refresh_btn.click()  # и после пересортировки — на месте, зачёркнута
+    row = ed.pool_items[notes[0]]
+    assert row.strike and row.model.block == UNASSIGNED and row.rect.top() == ed.pool_rows[0].rect.top()
     QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(row.rect.center()))
     assert all(n not in page.work.rules for n in notes)
     # группа: зачеркнуть всю; если уже вся зачёркнута — вернуть
-    head = next(h for h in ed.current.pool.headers if h.level == 1)
+    head = ed.current.pool.headers[0]
     page.delete_notes([head.notes[0]])
     item = header_item(ed.pool, head.key)
     QTest.mouseClick(ed.pool.viewport(), Qt.MouseButton.RightButton, pos=ed.pool.mapFromScene(item.rect.center()))
@@ -989,11 +997,11 @@ def test_alias_expand_in_pool_leaves_scene_untouched(window, app):
 
 
 def test_pool_collapse_rebuilds_only_pool(window, app):
-    from midiremap.ui.cable_layout import UNASSIGNED
     page, ed = cables_page(window)
     scene_items = list(ed.scene_rows)
-    ed.toggle_pool(UNASSIGNED)
-    assert ed.current.header(UNASSIGNED).collapsed and ed.scene_rows == scene_items
+    key = ed.current.pool.headers[0].key
+    ed.toggle_pool(key)
+    assert ed.current.header(key).collapsed and ed.scene_rows == scene_items
 
 
 
@@ -1070,9 +1078,9 @@ def test_group_drop_on_target_header(window, app):
 def test_drag_pool_group_header(window, app):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
-    from midiremap.ui.cable_layout import TARGET_PREFIX, UNASSIGNED
+    from midiremap.ui.cable_layout import POOL_PREFIX, TARGET_PREFIX
     page, ed = cables_page(window, accept=False)
-    head = ed.current.header(UNASSIGNED + "/snare")
+    head = ed.current.header(POOL_PREFIX + "snare")
     pool_item = ed.pool_headers[head.key]
     target = header_item(ed.view, TARGET_PREFIX + "snare")
     vp = ed.pool.viewport()
@@ -1151,8 +1159,8 @@ def test_alias_row_badge_and_shown_number(window, app):
 
 
 def test_single_row_header_and_more_menu(window, app, storage):
-    """8b3b1: заголовок в одну строку — профиль, «⋯», место под направление, статус, ↻, Revert, Save;
-    списка профилей и кнопки сворачивания больше нет."""
+    """Заголовок в одну строку — статус, направление, профиль, «⋯», ↻, Revert, Save; списка профилей и кнопки
+    сворачивания нет."""
     from midiremap.ui.profiles_page import MORE_TIP
     page = window.profiles_page
     assert not hasattr(page, "list") and not hasattr(page, "sidebar_btn") and not hasattr(page, "title")
@@ -1163,25 +1171,26 @@ def test_single_row_header_and_more_menu(window, app, storage):
     assert page.rename_action.isEnabled() and page.duplicate_action.isEnabled() and page.delete_action.isEnabled()
     menu = page.more_btn.menu()
     assert [a.text() for a in menu.actions() if not a.isSeparator()] == ["New", "Rename", "Duplicate", "Delete"]
-    assert page.more_btn.toolTip() == MORE_TIP and page.direction_slot.count() == 2  # сегменты → / ←
+    assert page.more_btn.toolTip() == MORE_TIP
     assert page.more_btn.text() == ""  # точки рисуются, не глиф шрифта
-    # всё в одной строке: те же координаты по вертикали, Save — правее всех
-    widgets = (page.combo, page.more_btn, page.status, page.direction_toggle, page.refresh_btn,
-               page.revert_btn, page.save_btn)
+    for gone in ("direction_btns", "direction_toggle", "direction_slot", "direction_group"):
+        assert not hasattr(page, gone)  # одна кнопка направления вместо сегментов
+    # всё в одной строке: те же координаты по вертикали, слева направо — статус … Save
+    widgets = (page.status, page.direction_btn, page.combo, page.more_btn, page.refresh_btn, page.revert_btn,
+               page.save_btn)
     window.resize(1300, 900)
     window.show()
     QApplication.processEvents()
     centers = {w.mapTo(page, w.rect().center()).y() for w in widgets}
     assert max(centers) - min(centers) <= 2
     assert len({w.height() for w in page.header_controls}) == 1  # одна высота у всех контролов заголовка
-    assert page.direction_toggle.height() == page.save_btn.height()
-    assert page.more_btn.width() == page.refresh_btn.sizeHint().width()  # «⋯» — размером с ↻
+    assert page.more_btn.width() == page.direction_btn.width() == page.refresh_btn.sizeHint().width()
     xs = [w.mapTo(page, w.rect().topLeft()).x() for w in widgets]
     assert xs == sorted(xs)
-    # карты — над внешними колонками, подсказки — над сценой (счётчика правил нет)
+    # карты — над колонками сцены, подсказки — над «to» (счётчика правил нет)
     ed = page.cables
-    assert ed.left_head.indexOf(page.source_btn) >= 0 and ed.right_head.indexOf(page.target_btn) >= 0
-    assert not hasattr(page, "summary") and ed.mid_head.indexOf(page.suggest_bar) >= 0
+    assert ed.from_head.indexOf(page.source_btn) >= 0 and ed.to_head.indexOf(page.target_btn) >= 0
+    assert not hasattr(page, "summary") and ed.to_head.indexOf(page.suggest_bar) >= 0
     assert page.source_btn.text() == "EZdrummer 3" and page.target_btn.text() == "Superior Drummer 3"
     # Delete через «⋯» — то же подтверждение
     page.answers["confirm"] = False
@@ -1222,7 +1231,7 @@ def test_old_sidebar_key_is_ignored(app, storage):
 def test_scene_columns_resize_and_persist(window, app, storage):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
-    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, POOL_RIGHT_KEY, PORT, SCENE_MIN
+    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, PORT, SCENE_MIN
     page, ed = cables_page(window)
     vp = ed.view.viewport()
     width = ed.view.width_px(SCENE_MIN)
@@ -1251,22 +1260,43 @@ def test_scene_columns_resize_and_persist(window, app, storage):
     assert abs(nb3 - (b3 + 40)) < 1 and abs(nend - (end - 30)) < 1
     t = next(iter(ed.target_items.values()))
     assert abs(t.rect.left() - nb3) < 1 and abs(t.rect.right() - nend) < 1
+    # кнопки карт над колонками — следуют за границами
+    lx, rx, col2, col3 = ed._scene_columns(width)
+    off = ed.scene_head.mapFromGlobal(vp.mapToGlobal(QPoint(0, 0))).x()
+    assert abs(ed.from_slot.x() - (off + lx)) <= 1 and abs(ed.from_slot.width() - col2) <= 1
+    assert abs(ed.to_slot.x() - (off + rx)) <= 1 and abs(ed.to_slot.width() - col3) <= 1
     assert page.work.rules == rules and not ed.dragging  # граница — не перетаскивание кабеля
     assert page.settings.value(COLUMNS_KEY)
-    ed.splitter.setSizes([340, 700, 260])
-    ed.splitter.splitterMoved.emit(340, 1)
+    ed.splitter.setSizes([300, 900])
+    ed.splitter.splitterMoved.emit(300, 1)
     sizes = ed.splitter.sizes()
     assert int(page.settings.value(POOL_KEY)) == sizes[0]
-    assert int(page.settings.value(POOL_RIGHT_KEY)) == sizes[2]
     w2 = MainWindow(storage)  # ширины — между запусками
     assert w2.profiles_page.cables.columns == pytest.approx(ed.columns, abs=1e-3)
     w2.resize(window.size())
     w2.show_page(PAGE_PROFILES)
     w2.show()
     QApplication.processEvents()
-    w2_sizes = w2.profiles_page.cables.splitter.sizes()
-    assert (w2_sizes[0], w2_sizes[2]) == (sizes[0], sizes[2])
+    assert w2.profiles_page.cables.splitter.sizes()[0] == sizes[0]
     w2.close()
+
+
+def test_old_column_width_keys_are_ignored(app, storage):
+    from midiremap.ui.cable_view import POOL_WIDTH
+    from midiremap.ui.settings import ui_settings
+    s = ui_settings(storage)
+    s.setValue("cables/pool_width", 420)  # ключи прежней раскладки с двумя пулами
+    s.setValue("cables/pool_right_width", 380)
+    s.setValue("cables/columns", "0.2,0.5,0.2")
+    s.sync()
+    w = MainWindow(storage)
+    w.resize(1300, 900)
+    w.show_page(PAGE_PROFILES)
+    w.show()
+    QApplication.processEvents()
+    ed = w.profiles_page.cables
+    assert ed.columns is None and ed.splitter.sizes()[0] == POOL_WIDTH
+    w.close()
 
 
 def test_truncated_names_in_tooltips(window, app):
@@ -1408,86 +1438,118 @@ def secondary_cable(ed):
     return next(c for c in ed.cable_items if not c.cable.primary)
 
 
-def test_mirrored_layout_columns_and_pools(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE, missing_rules
-    from midiremap.ui.cable_view import INACTIVE, INACTIVE_POOL_TIPS, _Bundle, _HeaderItem
-    from midiremap.ui.cable_layout import BLOCK_LABELS, UNASSIGNED
+def test_reverse_uses_forward_layout(window, app):
+    """← — тот же код рисования, что →, по профилю oriented(REVERSE): слева пул и подключённые ноты цели,
+    справа артикуляции исходной карты; поток слева направо."""
+    from midiremap.core.profile import REVERSE, missing_rules
+    from midiremap.ui.cable_view import _Bundle
+
+    def geometry(ed):
+        lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
+        assert all(i.rect.right() <= lx + col2 + 0.5 for i in ed.scene_rows)  # «from» — слева
+        assert all(i.rect.left() == rx and i.rect.width() == col3 for i in ed.target_items.values())
+        assert {i.port for i in ed.scene_rows if i.port} == {"right"}
+        assert {i.port for i in ed.target_items.values() if i.port} == {"left"}
+        bundles = [i for i in ed.view.scene().items() if isinstance(i, _Bundle)]
+        assert bundles and all(b.rect.right() <= lx + col2 + 4 for b in bundles)  # рамка связки — у «from»
+        c = ed.cable_items[0]
+        assert c.path().pointAtPercent(0).x() == c.src.rect.right() and c.path().pointAtPercent(1).x() == rx
+        a = ed.source_anchor(ed.pool_rows[0].notes[0])
+        assert a is not None and a.x() < ed.view.viewport().mapTo(ed, QPoint(0, 0)).x()  # пул — левее сцены
+        return c
+
     page, ed = cables_page(window)
     w = page.work
-    # →: активен левый пул, правый — только заголовки блоков обратного направления, приглушены
-    assert ed.active_pool is ed.pool and ed.inactive_pool is ed.pool_right
-    inert = ed.pool_right.scene().items()
-    assert inert and all(isinstance(i, _HeaderItem) and i.inert and i.header.level == 0 for i in inert)
-    assert all(i.opacity() == INACTIVE and i.toolTip() == INACTIVE_POOL_TIPS[REVERSE] for i in inert)
-    unassigned = next(i for i in inert if i.header.key == UNASSIGNED)
-    assert unassigned.header.label == BLOCK_LABELS[UNASSIGNED]
-    assert unassigned.header.count == len(missing_rules(w, REVERSE))
-    assert ed.pool_right.toolTip() == INACTIVE_POOL_TIPS[REVERSE]
-    src_x = {i.rect.left() for i in ed.scene_rows if not i.model.child}
-    tgt_x = {i.rect.left() for i in ed.target_items.values()}
-    assert max(src_x) < min(tgt_x)  # источник слева, цель справа
+    c = geometry(ed)
+    assert c.pen().color().name().upper() == cable_view.TOKENS["accent"].upper()
+    assert ed.from_head.indexOf(page.from_btn) >= 0 and page.from_btn.text() == w.source_map.name
+    assert page.to_btn.text() == w.target_map.name and page.source_btn is page.from_btn
 
     page.set_direction(REVERSE)
-    assert ed.direction == REVERSE and ed.active_pool is ed.pool_right and ed.inactive_pool is ed.pool
-    # активный правый пул — ноты цели без обратного правила (Delete свёрнут, пустой — не показан)
+    assert ed.direction == REVERSE and ed.shown.to_dict() == w.reversed().to_dict()
+    # пул — ноты цели без обратного правила
     pool_notes = {n for r in ed.current.pool.rows for n in r.notes}
     assert pool_notes == set(missing_rules(w, REVERSE)) and pool_notes <= set(w.target_map.names)
-    assert ed.pool_rows and ed.pool_rows[0].scene() is ed.pool_right.scene()
-    # неактивный левый пул — заголовки блоков прямого направления
-    inert = ed.pool.scene().items()
-    assert inert and all(isinstance(i, _HeaderItem) and i.inert for i in inert)
-    assert next(i for i in inert if i.header.key == UNASSIGNED).header.count == len(missing_rules(w, FORWARD))
-    assert all(i.toolTip() == INACTIVE_POOL_TIPS[FORWARD] for i in inert)
-    # сцена зеркальна: слева артикуляции исходной карты (точка справа), справа — ноты цели (точка слева)
+    assert ed.pool_rows[0].scene() is ed.pool.scene()
+    # слева — подключённые ноты цели, справа — артикуляции исходной карты
     ezd = {"a:" + normalize_name(v) for v in w.source_map.names.values()}
     assert set(ed.target_items) <= ezd
     assert {n for i in ed.scene_rows for n in i.notes} <= set(w.target_map.names)
-    lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
-    assert all(i.rect.left() == lx and i.rect.width() == col2 for i in ed.target_items.values())
-    assert all(i.rect.right() == rx + col3 for i in ed.scene_rows)
-    assert {i.port for i in ed.target_items.values() if i.port} == {"right"}
-    assert {i.port for i in ed.scene_rows if i.port} == {"left"}
-    bundles = [i for i in ed.view.scene().items() if isinstance(i, _Bundle)]
-    assert bundles and all(b.rect.left() >= rx - 4 for b in bundles)  # рамка связки — справа
-    # кабели — цветом ← ; от точки артикуляции к точке ноты
-    c = ed.cable_items[0]
+    c = geometry(ed)
     assert c.pen().color().name().upper() == cable_view.TOKENS["reverse"].upper()
-    path = c.path()
-    assert path.pointAtPercent(0).x() == lx + col2 and path.pointAtPercent(1).x() == c.src.rect.left()
-    # неактивный пул на мышь не реагирует
-    from PySide6.QtCore import QEvent
-    header = inert[0]
-    send_mouse(ed.pool, QEvent.Type.MouseButtonPress, header.rect.center())
-    app.processEvents()
-    assert ed._press is None and header.header.collapsed
+    assert "  →  " in c.toolTip()  # подсказка — как на картинке, слева направо
+    # кнопки на местах, но выбирают другую карту: над «from» — цель, над «to» — источник
+    assert page.from_btn.text() == w.target_map.name and page.to_btn.text() == w.source_map.name
+    assert page.target_btn is page.from_btn and page.source_btn is page.to_btn
+    assert "Target map" in page.from_btn.toolTip() and "Source map" in page.to_btn.toolTip()
+    assert page._side_of(page.from_btn) == "target"
 
 
-def test_direction_toggle_arrows_tooltips_and_not_an_undo_step(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE, missing_rules
+def test_suggestion_bar_over_to_column_yields_to_map_button(window, app):
+    from midiremap.ui.profiles_page import MAP_BTN_MIN
     page = window.profiles_page
-    assert not page.direction_btns[FORWARD].isEnabled()  # профиля нет
+    wide = (2400, 900)  # offscreen без системных шрифтов текст шире обычного — с запасом
+    window.resize(*wide)
+    window.show()
+    new_profile(page)  # обе карты — подсказки и панель
+    app.processEvents()
+    ed = page.cables
+    assert page.suggest_bar.isVisibleTo(page) and ed.to_head.indexOf(page.suggest_bar) >= 0
+    assert page.suggest_label.isVisibleTo(page) and page.suggest_label.text().endswith("matches")
+    window.resize(900, 700)  # узкая колонка «to»: остаются Apply и ✕, кнопка карты не сжимается в ноль
+    app.processEvents()
+    assert not page.suggest_label.isVisibleTo(page) and page.apply_btn.isVisibleTo(page)
+    assert page.to_btn.width() >= MAP_BTN_MIN and "matches" in page.suggest_bar.toolTip()
+    window.resize(*wide)
+    app.processEvents()
+    assert page.suggest_label.isVisibleTo(page)
+
+
+def test_empty_from_column_shows_hint(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    page, ed = cables_page(window, accept=False)
+    lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
+    assert ed.current.scene.source_rows == []
+    assert ed.view.hint == (lx, col2, "Drag notes from Unassigned onto the target map")
+    page.set_direction(REVERSE)
+    assert ed.view.hint is None  # пунктирные подсказки — тоже строки в «from»
+    page.dismiss_suggestions()
+    assert ed.view.hint[2] == "Drag notes from Unassigned onto the source map"
+    page.set_direction(FORWARD)
+    key, notes = three_note_articulation(page.work)
+    assert page.connect_to(notes[:1], "a:" + key)
+    assert ed.view.hint is None  # первый кабель — подсказка исчезает
+    assert page.undo()
+    ed.resort()  # строка без кабеля вернулась в пул — колонка снова пуста
+    assert ed.view.hint is not None
+    new_profile(page, "Bare", None, None)  # нечего тащить — подсказки нет
+    assert ed.view.hint is None
+
+
+def test_direction_button_flips_and_is_not_an_undo_step(window, app):
+    from midiremap.core.profile import FORWARD, REVERSE
+    page = window.profiles_page
+    btn = page.direction_btn
+    assert not btn.isEnabled() and btn.toolTip() == ""  # профиля нет
     new_profile(page, "Bare", None, None)
-    assert page.direction_btns[FORWARD].text() == "→" and "No source map" in page.direction_btns[FORWARD].toolTip()
+    assert btn.toolTip() == "no map → no map. Click to switch to the reverse direction"
     page, ed = cables_page(window)
-    w = page.work
-    fwd, rev = len(missing_rules(w, FORWARD)), len(missing_rules(w, REVERSE))
-    assert page.direction_btns[FORWARD].text() == "→" and page.direction_btns[REVERSE].text() == "←"
-    assert page.direction_btns[FORWARD].toolTip() == f"{fwd} source notes have no rule in this direction"
-    assert page.direction_btns[REVERSE].toolTip() == f"{rev} target notes have no rule in this direction"
-    assert page.direction_btns[FORWARD].isChecked() and page.direction == FORWARD
+    assert btn.isEnabled() and btn.text() == "→" and btn.property("dir") == FORWARD
+    assert btn.toolTip() == "EZdrummer 3 → Superior Drummer 3. Click to switch to the reverse direction"
     steps = len(page._undo)
-    page.direction_btns[REVERSE].click()
+    btn.click()
     assert page.direction == REVERSE and ed.direction == REVERSE and len(page._undo) == steps and not page.redo()
-    # правка в ← обновляет число в подсказке
-    note = ed.pool_rows[0].notes[0]
-    page.toggle_strike([note])
-    assert page.direction_btns[REVERSE].text() == "←"
-    assert page.direction_btns[REVERSE].toolTip().startswith(f"{rev - 1} target note")
+    assert btn.text() == "←" and btn.property("dir") == REVERSE  # цвет стрелки — цвет ←
+    assert btn.toolTip() == "Superior Drummer 3 → EZdrummer 3. Click to switch to the forward direction"
+    page.toggle_strike([ed.pool_rows[0].notes[0]])  # правка в ←
+    btn.click()
+    assert page.direction == FORWARD and btn.text() == "→"
+    btn.click()
     # открытие профиля — снова в →
     page.answers["unassigned"] = set()
     assert page.save() and page.direction == REVERSE
     page.select(LEGACY_ID)
-    assert page.direction == FORWARD and page.direction_btns[FORWARD].isChecked() and ed.direction == FORWARD
+    assert page.direction == FORWARD and btn.text() == "→" and ed.direction == FORWARD
 
 
 def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
@@ -1508,11 +1570,11 @@ def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
     assert not load_map_template("EZdrummer 3").primary  # шаблон не меняется
     # «+N» на строке источника (в ← — строка цели вида): Write to переводит обратные правила
     item = ed.target_items["a:" + key]
-    assert item.badge and item.port == "right"
+    assert item.badge and item.port == "left"  # как в →: точка строки цели — со стороны кабелей
     assert page.set_write_to(notes[1])
     assert page.work.reverse_rules[other] == Rule.map_to(notes[1])
     assert page.work.source_map.primary & set(notes) == {notes[1]}
-    # перетаскивание справа налево — тот же путь; превью — цветом ← и с развёрнутыми касательными
+    # перетаскивание из пула — тот же путь, что в →; превью — цветом ←
     single = next(n for n in sorted(page.work.target_map.names)
                   if n not in page.work.effective_reverse() and n in ed.pool_items)
     slot, dst = single_note_articulation(page.work.source_map)
@@ -1633,7 +1695,7 @@ def test_undo_redo_switch_to_direction_of_the_step(window, app):
     assert page.undo() and page.direction == FORWARD and ed.direction == FORWARD and src in page.work.rules
     assert page.undo() and page.direction == REVERSE and ed.direction == REVERSE
     assert note not in page.work.effective_reverse()
-    assert page.direction_btns[REVERSE].isChecked()
+    assert page.direction_btn.text() == "←"
     page.set_direction(FORWARD)
     assert page.redo() and page.direction == REVERSE and page.work.effective_reverse()[note] == Rule.delete()
     assert page.redo() and page.direction == FORWARD and src not in page.work.rules
@@ -1665,7 +1727,7 @@ def test_save_dialog_forward_only_in_reverse(window, app, storage):
 
 def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
     from midiremap.core.profile import FORWARD, REVERSE
-    from midiremap.ui.cable_layout import DELETE, TARGET_PREFIX
+    from midiremap.ui.cable_layout import TARGET_PREFIX
     page, ed = cables_page(window, size=(1300, 600))
     hat = ed.current.header(TARGET_PREFIX + "hi-hat")
     ed.view.verticalScrollBar().setValue(hat.y * cable_view.ROW)
@@ -1673,13 +1735,14 @@ def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
     page.set_direction(REVERSE)
     assert ed._top_group() == TARGET_PREFIX + "hi-hat"
     assert ed.view.verticalScrollBar().value() == ed.current.header(TARGET_PREFIX + "hi-hat").y * cable_view.ROW
-    # свёрнутость — своя у направления
-    ed.toggle_pool(DELETE)
-    assert DELETE not in ed.collapsed
+    # свёрнутость — своя у направления (ключи групп двух карт могут совпасть)
+    key = ed.current.pool.headers[0].key
+    ed.toggle_pool(key)
+    assert key in ed.collapsed and ed.current.header(key).collapsed
     page.set_direction(FORWARD)
-    assert DELETE in ed.collapsed
+    assert key not in ed.collapsed
     page.set_direction(REVERSE)
-    assert DELETE not in ed.collapsed
+    assert key in ed.collapsed
 
 
 # --- доработки 8b3b2: основной первым, двойной клик по Unassigned, заголовок, комбобоксы ---
@@ -1709,7 +1772,7 @@ def bare_page(window, rules=None, reverse=None):
 
 def dbl_pool_row(app, ed, note):
     item = ed.pool_items[note]
-    double_click(app, ed.active_pool, item.rect.center())
+    double_click(app, ed.pool, item.rect.center())
 
 
 def test_primary_row_moves_first_after_double_click(window, app):
@@ -1738,7 +1801,7 @@ def test_kick_bundle_primary_first_in_reverse(window, app):
     ed.resort()
     assert ed.order.slots[slot][0] == 35
     rows = [i for i in ed.scene_rows if set(i.notes) <= {34, 35, 36}]
-    assert rows[0].notes == (35,) and rows[0].port == "left"
+    assert rows[0].notes == (35,) and rows[0].port == "right"
     assert ed.current.target_row(slot).lines[0] == (0, 35)
 
 
@@ -1810,7 +1873,7 @@ def test_double_click_unassigned_missing_number_and_partial_alias_row(window, ap
                and 0 < sum(n in w.target_map.names for n in i.notes) < len(i.notes))
     hit = [n for n in row.notes if n in w.target_map.names]
     miss = [n for n in row.notes if n not in w.target_map.names]
-    double_click(app, ed.active_pool, row.rect.center())
+    double_click(app, ed.pool, row.rect.center())
     assert set(page.work.rules) == set(hit) and all(page.work.rules[n] == Rule.map_to(n) for n in hit)
     assert all(n in ed.pool_items for n in miss)
     assert page.status.text().endswith(f"not in the target map: {', '.join(map(str, miss))}")
@@ -1824,15 +1887,13 @@ def test_double_click_unassigned_missing_number_and_partial_alias_row(window, ap
     assert page.status.text() == f"No note {gone} in the source map" and gone not in page.work.effective_reverse()
 
 
-def test_double_click_delete_row_does_nothing(window, app):
-    from midiremap.ui.cable_layout import DELETE
+def test_double_click_struck_row_does_nothing(window, app):
     from midiremap.ui.cable_view import SAME_NUMBER_HINT
     page, ed = bare_page(window)
     (t,) = shared_numbers(page.work, 1)
     page.toggle_strike([t])
     ed.resort()
-    ed.toggle_pool(DELETE)
-    assert SAME_NUMBER_HINT not in ed.pool_items[t].toolTip()
+    assert ed.pool_items[t].strike and SAME_NUMBER_HINT not in ed.pool_items[t].toolTip()
     dbl_pool_row(app, ed, t)
     assert page.work.rules == {t: Rule.delete()}
 
@@ -1857,18 +1918,18 @@ def test_double_click_unassigned_scrolls_row_into_view(window, app):
     assert bar.value() == before
 
 
-def test_header_direction_toggle_centered_single_control(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
+def test_header_profile_combo_centered(window, app):
     page, ed = cables_page(window)
-    window.resize(1300, 900)
-    app.processEvents()
-    toggle = page.direction_toggle
-    center = toggle.mapTo(page, toggle.rect().center()).x()
-    assert abs(center - page.width() / 2) <= 2  # по центру строки (окна), не рядом с «⋯»
-    fwd, rev = page.direction_btns[FORWARD], page.direction_btns[REVERSE]
-    assert fwd.parent() is toggle and rev.parent() is toggle and toggle.objectName() == "segmented"
-    assert fwd.geometry().right() + 1 == rev.geometry().left()  # без промежутка, общая рамка
-    assert toggle.height() == page.save_btn.height() == page.combo.height()
+    for size in ((1300, 900), (1500, 900)):
+        window.resize(*size)
+        app.processEvents()
+        combo = page.combo
+        center = combo.mapTo(page, combo.rect().center()).x()
+        assert abs(center - page.width() / 2) <= 2  # комбобокс — по центру строки
+        btn, more = page.direction_btn, page.more_btn
+        assert btn.mapTo(page, btn.rect().topRight()).x() < combo.mapTo(page, combo.rect().topLeft()).x()
+        assert more.mapTo(page, more.rect().topLeft()).x() > combo.mapTo(page, combo.rect().topRight()).x()
+        assert btn.height() == page.save_btn.height() == combo.height()
 
 
 def test_comboboxes_draw_own_arrow_and_style_popup(window, app):

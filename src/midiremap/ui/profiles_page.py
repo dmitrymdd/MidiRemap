@@ -1,10 +1,10 @@
 """Менеджер и редактор профилей ремапа (PySide6). Раскладка: одна строка заголовка —
-[профиль ▾] [⋯] статус … [→ | ←] (по центру) … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py): над левым
-пулом — карта источника, над сценой — панель подсказок, над правым пулом — карта цели.
-Всё остальное по высоте — сцене.
+статус … [→] [профиль ▾] [⋯] (комбобокс — по центру) … [↻] [Revert] [Save]; под ней вид «кабелями» (cable_view.py):
+пул Unassigned и сцена; над колонками сцены — карты сторон «from» и «to», над «to» справа — панель подсказок.
+Всё остальное по высоте — сцене. Статус — отклик на последнее действие (не счётчик).
 
-Направление: переключатель «→ | ←» (ноты без правила в этом направлении, missing_rules, — в подсказке сегмента).
-Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
+Направление: одна кнопка — показывает текущее (→ / ←, цветом направления), клик переключает; карты направления
+словами — в подсказке. Профиль открывается в →; переключение — не шаг отмены. В ← вид правит профиль work.reversed(): ядро вызывается
 на нём (assign_plan, assign_to_articulation, with_write_to, connect_same_numbers, apply_suggested), результат
 пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
 обратные правила (_put). Подсказки, свёрнутость вида и «скрыть подсказки» — свои у каждого направления.
@@ -30,10 +30,10 @@ from __future__ import annotations
 import copy
 import functools
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
+    QAbstractItemView, QComboBox, QDialog, QDialogButtonBox, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -42,7 +42,7 @@ from ..core.notemap import NoteMap, duplicate_map
 from ..core.pitch import pitch_name
 from ..core.profile import (
     FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
-    keep_existing_primary, missing_rules, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
+    keep_existing_primary, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
@@ -73,9 +73,11 @@ SUGGEST_TIP = ("Notes whose names match the target map, shown as dashed cables.\
                "the others go to the Write to note.")
 DISMISS_TIP = "Hide the suggestions for these maps"
 
-DIRECTION_SIDES = {FORWARD: "source", REVERSE: "target"}  # чьи ноты считает сегмент направления
-DIRECTION_TIP = "{n} {side} note{s} {have} no rule in this direction"
-DIRECTION_NO_MAP_TIP = "No {side} map: nothing to count in this direction"
+DIRECTION_SIDES = {FORWARD: "source", REVERSE: "target"}  # карта исходной стороны направления
+DIRECTION_TIP = "{maps}. Click to switch to the {other} direction"
+MAP_BTN_MIN = 130  # кнопка выбора карты над колонкой не уже, px
+MAP_BTN_PAD = 48   # поля и стрелка меню кнопки выбора карты, px (сверх ширины текста)
+COMBO_CHARS = 30  # ширина комбобокса профилей — в символах (строка заголовка от него не прыгает)
 
 
 def _undoable(fn):
@@ -255,11 +257,10 @@ class ProfilesPage(QWidget):
         root.setContentsMargins(0, 10, 0, 0)
         root.setSpacing(8)
 
-        # строка заголовка: [профиль ▾] [⋯] статус … [→ | ← — по центру окна] … [↻] [Revert] [Save]
+        # строка заголовка: статус … [→] [профиль ▾] [⋯] … [↻] [Revert] [Save]
         self.combo = ComboBox()
-        self.combo.setMinimumWidth(240)
-        self.combo.setMaximumWidth(420)
-        self.combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo.setMinimumContentsLength(COMBO_CHARS)
         self.combo.currentIndexChanged.connect(self._on_combo_changed)
         self.more_btn = DotsButton()
         self.more_btn.setToolTip(MORE_TIP)
@@ -270,28 +271,9 @@ class ProfilesPage(QWidget):
         more.addSeparator()
         self.delete_action = more.addAction("Delete", self.delete)
         self.more_btn.setMenu(more)
-        # переключатель направления: «→ | ←». Один
-        # сегментированный контрол: общая рамка (QFrame#segmented), между сегментами — тонкий разделитель
-        self.direction_toggle = QFrame()
-        self.direction_toggle.setObjectName("segmented")
-        self.direction_slot = QHBoxLayout(self.direction_toggle)
-        self.direction_slot.setContentsMargins(0, 0, 0, 0)
-        self.direction_slot.setSpacing(0)
-        self.direction_group = QButtonGroup(self)
-        self.direction_group.setExclusive(True)
-        self.direction_btns: dict[str, QPushButton] = {}
-        for d, pos in ((FORWARD, "first"), (REVERSE, "last")):
-            btn = QPushButton()
-            btn.setObjectName("segment")
-            btn.setCheckable(True)
-            btn.setProperty("pos", pos)
-            btn.setProperty("dir", d)
-            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)  # по высоте рамки
-            btn.clicked.connect(lambda _=False, d=d: self.set_direction(d))
-            self.direction_group.addButton(btn)
-            self.direction_slot.addWidget(btn)
-            self.direction_btns[d] = btn
-        self.direction_btns[FORWARD].setChecked(True)
+        self.direction_btn = QPushButton()
+        self.direction_btn.setObjectName("direction")
+        self.direction_btn.clicked.connect(self.toggle_direction)
         self.status = QLabel()
         self.status.setObjectName("status")
         self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # длинный — обрезается
@@ -305,15 +287,16 @@ class ProfilesPage(QWidget):
         self.save_btn = QPushButton("Save")
         self.save_btn.setObjectName("primary")
         self.save_btn.clicked.connect(self.save)
-        # три колонки: левая и правая — поровну (stretch), переключатель — в средней, т.е. по центру строки
-        left, right = QHBoxLayout(), QHBoxLayout()
-        left.setSpacing(6)
-        right.setSpacing(6)
-        left.addWidget(self.combo, stretch=1)
-        left.addWidget(self.more_btn)
-        left.addSpacing(10)
+        # три колонки: левая и правая — поровну (stretch), в средней — [→] [профиль] [⋯]; кнопка направления и «⋯»
+        # одной ширины — комбобокс ровно по центру строки
+        left, center, right = QHBoxLayout(), QHBoxLayout(), QHBoxLayout()
+        for box in (left, center, right):
+            box.setSpacing(6)
         left.addWidget(self.status, stretch=1)
         left.addSpacing(10)
+        for w in (self.direction_btn, self.combo, self.more_btn):
+            center.addWidget(w)
+        right.addSpacing(10)
         right.addStretch(1)
         right.addWidget(self.refresh_btn)
         right.addWidget(self.revert_btn)
@@ -322,13 +305,13 @@ class ProfilesPage(QWidget):
         head.setContentsMargins(0, 0, 0, 0)
         head.setHorizontalSpacing(0)
         head.addLayout(left, 0, 0)
-        head.addWidget(self.direction_toggle, 0, 1)
+        head.addLayout(center, 0, 1)
         head.addLayout(right, 0, 2)
         head.setColumnStretch(0, 1)
         head.setColumnStretch(2, 1)
         root.addLayout(head)
-        self.header_controls = (self.combo, self.more_btn, self.direction_toggle, self.refresh_btn,
-                                self.revert_btn, self.save_btn)
+        self.header_controls = (self.direction_btn, self.combo, self.more_btn, self.refresh_btn, self.revert_btn,
+                                self.save_btn)
 
         self.cables = CableEditor(self.settings)
         self.cables.connect_requested.connect(self.connect_to)
@@ -341,19 +324,19 @@ class ProfilesPage(QWidget):
         self.cables.note_drop_requested.connect(self.assign_note)
         root.addWidget(self.cables, stretch=1)
 
-        # над внешними колонками — карты: источник над левым пулом, цель над правым
-        self.source_btn = QPushButton()
-        self.target_btn = QPushButton()
-        for side_name, btn, tip, head_box in ((SOURCE, self.source_btn, SOURCE_TIP, self.cables.left_head),
-                                              (TARGET, self.target_btn, TARGET_TIP, self.cables.right_head)):
+        # над колонками сцены — карты: над «from» — карта стороны источника направления, над «to» — цели
+        # (в ← — наоборот: кнопки остаются на местах, меняется карта, которую они выбирают — source_btn/target_btn)
+        self.from_btn = QPushButton()
+        self.to_btn = QPushButton()
+        for btn, head_box in ((self.from_btn, self.cables.from_head), (self.to_btn, self.cables.to_head)):
             menu = QMenu(btn)
-            menu.aboutToShow.connect(lambda m=menu, s=side_name: self._fill_map_menu(m, s))
+            menu.aboutToShow.connect(lambda m=menu, b=btn: self._fill_map_menu(m, self._side_of(b)))
             btn.setMenu(menu)
-            btn.setToolTip(tip)
             btn.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            head_box.addWidget(btn)
+            btn.setMinimumWidth(MAP_BTN_MIN)  # узкая колонка: сначала сжимается «N matches» панели подсказок
+            head_box.addWidget(btn, stretch=1)
 
-        # над сценой — панель подсказок «N matches · Apply · ✕» (не диалог, ничего не блокирует)
+        # над колонкой «to», справа от карты — панель подсказок «N matches · Apply · ✕» (не диалог, ничего не блокирует)
         self.suggest_bar = QFrame()
         self.suggest_bar.setObjectName("suggestBar")
         self.suggest_label = QLabel()
@@ -367,37 +350,42 @@ class ProfilesPage(QWidget):
         bar = QHBoxLayout(self.suggest_bar)
         bar.setContentsMargins(10, 0, 4, 0)
         bar.setSpacing(4)
-        dot = QLabel("·")
-        dot.setObjectName("muted")
+        self.suggest_dot = QLabel("·")
+        self.suggest_dot.setObjectName("muted")
         bar.addWidget(self.suggest_label)
-        bar.addWidget(dot)
+        bar.addWidget(self.suggest_dot)
         bar.addWidget(self.apply_btn)
         bar.addWidget(self.dismiss_btn)
-        mid = self.cables.mid_head
-        mid.addStretch(1)
-        mid.addWidget(self.suggest_bar)
+        self.cables.to_head.addWidget(self.suggest_bar)
+        self.cables.to_slot.installEventFilter(self)  # ширина колонки «to» — уместить панель подсказок
 
         context = Qt.ShortcutContext.WidgetWithChildrenShortcut
         for keys, slot in ((UNDO_KEYS, self.undo), (REDO_KEYS, self.redo)):
             for k in keys:
                 QShortcut(QKeySequence(k), self, activated=slot, context=context)
 
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.cables.to_slot and event.type() == QEvent.Type.Resize:
+            self._fit_suggest_bar()
+        return False
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._fit_header()
 
     def _fit_header(self) -> None:
-        """Контролы строки заголовка — одной высоты (по самому высокому), «⋯» — размером с ↻. Считается при
-        показе: размеры зависят от стиля окна, а при создании страницы он ещё не применён."""
+        """Контролы строки заголовка — одной высоты (по самому высокому); «⋯» и кнопка направления — размером
+        с ↻ (одной ширины — комбобокс между ними по центру). Считается при показе: размеры зависят от стиля окна,
+        а при создании страницы он ещё не применён."""
         for w in self.header_controls:
             w.setMinimumHeight(0)
             w.setMaximumHeight(16777215)
             w.ensurePolished()
-        # высота — по обычным контролам: рамка переключателя (+2 px) строку не раздувает, сегменты в ней сжимаются
-        height = max(w.sizeHint().height() for w in self.header_controls if w is not self.direction_toggle)
+        height = max(w.sizeHint().height() for w in self.header_controls)
         for w in self.header_controls:
             w.setFixedHeight(height)
-        self.more_btn.setFixedWidth(self.refresh_btn.sizeHint().width())
+        for w in (self.more_btn, self.direction_btn):
+            w.setFixedWidth(self.refresh_btn.sizeHint().width())
 
     # --- диалоги (тесты подменяют эти методы) ---
 
@@ -647,11 +635,26 @@ class ProfilesPage(QWidget):
         self.cables.set_direction(direction)
         self._update_state()
 
+    def toggle_direction(self) -> None:
+        """Кнопка направления: → ↔ ←."""
+        self.set_direction(REVERSE if self.direction == FORWARD else FORWARD)
+
     def _show_direction(self, direction: str) -> None:
         self.direction = direction
-        btn = self.direction_btns[direction]
-        if not btn.isChecked():
-            btn.setChecked(True)
+        self.direction_btn.setText("→" if direction == FORWARD else "←")
+        repolish(self.direction_btn, "dir", direction)  # цвет стрелки — цвет направления
+
+    @property
+    def source_btn(self) -> QPushButton:
+        """Кнопка выбора исходной карты: над колонкой «from» в →, над «to» в ←."""
+        return self.from_btn if self.direction == FORWARD else self.to_btn
+
+    @property
+    def target_btn(self) -> QPushButton:
+        return self.to_btn if self.direction == FORWARD else self.from_btn
+
+    def _side_of(self, btn: QPushButton) -> str:
+        return SOURCE if btn is self.source_btn else TARGET
 
     def _oriented(self) -> RemapProfile:
         """Профиль, который правит вид: сам work (→) или work.reversed() (←)."""
@@ -666,21 +669,15 @@ class ProfilesPage(QWidget):
             self.work.source_map, self.work.reverse_rules = new.target_map, dict(new.rules)
 
     def _update_direction(self) -> None:
-        """Сегменты — только стрелки; ноты карты исходной стороны направления без правила (missing_rules) —
-        в подсказке."""
-        for d, btn in self.direction_btns.items():
-            btn.setText("→" if d == FORWARD else "←")
-            btn.setEnabled(self.work is not None)
-            side = DIRECTION_SIDES[d]
-            side_map = None
-            if self.work is not None:
-                side_map = self.work.source_map if d == FORWARD else self.work.target_map
-            if side_map is None:
-                btn.setToolTip(DIRECTION_NO_MAP_TIP.format(side=side) if self.work is not None else "")
-                continue
-            n = len(missing_rules(self.work, d))
-            btn.setToolTip(DIRECTION_TIP.format(n=n, side=side, s="" if n == 1 else "s",
-                                                have="has" if n == 1 else "have"))
+        """Подсказка кнопки направления — карты направления словами и куда переключит клик."""
+        self.direction_btn.setEnabled(self.work is not None)
+        if self.work is None:
+            self.direction_btn.setToolTip("")
+            return
+        q = self.work.oriented(self.direction)
+        maps = f"{map_summary(q.source_map)} → {map_summary(q.target_map)}"
+        other = "reverse" if self.direction == FORWARD else "forward"
+        self.direction_btn.setToolTip(DIRECTION_TIP.format(maps=maps, other=other))
 
     def unassigned(self) -> list[int]:
         """Ноты исходной карты без правила."""
@@ -732,16 +729,14 @@ class ProfilesPage(QWidget):
         self.revert_btn.setEnabled(dirty)
         for action in (self.duplicate_action, self.rename_action, self.delete_action):
             action.setEnabled(has)
-        for btn in (self.source_btn, self.target_btn, self.refresh_btn):
+        for btn in (self.from_btn, self.to_btn, self.refresh_btn):
             btn.setEnabled(has)
         self._update_suggest_bar()
         self._update_direction()
-        if not has:
-            self.source_btn.setText("—")
-            self.target_btn.setText("—")
-            return
-        self.source_btn.setText(map_summary(self.work.source_map))
-        self.target_btn.setText(map_summary(self.work.target_map))
+        self.source_btn.setToolTip(SOURCE_TIP)
+        self.target_btn.setToolTip(TARGET_TIP)
+        self.source_btn.setText(map_summary(self.work.source_map) if has else "—")
+        self.target_btn.setText(map_summary(self.work.target_map) if has else "—")
 
     # --- подсказки ---
 
@@ -781,15 +776,29 @@ class ProfilesPage(QWidget):
         self.suggest_bar.setVisible(total > 0)
         if not total:
             return
-        self.suggest_label.setText(f"{total} match" + ("" if total == 1 else "es"))
+        matches = f"{total} match" + ("" if total == 1 else "es")
+        self.suggest_label.setText(matches)
         need = total - ready
-        tip = SUGGEST_TIP
+        tip = f"{matches}\n{SUGGEST_TIP}"  # число — и здесь: над узкой колонкой надпись скрыта
         if need:
             tip += (f"\n{need} need{'s' if need == 1 else ''} a Write to choice and stay dashed: "
                     "drag them onto the target.")
         self.suggest_bar.setToolTip(tip)
         self.apply_btn.setEnabled(ready > 0)
         self.apply_btn.setToolTip(f"Connect {ready} note{'' if ready == 1 else 's'} (one undo step)")
+        self._fit_suggest_bar()
+
+    def _fit_suggest_bar(self) -> None:
+        """Над узкой колонкой «to» «N matches ·» не помещается рядом с кнопкой карты — остаются Apply и ✕
+        (число — в подсказке панели)."""
+        for w in (self.suggest_label, self.suggest_dot):
+            w.setVisible(True)
+        self.suggest_bar.layout().invalidate()
+        btn = max(MAP_BTN_MIN, self.to_btn.fontMetrics().horizontalAdvance(self.to_btn.text()) + MAP_BTN_PAD)
+        room = self.cables.to_slot.width() - btn - self.cables.to_head.spacing()
+        fits = self.suggest_bar.sizeHint().width() <= room
+        for w in (self.suggest_label, self.suggest_dot):
+            w.setVisible(fits)
 
     @_undoable
     def apply_suggestions(self) -> int:

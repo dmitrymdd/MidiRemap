@@ -20,7 +20,6 @@ TOKENS = {
     "accent_muted": "#6B4632",  # отмеченный, но неактивный флажок
     "reverse": "#4FB0C6",       # кабели обратного направления (←): холодный оттенок против accent
     "reverse_hover": "#74C4D6",
-    "reverse_selection": "#203E46",  # выбранный сегмент ← (как selection у accent)
 }
 
 
@@ -30,6 +29,7 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QLabel#title {{ font-size: 20pt; font-weight: 600; }}
     QLabel#subtitle, QLabel#muted {{ color: {t['text_muted']}; }}
     QLabel#section {{ color: {t['text_muted']}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }}
+    QLabel#columnTitle {{ color: {t['text_muted']}; font-weight: 600; padding-left: 4px; }}
     QLabel#hint {{ color: {t['text_faint']}; font-size: 8pt; }}
     QLabel#logo {{ background: {t['accent']}; color: {t['on_accent']}; font-size: 14pt; font-weight: 700;
                    border-radius: 6px; }}
@@ -101,19 +101,9 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
                                                                      background: {t['surface']}; }}
     QCheckBox::indicator:checked:disabled, QTableView::indicator:checked:disabled {{
         background: {t['accent_muted']}; border-color: {t['accent_muted']}; }}
-    QPushButton#segment {{ padding: 5px 12px; color: {t['text_muted']}; }}
-    QPushButton#segment:checked {{ color: {t['accent']}; border-color: {t['accent']}; }}
-    QFrame#segmented {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px; }}
-    QFrame#segmented QPushButton#segment {{ background: transparent; border: none; border-radius: 0;
-                                            padding: 0 14px; }}
-    QFrame#segmented QPushButton#segment:hover {{ background: {t['surface_hover']}; color: {t['text']}; }}
-    QFrame#segmented QPushButton#segment[pos="first"] {{ border-right: 1px solid {t['border']};
-        border-top-left-radius: 5px; border-bottom-left-radius: 5px; }}
-    QFrame#segmented QPushButton#segment[pos="last"] {{ border-top-right-radius: 5px;
-        border-bottom-right-radius: 5px; }}
-    QFrame#segmented QPushButton#segment:checked {{ background: {t['selection']}; color: {t['accent']}; }}
-    QFrame#segmented QPushButton#segment[dir="reverse"]:checked {{ background: {t['reverse_selection']};
-                                                                   color: {t['reverse']}; }}
+    QPushButton#direction {{ color: {t['accent']}; font-size: 13pt; padding: 0 6px; }}
+    QPushButton#direction[dir="reverse"] {{ color: {t['reverse']}; }}
+    QPushButton#direction:disabled {{ color: {t['text_faint']}; }}
     QPushButton#iconButton {{ font-size: 14pt; padding: 1px 12px; color: {t['text_muted']}; }}
     QPushButton#iconButton:hover {{ color: {t['text']}; }}
     QPushButton#iconButton::menu-indicator {{ image: none; width: 0; }}

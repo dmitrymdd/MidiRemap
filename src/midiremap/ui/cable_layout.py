@@ -1,8 +1,8 @@
 """Раскладка вида профиля «кабелями»: чистый Python, без Qt — покрывается pytest.
 
 Три колонки, две раскладки:
-- ПУЛ (PoolLayout, своя прокрутка): блоки Unassigned и Delete, внутри — группы instrument_group исходной карты.
-  Ноты с явным keep (старые профили) — в Unassigned, с маркером «=» (SourceRow.state = KEEP);
+- ПУЛ (PoolLayout, своя прокрутка): неподключённые ноты исходной карты по группам instrument_group. Зачёркнутые
+  (delete) — в своей группе, как остальные; ноты с явным keep (старые профили) — с маркером «=» (SourceRow.state);
 - СЦЕНА (SceneLayout, общая прокрутка колонок 2 и 3, начинается сверху): подключённые исходные ноты (правило map)
   напротив своей цели и целевая карта — по строке на артикуляцию (имена сравниваются через normalize_name), под
   заголовками групп instrument_group. map на неосновную ноту артикуляции — кабель к той же строке. Высота строки
@@ -17,14 +17,15 @@
 - подключили (или переподключили к другой цели) — строка сразу уходит из пула и встаёт напротив цели;
 - убрали кабель (правило стало keep/delete/пусто) — строка остаётся в сцене на своём месте, без кабеля
   (SourceRow.stale, виджет её приглушает); после пересортировки возвращается в пул;
-- сменилось состояние без подключения (напр. зачеркнули правым кликом) — строка остаётся в своём блоке пула
+- сменилось состояние без подключения (напр. зачеркнули правым кликом) — строка остаётся на месте в пуле
   (вид — по текущему правилу).
-Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)). В ней напротив каждой цели сначала
+Полная пересортировка — fresh_order() (или build_layout(..., snapshot=None)). В ней пул — по группам и номерам
+(зачёркнутые — тоже), напротив каждой цели сначала
 строки с основным кабелем (primary_pairs), затем остальные по номеру — номер основного кабеля на строке цели
 верхний. После двойного клика (кабель стал основным) его связка пересортировывается сразу —
 primary_first(); прочие правила замороженного порядка не меняются.
 
-Алиасы источника (одно имя на нескольких нотах, normalize_name) в одном месте (блок пула или строка цели) —
+Алиасы источника (одно имя на нескольких нотах, normalize_name) в одном месте (пул или строка цели) —
 ОДНА строка с несколькими нотами (SourceRow.notes) и одним кабелем; правила при этом по-прежнему по нотам.
 Строку можно раскрыть (ключ «<место>|<имя>» в expanded): заголовок алиасов + строка на каждую ноту.
 Ноты с разными правилами показываются раскрытыми всегда (SourceRow.mixed).
@@ -38,7 +39,7 @@ plan_suggestions; нужен выбор Write to — кабель на перв�
 SourceRow.same), иначе — наименьшую; остальные — за «+N». Номера акцентом не выделяются: основную связь
 показывает толщина кабеля.
 
-Сворачивание пула: ключи — BLOCKS и «<блок>/<группа>». Группы цели — два режима: «только подключённые»
+Сворачивание пула: ключи групп «unassigned/<группа>» (POOL_PREFIX). Группы цели — два режима: «только подключённые»
 (по умолчанию; видны артикуляции, напротив которых есть строки, группа без них — один заголовок) и «все»
 (ключ «target/<группа>» в show_all). Заголовок показывает число нот (пул) или артикуляций (цель).
 """
@@ -53,27 +54,22 @@ from ..core.suggest import plan_suggestions
 
 UNASSIGNED, KEEP, DELETE, MAPPED = "unassigned", "keep", "delete", "map"
 MIXED = "mixed"  # заголовок раскрытых алиасов, у нот которых разные правила
-BLOCKS = (UNASSIGNED, DELETE)  # KEEP — только состояние строки (маркер «=»), не блок
-BLOCK_LABELS = {UNASSIGNED: "Unassigned", DELETE: "Delete"}
-DEFAULT_COLLAPSED = frozenset({DELETE})
-
-TARGET_PREFIX = "target/"
+POOL_PREFIX, TARGET_PREFIX = UNASSIGNED + "/", "target/"  # ключи групп пула и цели
 # служебные ключи групп (не совпадут с normalize_name настоящего инструмента)
 OTHER, MISSING = "\0other", "\0missing"
 
 
 @dataclass(frozen=True)
 class OrderSnapshot:
-    """Замороженный порядок строк слева. blocks: блок -> ноты в порядке показа (уже по группам);
+    """Замороженный порядок строк слева. pool: ноты пула в порядке показа (уже по группам);
     slots: ключ цели (slot_key) -> ноты напротив неё. Каждая нота — ровно в одном месте."""
-    blocks: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    pool: tuple[int, ...] = ()
     slots: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
     def place_of(self, note: int) -> tuple[str, str] | None:
-        """("block", блок) / ("slot", ключ цели) / None."""
-        for b, notes in self.blocks.items():
-            if note in notes:
-                return "block", b
+        """("pool", "") / ("slot", ключ цели) / None."""
+        if note in self.pool:
+            return "pool", ""
         for k, notes in self.slots.items():
             if note in notes:
                 return "slot", k
@@ -82,14 +78,13 @@ class OrderSnapshot:
 
 @dataclass(frozen=True)
 class Header:
-    """Заголовок блока или группы (сворачивается по key)."""
+    """Заголовок группы пула или цели (сворачивается по key)."""
     key: str
     label: str
-    count: int        # нот в блоке/группе слева; артикуляций в группе справа
-    collapsed: bool   # пул — свёрнут; цель — часть артикуляций скрыта (режим «только подключённые»)
-    level: int        # 0 — блок состояния или группа цели, 1 — группа внутри блока
+    count: int        # нот в группе пула; артикуляций в группе цели
+    collapsed: bool   # пул — свёрнута; цель — часть артикуляций скрыта (режим «только подключённые»)
     y: int
-    notes: tuple[int, ...] = ()  # пул: ноты блока или группы; цель: ноты артикуляций группы (drop на группу)
+    notes: tuple[int, ...] = ()  # пул: ноты группы; цель: ноты артикуляций группы (drop на группу)
     shown: int | None = None     # цель: артикуляций, напротив которых есть строки
 
 
@@ -100,7 +95,7 @@ class SourceRow:
     name: str | None   # None — ноты нет в исходной карте
     state: str         # UNASSIGNED / KEEP / DELETE / MAPPED — по текущему правилу; MIXED — правила разные
     connected: bool    # есть кабель (map в цель, напротив которой стоит строка); у заголовка — хоть у одной ноты
-    block: str | None  # блок пула (UNASSIGNED / DELETE); None — строка в сцене напротив цели
+    block: str | None  # UNASSIGNED — строка пула; None — строка в сцене напротив цели
     y: int
     alias: str | None = None  # ключ раскрытия «<место>|<имя>»: у строки из нескольких нот и у заголовка алиасов
     expanded: bool = False    # заголовок раскрытых алиасов: под ним — строки по нотам (child), кабеля у него нет
@@ -192,7 +187,7 @@ class CableLayout:
 
     def source_row(self, note: int) -> SourceRow | None:
         """Строка с нотой в пуле или в сцене (у раскрытых алиасов — строка самой ноты, а не заголовок).
-        None — нота в свёрнутом блоке/группе."""
+        None — нота в свёрнутой группе."""
         rows = [r for r in self.pool.rows + self.scene.source_rows if note in r.notes]
         return next((r for r in rows if not r.expanded), rows[0] if rows else None)
 
@@ -216,11 +211,6 @@ def note_state(rule: Rule | None) -> str:
     if rule is None:
         return UNASSIGNED
     return {"keep": KEEP, "delete": DELETE, "map": MAPPED}[rule.action]
-
-
-def note_block(rule: Rule | None) -> str:
-    """Блок пула для ноты без подключения: Delete или Unassigned (в т.ч. явный keep)."""
-    return DELETE if rule is not None and rule.action == "delete" else UNASSIGNED
 
 
 def all_notes(p: RemapProfile) -> list[int]:
@@ -283,19 +273,18 @@ def primary_first(p: RemapProfile, order: OrderSnapshot, slot: str) -> OrderSnap
 
 
 def fresh_order(p: RemapProfile, suggested: Mapping[int, str] = {}) -> OrderSnapshot:
-    """Полная пересортировка: блоки — по группам и номерам, напротив цели — строки с основным кабелем, затем
+    """Полная пересортировка: пул — по группам и номерам, напротив цели — строки с основным кабелем, затем
     остальные по номерам. suggested — подсказки (нота -> артикуляция цели), только для нот без правила."""
     names = p.source_map.names if p.source_map is not None else {}
-    blocks: dict[str, list[int]] = {b: [] for b in BLOCKS}
+    pool: list[int] = []
     slots: dict[str, list[int]] = {}
     for n in all_notes(p):
         key = _wanted_slot(p, n, suggested)
         if key is not None:
             slots.setdefault(key, []).append(n)
         else:
-            blocks[note_block(p.rules.get(n))].append(n)
-    return OrderSnapshot({b: tuple(_grouped(v, names)) for b, v in blocks.items()},
-                         {k: _bundle_order(p, v) for k, v in slots.items()})
+            pool.append(n)
+    return OrderSnapshot(tuple(_grouped(pool, names)), {k: _bundle_order(p, v) for k, v in slots.items()})
 
 
 def update_order(p: RemapProfile, prev: OrderSnapshot | None,
@@ -304,7 +293,7 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None,
 
     Строка с правилом map (или подсказкой) не напротив своей цели — переезжает в конец строк этой цели;
     остальные строки остаются на местах. Ноты, которых больше нет, выбрасываются; новые (и стоявшие
-    у исчезнувшей цели) — в конец своего блока или своей цели."""
+    у исчезнувшей цели) — в конец пула или своей цели."""
     if prev is None:
         return fresh_order(p, suggested)
     tgt = p.target_map
@@ -320,7 +309,7 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None,
                 out.append(n)
         return out
 
-    blocks = {b: keep_known(prev.blocks.get(b, ())) for b in BLOCKS}
+    pool = keep_known(prev.pool)
     slots = {k: keep_known(v) for k, v in prev.slots.items() if _slot_valid(k, tgt, arts)}
     for n in sorted(notes):
         key = _wanted_slot(p, n, suggested)
@@ -328,15 +317,14 @@ def update_order(p: RemapProfile, prev: OrderSnapshot | None,
             if n in slots.get(key, ()):
                 continue
             if n in seen:
-                for seq in (*blocks.values(), *slots.values()):
+                for seq in (pool, *slots.values()):
                     if n in seq:
                         seq.remove(n)
                         break
             slots.setdefault(key, []).append(n)
         elif n not in seen:
-            blocks[note_block(p.rules.get(n))].append(n)
-    return OrderSnapshot({b: tuple(v) for b, v in blocks.items()},
-                         {k: tuple(v) for k, v in slots.items() if v})
+            pool.append(n)
+    return OrderSnapshot(tuple(pool), {k: tuple(v) for k, v in slots.items() if v})
 
 
 # --- раскладка ---
@@ -366,11 +354,11 @@ def _target_groups(p: RemapProfile, order: OrderSnapshot) -> list[tuple[str | No
     return [(k, groups[k][0], groups[k][1]) for k in keys]
 
 
-def build_layout(p: RemapProfile | None, collapsed: Iterable[str] = DEFAULT_COLLAPSED,
+def build_layout(p: RemapProfile | None, collapsed: Iterable[str] = (),
                  snapshot: OrderSnapshot | None = None, show_all: Iterable[str] = (),
                  expanded: Iterable[str] = (), suggested: Mapping[int, str] = {}) -> CableLayout:
     """Раскладки пула и сцены. snapshot — порядок прошлой раскладки (layout.order) или None (пересортировать).
-    collapsed — свёрнутые блоки и группы пула; show_all — группы цели в режиме «все»; expanded — раскрытые
+    collapsed — свёрнутые группы пула; show_all — группы цели в режиме «все»; expanded — раскрытые
     алиасы («<место>|<имя>»); suggested — подсказки (нота -> артикуляция цели; ноты с правилом и артикуляции,
     которых нет в цели, не считаются). Новый порядок — в результате (CableLayout.order)."""
     if p is None:
@@ -418,7 +406,7 @@ def _source_row(ctx: _Ctx, notes: list[int], y: int, block: str | None, slot: st
 
 def _unit_rows(ctx: _Ctx, notes: Iterable[int], y: int, block: str | None, slot: str | None,
                expanded: set[str]) -> list[SourceRow]:
-    """Строки одного места (блок или цель): алиасы — одной строкой (на месте первой ноты), раскрытые или
+    """Строки одного места (пул или цель): алиасы — одной строкой (на месте первой ноты), раскрытые или
     с разными правилами — заголовок и строки по нотам."""
     p = ctx.p
     names = p.source_map.names if p.source_map is not None else {}
@@ -447,34 +435,28 @@ def _unit_rows(ctx: _Ctx, notes: Iterable[int], y: int, block: str | None, slot:
 
 
 def _pool_layout(ctx: _Ctx, order: OrderSnapshot, collapsed: set[str], expanded: set[str]) -> PoolLayout:
+    """Пул — по группам исходной карты (без групп — плоский список); группы — в порядке order.pool."""
     p = ctx.p
     names = p.source_map.names if p.source_map is not None else {}
-    grouped = any(instrument_group(v) for v in names.values())
+    if not any(instrument_group(v) for v in names.values()):
+        rows = _unit_rows(ctx, order.pool, 0, UNASSIGNED, None, expanded)
+        return PoolLayout([], rows, len(rows))
+    groups: dict[str, tuple[str, list[int]]] = {}
+    for n in order.pool:
+        gkey, glabel = _source_group(names, n)
+        groups.setdefault(gkey, (glabel, []))[1].append(n)
     heads: list[Header] = []
     rows: list[SourceRow] = []
     y = 0
-    for b in BLOCKS:
-        notes = order.blocks.get(b, ())
-        if not notes:
-            continue
-        heads.append(Header(b, BLOCK_LABELS[b], len(notes), b in collapsed, 0, y, tuple(notes)))
+    for gkey, (glabel, members) in groups.items():
+        key = POOL_PREFIX + gkey
+        heads.append(Header(key, glabel, len(members), key in collapsed, y, tuple(members)))
         y += 1
-        if b in collapsed:
+        if key in collapsed:
             continue
-        groups: dict[str, tuple[str, list[int]]] = {}
-        for n in notes:
-            gkey, glabel = _source_group(names, n) if grouped else ("", "")
-            groups.setdefault(gkey, (glabel, []))[1].append(n)
-        for gkey, (glabel, members) in groups.items():
-            if grouped:
-                key = f"{b}/{gkey}"
-                heads.append(Header(key, glabel, len(members), key in collapsed, 1, y, tuple(members)))
-                y += 1
-                if key in collapsed:
-                    continue
-            units = _unit_rows(ctx, members, y, b, None, expanded)
-            rows.extend(units)
-            y += len(units)
+        units = _unit_rows(ctx, members, y, UNASSIGNED, None, expanded)
+        rows.extend(units)
+        y += len(units)
     return PoolLayout(heads, rows, y)
 
 
@@ -503,7 +485,7 @@ def _scene_layout(ctx: _Ctx, order: OrderSnapshot, show_all: set[str], expanded:
             if key not in show_all:
                 visible = occupied
             notes = tuple(sorted(n for r in rows if r.in_map for n in r.notes))
-            t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), 0, y, notes,
+            t_heads.append(Header(key, glabel, len(rows), len(visible) < len(rows), y, notes,
                                   shown=len(occupied)))
             y += 1
         for r in visible:

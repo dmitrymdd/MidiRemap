@@ -8,7 +8,7 @@ from midiremap.core.notemap import NoteMap, articulations, normalize_name
 from midiremap.core.profile import RemapProfile, Rule
 from midiremap.templates import load_map_template
 from midiremap.ui.cable_layout import (
-    DELETE, KEEP, MAPPED, TARGET_PREFIX, UNASSIGNED, Header, OrderSnapshot, TargetRow, build_layout,
+    DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Header, OrderSnapshot, TargetRow, build_layout,
     fresh_order, slot_key, update_order,
 )
 
@@ -81,18 +81,18 @@ def test_dst_outside_target_map_and_no_target_map():
 
 # --- колонка источника ---
 
-def test_status_blocks_order_and_groups():
+def test_pool_is_one_list_grouped_by_instrument():
     rules = {36: Rule.keep(), 40: Rule.delete(), 42: Rule.map_to(42), 37: Rule.keep()}
     lay = build_layout(profile(rules), no_collapse())
-    blocks = [h for h in lay.pool.headers if h.level == 0]
-    assert [(h.key, h.count) for h in blocks] == [(UNASSIGNED, 5), (DELETE, 1)]  # блока Keep нет (8b2c)
+    # блоков состояний нет: только группы исходной карты, у всех ключ POOL_PREFIX
+    assert [(h.label, h.count) for h in lay.pool.headers] == [("Kick", 2), ("Snare", 2), ("Hat", 1), ("Crash", 1)]
+    assert all(h.key.startswith(POOL_PREFIX) for h in lay.pool.headers)
     by = rows_by_note(lay)
     assert by[38].block == UNASSIGNED and by[38].state == UNASSIGNED
-    assert by[36].block == UNASSIGNED and by[36].state == KEEP  # явный keep — в Unassigned, маркер «=»
-    assert by[40].block == DELETE and by[40].state == DELETE
-    # внутри блока — по группам исходной карты
-    groups = [h.label for h in lay.pool.headers if h.key.startswith(UNASSIGNED + "/")]
-    assert groups == ["Kick", "Snare", "Hat", "Crash"]
+    assert by[36].block == UNASSIGNED and by[36].state == KEEP  # явный keep — маркер «=»
+    assert by[40].block == UNASSIGNED and by[40].state == DELETE  # зачёркнутая — в своей группе
+    snare = lay.header(POOL_PREFIX + "snare")
+    assert snare.notes == (38, 40) and [r.note for r in lay.pool.rows if snare.y < r.y <= snare.y + 2] == [38, 40]
     # подключённые — не в пуле, а в сцене напротив цели
     assert by[42].block is None and by[42].connected and by[42].state == MAPPED
     assert 42 not in {r.note for r in lay.pool.rows}
@@ -117,8 +117,8 @@ def test_without_source_map_rows_are_rules():
     lay = build_layout(profile({5: Rule.delete(), 36: Rule.map_to(36)}, src=None), no_collapse())
     by = rows_by_note(lay)
     assert set(by) == {5, 36} and by[5].name is None and by[36].connected
-    # без исходной карты групп в блоках нет
-    assert [h.key for h in lay.pool.headers] == [DELETE]
+    # без исходной карты групп нет: плоский список (зачёркнутая 5 — в нём)
+    assert lay.pool.headers == [] and [(r.note, r.state, r.y) for r in lay.pool.rows] == [(5, DELETE, 0)]
 
 
 def test_empty_profile():
@@ -129,22 +129,20 @@ def test_empty_profile():
 
 # --- сворачивание ---
 
-def test_collapsed_block_and_group_show_counts():
+def test_collapsed_groups_show_counts_and_hide_struck_rows_too():
     rules = {36: Rule.delete(), 37: Rule.delete(), 42: Rule.map_to(42)}
-    lay = build_layout(profile(rules), {DELETE, UNASSIGNED + "/snare"})
-    deleted = lay.header(DELETE)
-    assert deleted.collapsed and deleted.count == 2
-    assert not any(r.block == DELETE for r in lay.pool.rows)
-    assert not any(h.key.startswith(DELETE + "/") for h in lay.pool.headers)
-    snare = lay.header(UNASSIGNED + "/snare")
-    assert snare.collapsed and snare.count == 2
-    assert {r.note for r in lay.pool.rows if r.block == UNASSIGNED} == {46, 49}
+    lay = build_layout(profile(rules), {POOL_PREFIX + "kick", POOL_PREFIX + "snare"})
+    kick, snare = lay.header(POOL_PREFIX + "kick"), lay.header(POOL_PREFIX + "snare")
+    assert kick.collapsed and kick.count == 2 and snare.collapsed and snare.count == 2
+    assert {r.note for r in lay.pool.rows} == {46, 49}  # зачёркнутые 36, 37 — в свёрнутой группе
+    assert lay.header(POOL_PREFIX + "crash").y == snare.y + 3  # Snare свёрнута, под ней Hat: заголовок и строка
 
 
-def test_default_collapsed_delete_only():
+def test_nothing_collapsed_by_default():
     lay = build_layout(profile({36: Rule.keep(), 40: Rule.delete()}))
-    assert lay.header(DELETE).collapsed and not lay.header(UNASSIGNED).collapsed
-    assert lay.header(KEEP) is None
+    assert lay.pool.headers and not any(h.collapsed for h in lay.pool.headers)
+    assert lay.header(UNASSIGNED) is None and lay.header(DELETE) is None and lay.header(KEEP) is None
+    assert rows_by_note(lay)[40].state == DELETE
 
 
 # --- замороженный порядок ---
@@ -160,7 +158,7 @@ def test_removed_cable_row_stays_in_place_until_resort():
     assert {c.src for c in lay.scene.cables} == {38}
     assert lay.target_row("a:snare: center").height == 2  # строка всё ещё напротив
     resorted = build_layout(p, no_collapse(), None)
-    assert rows_by_note(resorted)[40].block == DELETE
+    assert rows_by_note(resorted)[40].block == UNASSIGNED and rows_by_note(resorted)[40].state == DELETE
     assert resorted.target_row("a:snare: center").height == 1
 
 
@@ -182,7 +180,7 @@ def test_newly_connected_row_moves_opposite_target_immediately():
     row, tgt = rows_by_note(lay)[40], lay.target_row("a:snare: center")
     assert row.block is None and row.connected and row.y == tgt.y
     # остальные неназначенные — в прежнем порядке
-    assert [n for n in first.order.blocks[UNASSIGNED] if n != 40] == list(lay.order.blocks[UNASSIGNED])
+    assert [n for n in first.order.pool if n != 40] == list(lay.order.pool)
 
 
 def test_reconnected_row_moves_to_new_target_and_appends():
@@ -194,14 +192,15 @@ def test_reconnected_row_moves_to_new_target_and_appends():
     assert lay.order.slots[slot_key(TGT, 38)] == (38,)
 
 
-def test_state_change_inside_blocks_stays_in_block():
+def test_struck_note_stays_in_place_before_and_after_resort():
     p = profile()
     first = build_layout(p, no_collapse())
     p.rules[38] = Rule.delete()
     lay = build_layout(p, no_collapse(), first.order)
     row = rows_by_note(lay)[38]
     assert row.block == UNASSIGNED and row.state == DELETE and row.y == rows_by_note(first)[38].y
-    assert lay.header(DELETE) is None
+    resorted = build_layout(p, no_collapse())
+    assert rows_by_note(resorted)[38].y == row.y and resorted.order == first.order  # и после пересортировки
 
 
 def test_order_is_stable_without_changes():
@@ -213,9 +212,9 @@ def test_order_is_stable_without_changes():
 
 def test_stale_snapshot_is_tolerated():
     p = profile({36: Rule.map_to(36)})
-    stale = OrderSnapshot({UNASSIGNED: (1, 2, 38)}, {"a:gone": (36, 3), "n:57": (40,)})
+    stale = OrderSnapshot((1, 2, 38), {"a:gone": (36, 3), "n:57": (40,)})
     order = update_order(p, stale)
-    notes = [n for v in (*order.blocks.values(), *order.slots.values()) for n in v]
+    notes = [n for v in (order.pool, *order.slots.values()) for n in v]
     assert sorted(notes) == sorted(SRC.names)  # каждая нота ровно один раз, лишних нет
     assert order.place_of(36) == ("slot", "a:kick: hit")
     assert "n:57" not in order.slots  # 57 теперь есть в целевой карте
@@ -253,7 +252,7 @@ def test_connecting_leaves_pool_and_removing_returns_after_resort():
     p.rules[46] = Rule.map_to(46)
     lay = build_layout(p, no_collapse(), first.order)
     assert 46 not in {r.note for r in lay.pool.rows}
-    assert lay.header(UNASSIGNED).count == len(SRC.names) - 1
+    assert sum(h.count for h in lay.pool.headers) == len(SRC.names) - 1
     row = rows_by_note(lay)[46]
     assert row.connected and not row.stale and row.y == lay.target_row("a:hat: open").y
     # кабель убрали — строка в сцене на месте, «устаревшая»
@@ -270,8 +269,8 @@ def test_connecting_leaves_pool_and_removing_returns_after_resort():
 def test_pool_collapse_does_not_move_scene():
     p = profile({42: Rule.map_to(42)})
     a = build_layout(p, no_collapse())
-    b = build_layout(p, {UNASSIGNED})
-    assert b.pool.rows == [] and b.header(UNASSIGNED).collapsed
+    b = build_layout(p, {h.key for h in a.pool.headers})
+    assert b.pool.rows == [] and all(h.collapsed for h in b.pool.headers)
     assert a.scene == b.scene
 
 
@@ -321,7 +320,7 @@ def test_aliases_collapse_into_one_row_in_pool():
     assert snare.notes == (38, 39, 40) and snare.alias == "unassigned|snare: center" and not snare.expanded
     assert lay.source_row(38) is snare and lay.source_row(40) is snare
     assert len(lay.pool.rows) == 3
-    group = lay.header(UNASSIGNED + "/snare")
+    group = lay.header(POOL_PREFIX + "snare")
     assert group.count == 3 and group.notes == (38, 39, 40)  # заголовок считает ноты
 
 
@@ -414,7 +413,7 @@ def test_suggestions_placed_opposite_target_with_dashed_cables():
     lay = build_layout(p, no_collapse(), suggested=sugg)
     rows = rows_by_note(lay)
     assert all(rows[n].block is None and rows[n].suggested and not rows[n].stale for n in (36, 38, 40))
-    assert rows[49].block == DELETE and not rows[49].suggested  # у 49 есть правило — не подсказка
+    assert rows[49].state == DELETE and rows[49].block == UNASSIGNED and not rows[49].suggested  # у 49 есть правило — не подсказка
     cables = {c.src: c for c in lay.scene.cables}
     assert all(c.suggested for c in cables.values())
     assert (cables[36].dst, cables[38].dst, cables[40].dst) == (36, 38, 38)  # 40 — на Write to (38)
