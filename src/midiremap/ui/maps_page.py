@@ -25,7 +25,7 @@ from ..core.notemap import (
     NoteMap, articulations, duplicate_map, finalize_edit, group_rank, instrument_group, normalize_name, validate_map,
 )
 from ..core.notenames import ParseIssue, load_notenames, save_notenames
-from ..core.pitch import pitch_name
+from ..core.pitch import note_tip, pitch_name
 from ..storage import Storage, sanitize_id
 from ..templates import list_map_templates, load_map_template
 from .theme import TOKENS, repolish
@@ -266,7 +266,7 @@ class NoteTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.TextAlignmentRole and col != COL_NAME:
             return int(Qt.AlignmentFlag.AlignCenter)
         if role == Qt.ItemDataRole.ToolTipRole:
-            tip = f"Note {n} · {pitch_name(n)}"
+            tip = note_tip([n])
             if col == COL_NAME and len(notes) > 1:
                 tip = f"{name}\n{tip}\nOn notes {', '.join(map(str, notes))}"
             return tip

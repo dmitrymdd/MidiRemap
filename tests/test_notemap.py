@@ -6,7 +6,7 @@ from midiremap.core.notemap import (
     MapFormatError, MapMeta, NoteMap, articulations, duplicate_map, finalize_edit, map_from_json,
     map_to_dict, map_to_json, primary_note, validate_map,
 )
-from midiremap.core.pitch import OCTAVE_OFFSET, pitch_name
+from midiremap.core.pitch import OCTAVE_OFFSET, note_tip, pitch_name
 from midiremap.core.profile import RemapProfile, Rule
 
 
@@ -130,6 +130,10 @@ def test_pitch_offset_constant():
 def test_pitch_name_rejects_bad(bad):
     with pytest.raises(ValueError):
         pitch_name(bad)
+
+
+def test_note_tip():
+    assert note_tip([37]) == "Note 37 · C#1" and note_tip((37, 76)) == "Notes 37 · C#1, 76 · E4"
 
 
 # --- копирование и правка ---

@@ -20,7 +20,7 @@ from midiremap.templates import load_map_template  # noqa: E402
 from midiremap.ui import cable_view  # noqa: E402
 from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow  # noqa: E402
 from midiremap.ui.maps_page import TEMPLATE, USER, MapRef  # noqa: E402
-from midiremap.ui.profiles_page import ID_ROLE, SUBTITLE_ROLE  # noqa: E402
+from midiremap.ui.profiles_page import ID_ROLE  # noqa: E402
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
@@ -490,19 +490,18 @@ def test_dirty_profile_marked_in_list(window):
     def index(profile_id):
         return next(i for i in range(combo.count()) if combo.itemData(i, ID_ROLE) == profile_id)
     assert combo.itemText(index(pid)) == "Mark" and combo.currentIndex() == index(pid)
-    saved_subtitle = combo.itemData(index(pid), SUBTITLE_ROLE)
-    assert saved_subtitle in combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole)  # подсказка пункта
-    assert saved_subtitle == "EZdrummer 3 → Superior Drummer 3"  # без числа правил
+    saved_tip = combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole)  # подсказка пункта — карты, без числа правил
+    assert "EZdrummer 3 → Superior Drummer 3" in saved_tip and "rule" not in saved_tip
     page.clear_rules([sorted(page.work.source_map.names)[0]])
     assert combo.itemText(index(pid)) == "• Mark" and combo.itemText(index(LEGACY_ID)) == legacy_profile().name
     assert combo.currentText() == "• Mark"
-    assert combo.itemData(index(pid), SUBTITLE_ROLE) == saved_subtitle  # подсказка — сохранённое состояние
+    assert combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole) == saved_tip  # подсказка — сохранённое состояние
     page.revert()
     assert combo.itemText(index(pid)) == "Mark"
 
 
 def test_rows_show_number_without_pitch_pitch_in_tooltip(window):
-    from midiremap.ui.cable_view import note_tip
+    from midiremap.core.pitch import note_tip
     page = window.profiles_page
     ed = page.cables
     new_profile(page)

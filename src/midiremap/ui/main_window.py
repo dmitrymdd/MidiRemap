@@ -224,9 +224,6 @@ class SourceZone(QFrame):
         for w in (label, details):
             w.setVisible(res is not None)
 
-    def set_file(self, path: Path | None) -> None:
-        self.set_files([path] if path else [])
-
     def set_files(self, paths: list[Path], results: dict[Path, FileResult] | None = None) -> None:
         """Список файлов и (после конвертации) их результаты."""
         self.paths, self.results = list(paths), dict(results or {})
@@ -331,15 +328,11 @@ class OutputCard(QFrame):
         row.addWidget(_label("♫", "icon"))
         row.addSpacing(8)
         row.addLayout(text, stretch=1)
-        self.set_file(None)
+        self.set_files([])
 
     @property
     def path(self) -> Path | None:
         return self.paths[0] if self.paths else None
-
-    def set_file(self, path: Path | None, ready: bool = False) -> None:
-        """path — где будет (или уже лежит) результат; ready — файл готов (можно открыть и перетащить)."""
-        self.set_files([path] if path else [], ready)
 
     def set_files(self, paths: list[Path], ready: bool = False, where: str = "") -> None:
         """Несколько файлов — «N files» и where (папка результатов); один — имя и папка файла."""

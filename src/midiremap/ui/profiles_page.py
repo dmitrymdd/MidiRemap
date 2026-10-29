@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 from ..core.notemap import NoteMap, duplicate_map
 from ..core.profile import (
     FORWARD, REVERSE, RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers,
-    keep_existing_primary, match_by_number, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
+    keep_existing_primary, match_by_number, missing_rules, normalized_reverse, primary_pairs, sync_reverse, with_forward_primary, with_primary_cable, with_write_to,
 )
 from ..core.suggest import apply_suggested, plan_suggestions, suggestion_targets
 from ..storage import Storage, sanitize_id
@@ -57,7 +57,6 @@ SOURCE, TARGET = "source", "target"
 
 ID_ROLE = Qt.ItemDataRole.UserRole           # ID профиля в хранилище (None — профиль не читается)
 NAME_ROLE = Qt.ItemDataRole.UserRole + 3     # имя профиля без пометки «•»
-SUBTITLE_ROLE = Qt.ItemDataRole.UserRole + 4  # «карты · N rules» сохранённого состояния (подсказка пункта)
 
 UNDO_LIMIT = 200
 UNDO_KEYS, REDO_KEYS = ("Ctrl+Z",), ("Ctrl+Y", "Ctrl+Shift+Z")
@@ -461,7 +460,6 @@ class ProfilesPage(QWidget):
         i = self.combo.count() - 1
         self.combo.setItemData(i, profile_id, ID_ROLE)
         self.combo.setItemData(i, title, NAME_ROLE)
-        self.combo.setItemData(i, subtitle, SUBTITLE_ROLE)
         self.combo.setItemData(i, wrapped_tooltip(subtitle), Qt.ItemDataRole.ToolTipRole)
         if profile_id is None:  # профиль не читается — пункт виден, но не выбирается
             self.combo.model().item(i).setEnabled(False)
@@ -658,11 +656,6 @@ class ProfilesPage(QWidget):
         self.direction_btn.setEnabled(self.work is not None)
         self.direction_btn.setToolTip(SWAP_TIP if self.work is not None else "")
 
-    def unassigned(self) -> list[int]:
-        """Ноты исходной карты без правила."""
-        src = self.work.source_map if self.work is not None else None
-        return [] if src is None else [n for n in sorted(src.names) if n not in self.work.rules]
-
     @_undoable
     def save(self) -> bool:
         """Сохранить. Ноты исходной карты без правила: диалог — по умолчанию удаляются (delete), отмеченные
@@ -670,7 +663,7 @@ class ProfilesPage(QWidget):
         if self.work is None or self.current is None:
             return False
         out = copy.deepcopy(self.work)
-        unassigned = self.unassigned()
+        unassigned = missing_rules(self.work)
         if unassigned:
             to_keep = self.ask_unassigned(unassigned)
             if to_keep is None:

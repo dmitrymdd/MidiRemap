@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.notemap import primary_note
-from ..core.pitch import pitch_name
+from ..core.pitch import note_tip
 from ..core.profile import FORWARD, NO_RULE, REVERSE, RemapProfile, names_differ, validate_profile
 from .cable_layout import (
     DELETE, KEEP, MIXED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Cable, CableLayout, Header,
@@ -173,13 +173,6 @@ def _load_columns(settings: QSettings | None) -> tuple[float, float, float] | No
     if len(parts) != 3 or any(f <= 0 for f in parts) or sum(parts) > 1.001:
         return None
     return parts
-
-
-def note_tip(notes) -> str:
-    """Первая строка подсказки строки: «Note 37 · C#1» / «Notes 37 · C#1, 76 · E4» (высота — только здесь)."""
-    notes = list(notes)
-    text = ", ".join(f"{n} · {pitch_name(n)}" for n in notes)
-    return f"Note{'s' if len(notes) > 1 else ''} {text}"
 
 
 def _color(token: str, alpha: float = 1.0) -> QColor:

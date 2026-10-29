@@ -11,3 +11,10 @@ def pitch_name(note: int) -> str:
     if isinstance(note, bool) or not isinstance(note, int) or not 0 <= note <= 127:
         raise ValueError(f"note number must be an integer 0..127, got {note!r}")
     return f"{PITCH_CLASSES[note % 12]}{note // 12 + OCTAVE_OFFSET}"
+
+
+def note_tip(notes) -> str:
+    """Первая строка подсказки нот в UI: «Note 37 · C#1» / «Notes 37 · C#1, 76 · E4» (высота — только здесь)."""
+    notes = list(notes)
+    text = ", ".join(f"{n} · {pitch_name(n)}" for n in notes)
+    return f"Note{'s' if len(notes) > 1 else ''} {text}"
