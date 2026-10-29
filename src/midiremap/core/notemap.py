@@ -59,9 +59,9 @@ _KEYWORD_GROUPS: tuple[tuple[str, re.Pattern], ...] = tuple((label, re.compile(r
     ("China", r"\bchina\b|\bchinese\b"),
     ("Splash", r"\bsplash"),
     ("Cymbal", r"\bcymbal|\bpiatti\b"),
-    ("Percussion", r"\bclap|tambourine|cowbell|\bconga|\bbongo|\bshaker|\bcabasa|\bmaraca|\bagogo|\btimbale"
+    ("Percussion", (r"\bclap|tambourine|cowbell|\bconga|\bbongo|\bshaker|\bcabasa|\bmaraca|\bagogo|\btimbale"
                    r"|\bguiro|\bclaves?\b|\bwhistle|wood ?block|\btriangle|vibraslap|\bcuica|castanet|\bsurdo"
-                   r"|bell tree|jingle|tinkle|\bgolpe|\bcajon|\bchimes?\b|\bgrancassa"),
+                   r"|bell tree|jingle|tinkle|\bgolpe|\bcajon|\bchimes?\b|\bgrancassa")),
 ))
 
 

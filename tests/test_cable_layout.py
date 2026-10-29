@@ -389,7 +389,7 @@ def test_target_row_shows_used_numbers_each_cable_on_its_own():
     assert t.lines == tuple(sorted((by[n].y - t.y, d) for n, d in ((38, 38), (40, 60), (53, 53))))
     assert t.hidden == 1  # 61 не используется — за «+1»
     for c in lay.scene.cables:
-        assert c.dst_y - t.y == dict((d, off) for off, d in t.lines)[c.dst]
+        assert c.dst_y - t.y == {d: off for off, d in t.lines}[c.dst]
         assert c.dst_y == c.src_y  # каждая строка — напротив своего номера: «53 — 53»
 
 
@@ -585,7 +585,7 @@ def test_group_order_same_in_pool_and_target_both_directions():
             assert ranks == sorted(ranks)
             # одинаковый ранг (Floortom 2, Floortom 1, Racktom 3 …) — по первой ноте группы в карте
             for r in set(ranks):
-                same = [h for h, k in zip(heads, ranks) if k == r]
+                same = [h for h, k in zip(heads, ranks, strict=True) if k == r]
                 assert [min(h.notes) for h in same] == sorted(min(h.notes) for h in same)
         # тома — перед Ride, тарелки SD3 «Cymbal N» — в конце, после Ride
         to = [h.label for h in lay.scene.target_headers]

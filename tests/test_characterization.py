@@ -68,13 +68,13 @@ class TestSamples:
         assert out.type == src.type
         assert out.ticks_per_beat == src.ticks_per_beat
         assert len(out.tracks) == len(src.tracks)
-        for s, o in zip(src.tracks, out.tracks):
+        for s, o in zip(src.tracks, out.tracks, strict=True):
             assert len(o) == len(s)
             assert track_length(o) == track_length(s)
 
     def test_non_note_events_preserved(self, tmp_path, name, stats_expected, notes_expected):
         _, src, out = run(MIDI_DIR / name, tmp_path)
-        for s, o in zip(src.tracks, out.tracks):
+        for s, o in zip(src.tracks, out.tracks, strict=True):
             assert non_note(abs_events(o)) == non_note(abs_events(s))
 
     def test_unknown_meta_preserved(self, tmp_path, name, stats_expected, notes_expected):
@@ -88,11 +88,11 @@ class TestSamples:
 
     def test_note_events_are_source_with_mapped_note(self, tmp_path, name, stats_expected, notes_expected):
         _, src, out = run(MIDI_DIR / name, tmp_path)
-        for s, o in zip(src.tracks, out.tracks):
+        for s, o in zip(src.tracks, out.tracks, strict=True):
             s_notes = [(t, m) for t, m in abs_events(s) if m.type in NOTE_TYPES]
             o_notes = [(t, m) for t, m in abs_events(o) if m.type in NOTE_TYPES]
             assert len(o_notes) == len(s_notes)
-            for (st, sm), (ot, om) in zip(s_notes, o_notes):
+            for (st, sm), (ot, om) in zip(s_notes, o_notes, strict=True):
                 assert ot == st
                 assert om == sm.copy(note=NOTE_MAP[sm.note])
 

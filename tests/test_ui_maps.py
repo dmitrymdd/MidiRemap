@@ -5,15 +5,16 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PySide6")
+pytestmark = pytest.mark.ui
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import Qt
 
-from midiremap.core.notemap import NoteMap  # noqa: E402
-from midiremap.core.pitch import pitch_name  # noqa: E402
-from midiremap.core.notenames import parse_notenames  # noqa: E402
-from midiremap.templates import load_map_template  # noqa: E402
-from midiremap.ui.main_window import PAGE_MAPS, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef  # noqa: E402
+from midiremap.core.notemap import NoteMap
+from midiremap.core.pitch import pitch_name
+from midiremap.core.notenames import parse_notenames
+from midiremap.templates import load_map_template
+from midiremap.ui.main_window import PAGE_MAPS, MainWindow
+from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
 

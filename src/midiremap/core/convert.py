@@ -204,7 +204,7 @@ def _rebuild(track: mido.MidiTrack, out: list, stats: dict[str, int]) -> mido.Mi
     абсолютное время оставшихся событий и длина дорожки не меняются."""
     new_track = mido.MidiTrack()
     carry = 0
-    for msg, new in zip(track, out):
+    for msg, new in zip(track, out, strict=True):
         carry += msg.time
         if new is None:
             stats['removed'] += 1

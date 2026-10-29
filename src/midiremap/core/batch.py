@@ -80,7 +80,7 @@ def convert_batch(sources: Iterable[Path], profile: RemapProfile, direction: str
         claimed[key] = src
         try:
             report = convert_fn(src, dst, profile, direction=direction)
-        except Exception as exc:  # любая ошибка файла (битый MIDI, доступ) — в отчёт, пачка продолжается
+        except Exception as exc:  # noqa: BLE001 — любая ошибка файла (битый MIDI, доступ): в отчёт, пачка дальше
             result.files.append(FileResult(src, dst, error=describe_error(exc, src, dst),
                                            details=technical_details(exc)))
         else:

@@ -12,8 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from midiremap.core.notemap import MapMeta, NoteMap, map_to_json  # noqa: E402
-from midiremap.core.notenames import load_notenames  # noqa: E402
+from midiremap.core.notemap import MapMeta, NoteMap, map_to_json
+from midiremap.core.notenames import load_notenames
 
 SAMPLES = ROOT / "samples" / "maps"
 OUT = ROOT / "src" / "midiremap" / "templates" / "maps"

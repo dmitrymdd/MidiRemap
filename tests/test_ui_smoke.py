@@ -5,13 +5,14 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PySide6")
+pytestmark = pytest.mark.ui
 
-from PySide6.QtCore import QMimeData, QUrl  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QMimeData, QUrl
+from PySide6.QtWidgets import QApplication
 
-from midiremap.core import RemapProfile, Rule, convert, legacy_profile  # noqa: E402
-from midiremap.storage import Storage  # noqa: E402
-from midiremap.ui.main_window import (  # noqa: E402
+from midiremap.core import RemapProfile, Rule, convert, legacy_profile
+from midiremap.storage import Storage
+from midiremap.ui.main_window import (
     MainWindow, batch_summary, format_report, midi_paths_from_mime, report_summary,
 )
 

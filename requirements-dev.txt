@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest>=8
 pyinstaller>=6.22
+ruff>=0.17
+vulture>=2.16
+radon>=6.0

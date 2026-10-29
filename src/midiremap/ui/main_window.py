@@ -346,10 +346,7 @@ class OutputCard(QFrame):
         else:
             self.name.setText(f"{len(paths)} files")
             self.folder.setText(where)
-        if ready:
-            tip = "\n".join(map(str, paths)) + "\nClick to show in folder · drag into your DAW"
-        else:
-            tip = ""
+        tip = "\n".join(map(str, paths)) + "\nClick to show in folder · drag into your DAW" if ready else ""
         self.setToolTip(tip)
         _repolish(self, "state", "ok" if ready else "off")
         for label in self.findChildren(QLabel):  # цвет подписей зависит от state карточки
@@ -857,7 +854,7 @@ class MainWindow(QMainWindow):
             return
         try:
             profile = self.selected_profile()
-        except Exception as exc:  # ошибка хранилища: окно не падает
+        except Exception as exc:  # noqa: BLE001 — ошибка хранилища: окно не падает
             self.show_error(f"Conversion failed:\n\n{exc}")
             self.set_status("Conversion failed.", "error")
             return

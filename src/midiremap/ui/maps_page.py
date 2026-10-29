@@ -222,10 +222,10 @@ class NoteTableModel(QAbstractTableModel):
         name = self.map.names.get(note) if self.map is not None else None
         return self._groups.get(normalize_name(name), []) if name is not None else []
 
-    def rowCount(self, parent=QModelIndex()) -> int:
+    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: B008 — сигнатура Qt
         return 0 if parent.isValid() else len(self.rows)
 
-    def columnCount(self, parent=QModelIndex()) -> int:
+    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: B008 — сигнатура Qt
         return 0 if parent.isValid() else len(COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):

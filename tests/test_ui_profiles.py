@@ -5,19 +5,20 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("PySide6")
+pytestmark = pytest.mark.ui
 
-from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
-from midiremap.core.notemap import NoteMap, articulations, normalize_name  # noqa: E402
-from midiremap.core.profile import RemapProfile, Rule, legacy_profile  # noqa: E402
-from midiremap.storage import sanitize_id  # noqa: E402
-from midiremap.templates import load_map_template  # noqa: E402
-from midiremap.ui import cable_view  # noqa: E402
-from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow  # noqa: E402
-from midiremap.ui.maps_page import TEMPLATE, USER, MapRef  # noqa: E402
-from midiremap.ui.profiles_page import ID_ROLE  # noqa: E402
+from midiremap.core.notemap import NoteMap, articulations, normalize_name
+from midiremap.core.profile import RemapProfile, Rule, legacy_profile
+from midiremap.storage import sanitize_id
+from midiremap.templates import load_map_template
+from midiremap.ui import cable_view
+from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow
+from midiremap.ui.maps_page import TEMPLATE, USER, MapRef
+from midiremap.ui.profiles_page import ID_ROLE
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
@@ -312,7 +313,7 @@ def test_issues_highlighted_in_rows(window):
     page = window.profiles_page
     new_profile(page)
     page.dismiss_suggestions()
-    n = sorted(page.work.source_map.names)[0]
+    n = min(page.work.source_map.names)
     missing = next(x for x in range(128) if x not in page.work.target_map.names)
     page.assign_note([n], missing)
     item = page.cables.source_items[n]
@@ -386,7 +387,7 @@ def test_unsaved_edits_prompts(window, storage):
     pid = new_profile(page, "A")
     page.save()
     page.answers["asked"].clear()
-    page.clear_rules([sorted(page.work.source_map.names)[0]])
+    page.clear_rules([min(page.work.source_map.names)])
     assert page.dirty
 
     # переключение вкладок — без вопроса, правки на месте
@@ -410,7 +411,7 @@ def test_unsaved_edits_prompts(window, storage):
     assert not window.close()
     page.answers["save_changes"] = "discard"
     assert window.close()
-    assert storage.load_profile(pid).rules[sorted(page.base.source_map.names)[0]] == Rule.delete()
+    assert storage.load_profile(pid).rules[min(page.base.source_map.names)] == Rule.delete()
 
 
 def test_profiles_tab_disables_convert_shortcuts(window):
@@ -476,7 +477,7 @@ def test_dirty_profile_marked_in_list(window):
     assert combo.itemText(index(pid)) == "Mark" and combo.currentIndex() == index(pid)
     saved_tip = combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole)  # подсказка пункта — карты, без числа правил
     assert "EZdrummer 3 → Superior Drummer 3" in saved_tip and "rule" not in saved_tip
-    page.clear_rules([sorted(page.work.source_map.names)[0]])
+    page.clear_rules([min(page.work.source_map.names)])
     assert combo.itemText(index(pid)) == "• Mark" and combo.itemText(index(LEGACY_ID)) == legacy_profile().name
     assert combo.currentText() == "• Mark"
     assert combo.itemData(index(pid), Qt.ItemDataRole.ToolTipRole) == saved_tip  # подсказка — сохранённое состояние
@@ -1395,7 +1396,7 @@ def test_switching_profile_in_combo_asks_about_unsaved(window, app):
     a = new_profile(page, "A")
     page.answers["unassigned"] = set()
     page.save()
-    page.clear_rules([sorted(page.work.source_map.names)[0]])
+    page.clear_rules([min(page.work.source_map.names)])
     assert page.dirty
     page.answers["save_changes"] = "cancel"
     page.combo.setCurrentIndex(page.combo.findData(LEGACY_ID, ID_ROLE))
@@ -2425,7 +2426,7 @@ def test_undo_redo_hotkeys_work_with_focus_anywhere_on_profiles(window, app):
     page, _ed = cables_page(window, accept=False)
     assert "Ctrl+Z" in page.revert_btn.toolTip() and "Ctrl+Y" in page.revert_btn.toolTip()
     assert "Ctrl+Shift+Z" in page.revert_btn.toolTip()
-    n = sorted(page.work.source_map.names)[0]
+    n = min(page.work.source_map.names)
     page.toggle_strike([n])
     window.activateWindow()
     page.combo.setFocus()  # фокус — не в сцене

@@ -7,6 +7,7 @@ ID записи — имя файла без расширения; отобра�
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -222,8 +223,6 @@ def _atomic_write(path: Path, data: bytes, overwrite: bool) -> None:
             os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise

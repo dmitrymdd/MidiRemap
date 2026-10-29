@@ -5,15 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "midiremap"
 version = "0.0.1"
-description = "Конвертер барабанных MIDI-партий между раскладками нот"
+description = "Convert drum MIDI files from one note layout to another"
 requires-python = ">=3.10"
-dependencies = ["mido>=1.3"]
+dependencies = ["mido>=1.3", "PySide6-Essentials>=6.12"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+addopts = "--strict-markers"
+markers = ["ui: tests of the Qt UI (PySide6, offscreen); quick core-only run: pytest -m \"not ui\""]
 
 [tool.setuptools.package-data]
 "midiremap.templates" = ["maps/*.json"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-select = ["F", "B", "SIM", "UP"]
+# E501 — длина строки: стиль проекта ~120, длинные строки (тексты, docstring) не дробим.
+# TRY004 — ошибки формата JSON намеренно ValueError (MapFormatError / ProfileFormatError — его подклассы, вызывающие
+# ловят ValueError); TypeError изменил бы поведение.
+# I001 — сортировка импортов: ruff раскладывает перенесённые импорты по одному на строку, в проекте — компактно.
+ignore = ["E501", "TRY004", "I001"]
