@@ -79,7 +79,7 @@ class ConversionReport:
     overlaps: int = 0          # перекрытия одной целевой ноты на разных тиках (не трогаем, только считаем)
     orphan_note_offs: int = 0  # note_off без предшествующего note_on (ремапятся и проходят как есть)
     unresolved_kept: list[int] = field(default_factory=list)  # ноты без правила, оставленные на месте
-    # совместимость со старым convert_midi: нотные события записаны / не записаны, прочие события
+    # события: нотные записаны / удалены (правилом или слиянием), прочие записаны
     stats: dict[str, int] = field(default_factory=lambda: {'mapped': 0, 'removed': 0, 'other': 0})
     warnings: list[str] = field(default_factory=list)
 
@@ -290,9 +290,3 @@ def convert(src: str | Path, dst: str | Path, profile: RemapProfile,
     out.save(str(dst))
     return report
 
-
-def convert_midi(src: Path, dst: Path, note_map: Mapping[int, int]) -> dict:
-    """Совместимость со старым UI: ноты вне note_map удаляются. Возвращает stats {'mapped','removed','other'}."""
-    rules = {n: Rule.delete() for n in range(128)}
-    rules.update({s: Rule.map_to(d) for s, d in note_map.items()})
-    return convert(src, dst, RemapProfile(name="note_map", rules=rules)).stats

@@ -1,6 +1,5 @@
-"""Характеризационные тесты convert_midi со схемой NOTE_MAP (как в первой версии программы на Tkinter).
-
-Фиксируют поведение первой версии как эталон (этап 1); с этапа 4 convert_midi — обёртка над новым движком.
+"""Характеризационные тесты: схема первой версии программы (NOTE_MAP, legacy_profile(): ноты вне NOTE_MAP
+удаляются) — поведение первой версии на Tkinter как эталон, теперь через convert().
 Сравнивается содержимое (абсолютное время в тиках + сообщение), не байты файлов.
 """
 from collections import Counter
@@ -9,14 +8,14 @@ from pathlib import Path
 import mido
 import pytest
 
-from midiremap.core import convert_midi as core_convert_midi
+from midiremap.core import convert, legacy_profile
 from midiremap.core.legacy_map import NOTE_MAP
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def convert_midi(src, dst):
-    return core_convert_midi(src, dst, NOTE_MAP)
+def convert_legacy(src, dst):
+    return convert(src, dst, legacy_profile()).stats
 
 MIDI_DIR = ROOT / 'samples' / 'midi'
 NOTE_TYPES = ('note_on', 'note_off')
@@ -45,7 +44,7 @@ def non_note(events):
 
 def run(src, tmp_path):
     dst = tmp_path / 'out.mid'
-    stats = convert_midi(src, dst)
+    stats = convert_legacy(src, dst)
     return stats, mido.MidiFile(str(src)), mido.MidiFile(str(dst))
 
 
@@ -138,7 +137,7 @@ def test_synthetic_unmapped_notes_removed_without_time_shift(tmp_path):
     src_path = tmp_path / 'in.mid'
     events = synthetic_events()
     build_midi(src_path, events, end_at=100)
-    stats = convert_midi(src_path, tmp_path / 'out.mid')
+    stats = convert_legacy(src_path, tmp_path / 'out.mid')
     out = mido.MidiFile(str(tmp_path / 'out.mid'))
 
     assert stats == {'mapped': 4, 'removed': 4, 'other': 2}  # other = control_change + end_of_track
@@ -155,8 +154,8 @@ def test_synthetic_unmapped_notes_removed_without_time_shift(tmp_path):
 
 
 def test_known_behavior_all_channels_remapped_and_unmapped_removed(tmp_path):
-    """Поведение обёртки convert_midi (старый UI): ноты на ЛЮБОМ канале ремапятся;
-    ноты, которых нет в NOTE_MAP, удаляются. В новом движке по умолчанию — keep (см. test_convert_engine.py).
+    """Схема первой версии: ноты на ЛЮБОМ канале ремапятся; ноты, которых нет в NOTE_MAP, удаляются
+    (явный delete в legacy_profile; без правила по умолчанию — keep, см. test_convert_engine.py).
     """
     src_path = tmp_path / 'in.mid'
     build_midi(src_path, [
@@ -165,7 +164,7 @@ def test_known_behavior_all_channels_remapped_and_unmapped_removed(tmp_path):
         (20, mido.Message('note_on', channel=5, note=53, velocity=100)),
         (30, mido.Message('note_on', channel=3, note=60, velocity=100)),
     ], end_at=40)
-    stats = convert_midi(src_path, tmp_path / 'out.mid')
+    stats = convert_legacy(src_path, tmp_path / 'out.mid')
     out = mido.MidiFile(str(tmp_path / 'out.mid'))
     notes = [(t, m.channel, m.note) for t, m in abs_events(out.tracks[0]) if m.type == 'note_on']
     assert notes == [(0, 0, 40), (10, 9, 116), (20, 5, 117)]

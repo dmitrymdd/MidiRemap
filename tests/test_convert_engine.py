@@ -5,7 +5,7 @@ import mido
 import pytest
 
 from legacy_reference import reference_convert_midi
-from midiremap.core import RemapProfile, Rule, analyze, convert, convert_midi, legacy_profile
+from midiremap.core import RemapProfile, Rule, analyze, convert, legacy_profile
 from midiremap.core.legacy_map import NOTE_MAP
 from midiremap.core.notemap import NoteMap
 
@@ -71,13 +71,34 @@ def nmap(name, **names):
 def test_legacy_profile_matches_reference_on_samples(tmp_path, src):
     ref_stats = reference_convert_midi(src, tmp_path / 'ref.mid', NOTE_MAP)
     report = convert(src, tmp_path / 'new.mid', legacy_profile())
-    wrapper_stats = convert_midi(src, tmp_path / 'wrap.mid', NOTE_MAP)
 
     ref = (tmp_path / 'ref.mid').read_bytes()
     assert (tmp_path / 'new.mid').read_bytes() == ref
-    assert (tmp_path / 'wrap.mid').read_bytes() == ref
-    assert report.stats == wrapper_stats == ref_stats
+    assert report.stats == ref_stats
     assert report.merged == report.overlaps == report.orphan_note_offs == 0
+
+
+def test_custom_rules_delete_the_rest(tmp_path):
+    """Своя схема «одна нота на новый номер, остальные удалить»: удалённое время переносится на следующее событие."""
+    track = mido.MidiTrack([
+        on(36).copy(time=0),
+        off(36).copy(time=10),
+        on(38).copy(time=5),  # нет в схеме -> удаляется
+        mido.MetaMessage('end_of_track', time=5),
+    ])
+    midi = mido.MidiFile(type=1, ticks_per_beat=480)
+    midi.tracks.append(track)
+    src, dst = tmp_path / 'in.mid', tmp_path / 'out.mid'
+    midi.save(str(src))
+    rules = {n: Rule.delete() for n in range(128)} | {36: Rule.map_to(40)}
+
+    report = convert(src, dst, RemapProfile('p', rules=rules))
+
+    assert report.stats == {'mapped': 2, 'removed': 1, 'other': 1}
+    out = mido.MidiFile(str(dst))
+    assert [(m.type, m.note, m.time) for m in out.tracks[0] if m.type.startswith('note')] == [
+        ('note_on', 40, 0), ('note_off', 40, 10)]
+    assert sum(m.time for m in out.tracks[0]) == 20
 
 
 def test_legacy_profile_shape():
