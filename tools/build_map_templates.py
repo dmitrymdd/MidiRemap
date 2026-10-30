@@ -1,4 +1,4 @@
-r"""Генерирует встроенные шаблоны карт src/midiremap/templates/maps/*.json из samples/maps/*.txt.
+r"""Генерирует встроенные шаблоны карт src/remap/templates/maps/*.json из samples/maps/*.txt.
 
 Запуск (из корня репозитория): .venv\Scripts\python tools\build_map_templates.py
 Метаданные — только по фактам из CLAUDE.md. Флаги primary не ставятся: исходных данных для них нет.
@@ -12,11 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from midiremap.core.notemap import MapMeta, NoteMap, map_to_json
-from midiremap.core.notenames import load_notenames
+from remap.core.notemap import MapMeta, NoteMap, map_to_json
+from remap.core.notenames import load_notenames
 
 SAMPLES = ROOT / "samples" / "maps"
-OUT = ROOT / "src" / "midiremap" / "templates" / "maps"
+OUT = ROOT / "src" / "remap" / "templates" / "maps"
 
 # имя шаблона -> (файл в samples/maps, метаданные)
 TEMPLATES: dict[str, tuple[str, MapMeta]] = {

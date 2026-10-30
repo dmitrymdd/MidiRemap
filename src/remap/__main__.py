@@ -1,4 +1,4 @@
-"""Точка входа: python -m midiremap."""
+"""Точка входа: python -m remap."""
 import sys
 
 from .ui.main_window import main

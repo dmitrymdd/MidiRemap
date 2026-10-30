@@ -1,5 +1,5 @@
-from midiremap.core.notemap import NoteMap
-from midiremap.core.profile import (
+from remap.core.notemap import NoteMap
+from remap.core.profile import (
     DST_NOT_IN_TARGET, KEEP_DIFFERENT, KEEP_NOT_IN_TARGET, NO_RULE, SRC_NOT_IN_SOURCE, ProfileIssue, RemapProfile,
     Rule, keep_issue, validate_profile,
 )
@@ -94,7 +94,7 @@ def test_validate_does_not_change_profile():
 
 
 def test_with_explicit_keeps():
-    from midiremap.core.profile import with_explicit_keeps
+    from remap.core.profile import with_explicit_keeps
     p = RemapProfile('p', SRC, TGT, {38: Rule.delete(), 60: Rule.map_to(36)})
     out = with_explicit_keeps(p)
     assert out.rules == {36: Rule.keep(), 38: Rule.delete(), 42: Rule.keep(), 51: Rule.keep(),

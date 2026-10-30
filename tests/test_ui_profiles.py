@@ -11,14 +11,14 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from midiremap.core.notemap import NoteMap, articulations, normalize_name
-from midiremap.core.profile import RemapProfile, Rule, legacy_profile
-from midiremap.storage import sanitize_id
-from midiremap.templates import load_map_template
-from midiremap.ui import cable_view
-from midiremap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow
-from midiremap.ui.maps_page import TEMPLATE, USER, MapRef
-from midiremap.ui.profiles_page import ID_ROLE
+from remap.core.notemap import NoteMap, articulations, normalize_name
+from remap.core.profile import RemapProfile, Rule, legacy_profile
+from remap.storage import sanitize_id
+from remap.templates import load_map_template
+from remap.ui import cable_view
+from remap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow
+from remap.ui.maps_page import TEMPLATE, USER, MapRef
+from remap.ui.profiles_page import ID_ROLE
 
 SAMPLE = Path(__file__).resolve().parents[1] / "samples" / "midi" / "Groove 01.mid"
 EZD3, SD3 = MapRef(TEMPLATE, "EZdrummer 3"), MapRef(TEMPLATE, "Superior Drummer 3")
@@ -169,7 +169,7 @@ def test_create_profile_with_two_templates(window, storage):
 
 
 def test_suggestion_bar_and_apply(window, app):
-    from midiremap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
+    from remap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
     page = window.profiles_page
     new_profile(page)
     ed = page.cables
@@ -294,7 +294,7 @@ def test_cancel_write_to_choice_keeps_rule(window):
 
 
 def test_delete_and_clear_rules(window):
-    from midiremap.ui.cable_layout import DELETE, UNASSIGNED
+    from remap.ui.cable_layout import DELETE, UNASSIGNED
     page = window.profiles_page
     new_profile(page)
     page.dismiss_suggestions()
@@ -421,7 +421,7 @@ def test_profiles_tab_disables_convert_shortcuts(window):
 
 
 def test_suggestion_needing_write_to_tooltip(window):
-    from midiremap.ui.cable_view import SUGGESTED_WRITE_TO_HINT
+    from remap.ui.cable_view import SUGGESTED_WRITE_TO_HINT
     page = window.profiles_page
     new_profile(page)
     ed = page.cables
@@ -440,8 +440,8 @@ def test_new_profile_without_maps_has_no_rows(window):
 
 def test_unassigned_dialog_checkboxes(window):
     from PySide6.QtWidgets import QDialogButtonBox, QLabel
-    from midiremap.core.profile import RemapProfile
-    from midiremap.ui.profiles_page import UnassignedDialog
+    from remap.core.profile import RemapProfile
+    from remap.ui.profiles_page import UnassignedDialog
     p = RemapProfile("p", load_map_template("Guitar Pro 8"), load_map_template("Superior Drummer 3"))
     notes = sorted(p.source_map.names)
     dlg = UnassignedDialog(window, p, list(reversed(notes)))
@@ -486,7 +486,7 @@ def test_dirty_profile_marked_in_list(window):
 
 
 def test_rows_show_number_without_pitch_pitch_in_tooltip(window):
-    from midiremap.core.pitch import note_tip
+    from remap.core.pitch import note_tip
     page = window.profiles_page
     ed = page.cables
     new_profile(page)
@@ -506,7 +506,7 @@ def test_rows_show_number_without_pitch_pitch_in_tooltip(window):
 
 def test_write_to_choice_shows_numbers_only(window, monkeypatch):
     from PySide6.QtWidgets import QDialog, QInputDialog
-    from midiremap.ui.profiles_page import ProfilesPage
+    from remap.ui.profiles_page import ProfilesPage
     page = window.profiles_page
     new_profile(page)
     seen = {}
@@ -521,7 +521,7 @@ def test_write_to_choice_shows_numbers_only(window, monkeypatch):
 
 
 def test_hotkeys_in_tooltips_and_short_status(window, tmp_path):
-    from midiremap.ui.maps_page import COL_NAME
+    from remap.ui.maps_page import COL_NAME
     window.show_page(PAGE_CONVERT)
     assert window.convert_btn.toolTip() == "Convert (Enter)"
     assert window.copy_btn.toolTip() == "Copy file (Ctrl+C)"
@@ -561,7 +561,7 @@ def unique_mapped_note(p):
 
 
 def test_cables_relayout_immediately_after_each_edit(window):
-    from midiremap.ui.cable_layout import DELETE
+    from remap.ui.cable_layout import DELETE
     page = window.profiles_page
     new_profile(page)
     page.apply_suggestions()
@@ -585,7 +585,7 @@ def test_no_resort_button(window):
     assert not hasattr(page.cables, "resort") and not hasattr(page.cables, "order")
 
 def test_cleared_rule_returns_to_pool_at_once(window):
-    from midiremap.ui.cable_layout import UNASSIGNED
+    from remap.ui.cable_layout import UNASSIGNED
     page = window.profiles_page
     new_profile(page)
     page.apply_suggestions()
@@ -595,7 +595,7 @@ def test_cleared_rule_returns_to_pool_at_once(window):
 
 def test_cables_header_click_collapses(window, app):
     from PySide6.QtCore import QPointF
-    from midiremap.ui.cable_view import PAD, ROW
+    from remap.ui.cable_view import PAD, ROW
     page = window.profiles_page
     window.resize(1200, 800)
     window.show()
@@ -614,7 +614,7 @@ def test_cables_header_click_collapses(window, app):
 
 
 def test_cables_view_saves_with_same_dialog(window, storage):
-    from midiremap.ui.cable_layout import DELETE
+    from remap.ui.cable_layout import DELETE
     page = window.profiles_page
     pid = new_profile(page)
     page.apply_suggestions()
@@ -655,7 +655,7 @@ def test_cables_pool_is_separate_column(window):
 
 
 def test_cable_hover_highlights_and_dims(window):
-    from midiremap.ui.cable_view import DIMMED
+    from remap.ui.cable_view import DIMMED
     page = window.profiles_page
     new_profile(page)
     page.apply_suggestions()
@@ -710,8 +710,8 @@ def target_point(ed, slot):
 
 def show_target_group(ed, slot):
     """Режим «все» для группы цели, в которой лежит артикуляция slot."""
-    from midiremap.core.notemap import instrument_group
-    from midiremap.ui.cable_layout import TARGET_PREFIX
+    from remap.core.notemap import instrument_group
+    from remap.ui.cable_layout import TARGET_PREFIX
     if slot in ed.target_items:
         return
     tgt = ed.shown.target_map  # в ← — исходная карта (цель обратного профиля)
@@ -836,7 +836,7 @@ def test_drop_replaces_previous_rule_and_esc_cancels(window, app):
 
 def test_preview_spring_follows_cursor():
     from PySide6.QtCore import QPointF
-    from midiremap.ui.cable_view import _Drag
+    from remap.ui.cable_view import _Drag
     d = _Drag((1,), QPointF(200, 100), QPointF(0, 0), QPointF(0, 0))
     d.step()
     assert 0 < d.pos.x() < 200  # запаздывает
@@ -849,7 +849,7 @@ def test_preview_spring_follows_cursor():
 def test_first_cable_does_not_collapse_target_groups(window, app, reverse):
     """Новый профиль: группы цели раскрыты. Первый кабель (drag) ничего не сворачивает; режим групп меняет только
     пользователь (клик по заголовку), и он сохраняется при следующих правках."""
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = cables_page(window, accept=False)
     if reverse:
         page.set_direction(REVERSE)
@@ -947,7 +947,7 @@ def test_pool_items_never_move_during_drag_and_keep_place_after_drop(window, app
 
 
 def test_right_click_cable_removes_connection(window, app):
-    from midiremap.ui.cable_layout import UNASSIGNED
+    from remap.ui.cable_layout import UNASSIGNED
     page, ed = cables_page(window)
     cable = ed.cable_items[0]
     notes = cable.cable.notes
@@ -960,7 +960,7 @@ def test_right_click_cable_removes_connection(window, app):
     assert ed.current.source_row(notes[0]).block == UNASSIGNED
 
 def _swipe_page(window, reverse=False):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = cables_page(window)  # подсказки применены — много кабелей
     if reverse:
         page.set_direction(REVERSE)
@@ -1061,7 +1061,7 @@ def test_swipe_esc_cancels_and_plain_right_click_deletes_one(window, app):
 
 
 def test_right_click_pool_row_and_group_toggle_strike(window, app):
-    from midiremap.ui.cable_layout import KEEP, UNASSIGNED
+    from remap.ui.cable_layout import KEEP, UNASSIGNED
     page, ed = cables_page(window, accept=False)
     row = ed.pool_rows[0]
     notes = row.notes
@@ -1248,7 +1248,7 @@ def test_drop_several_matches_asks_once_with_preselect(window, app):
 
 
 def test_group_drop_on_target_header(window, app):
-    from midiremap.ui.cable_layout import TARGET_PREFIX
+    from remap.ui.cable_layout import TARGET_PREFIX
     page, ed = cables_page(window, accept=False)
     snare = ed.current.header(TARGET_PREFIX + "snare")
     src = page.work.source_map
@@ -1266,7 +1266,7 @@ def test_group_drop_on_target_header(window, app):
 def test_drag_pool_group_header(window, app):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
-    from midiremap.ui.cable_layout import POOL_PREFIX, TARGET_PREFIX
+    from remap.ui.cable_layout import POOL_PREFIX, TARGET_PREFIX
     page, ed = cables_page(window, accept=False)
     head = ed.current.header(POOL_PREFIX + "snare")
     pool_item = ed.pool_headers[head.key]
@@ -1410,7 +1410,7 @@ def test_switching_profile_in_combo_asks_about_unsaved(window, app):
 def test_scene_columns_resize_and_persist(window, app, storage):
     from PySide6.QtCore import QEvent, QPointF
     from PySide6.QtGui import QMouseEvent
-    from midiremap.ui.cable_view import COLUMNS_KEY, POOL_KEY, PORT, SCENE_MIN
+    from remap.ui.cable_view import COLUMNS_KEY, POOL_KEY, PORT, SCENE_MIN
     page, ed = cables_page(window)
     vp = ed.view.viewport()
     width = ed.view.width_px(SCENE_MIN)
@@ -1464,7 +1464,7 @@ def test_truncated_names_in_tooltips(window, app):
     _page, ed = cables_page(window, size=(900, 700))
     ed.columns = (0.2, 0.6, 0.2)  # узкие колонки — длинные имена обрезаются
     ed.refresh()
-    from midiremap.ui.cable_view import _font
+    from remap.ui.cable_view import _font
     from PySide6.QtGui import QFontMetrics
     fm = QFontMetrics(_font(ed.view.font()))
     cut = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) > i.name_room()]
@@ -1502,7 +1502,7 @@ def test_drag_preview_thin_from_unassigned_notes(window):
 # --- двунаправленные профили ---
 
 def test_reverse_rules_follow_connect_with_undo_redo(window, app):
-    from midiremap.core.profile import derive_reverse
+    from remap.core.profile import derive_reverse
     page, _ed = cables_page(window, accept=False)
     page.work.reverse_rules = derive_reverse(page.work)  # заданы явно (как после сохранения формата 2)
     key, notes = three_note_articulation(page.work)
@@ -1531,8 +1531,8 @@ def test_map_change_resets_reverse_rules_in_one_undo_step(window, app):
 
 
 def test_convert_direction_toggle(app, storage, tmp_path):
-    from midiremap.core.profile import FORWARD, REVERSE
-    from midiremap.ui.main_window import DIRECTION_KEY
+    from remap.core.profile import FORWARD, REVERSE
+    from remap.ui.main_window import DIRECTION_KEY
     w = MainWindow(storage)
     page = w.profiles_page
     stub_dialogs(page)
@@ -1567,7 +1567,7 @@ def test_convert_direction_toggle(app, storage, tmp_path):
 
 def reverse_page(window, accept=True):
     """EZD3 → SD3 (подсказки применены, если accept), вид — в ←."""
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = cables_page(window, accept=accept)
     page.set_direction(REVERSE)
     QApplication.processEvents()
@@ -1602,8 +1602,8 @@ def secondary_cable(ed):
 def test_reverse_uses_forward_layout(window, app):
     """← — тот же код рисования, что →, по профилю oriented(REVERSE): слева пул и подключённые ноты цели,
     справа артикуляции исходной карты; поток слева направо."""
-    from midiremap.core.profile import REVERSE, missing_rules
-    from midiremap.ui.cable_view import _Bundle
+    from remap.core.profile import REVERSE, missing_rules
+    from remap.ui.cable_view import _Bundle
 
     def geometry(ed):
         lx, rx, col2, col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
@@ -1647,7 +1647,7 @@ def test_reverse_uses_forward_layout(window, app):
 
 
 def test_suggestion_bar_over_to_column_yields_to_map_button(window, app):
-    from midiremap.ui.profiles_page import MAP_BTN_MIN
+    from remap.ui.profiles_page import MAP_BTN_MIN
     page = window.profiles_page
     wide = (2400, 900)  # offscreen без системных шрифтов текст шире обычного — с запасом
     window.resize(*wide)
@@ -1667,7 +1667,7 @@ def test_suggestion_bar_over_to_column_yields_to_map_button(window, app):
 
 
 def test_empty_from_column_shows_hint(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
+    from remap.core.profile import FORWARD, REVERSE
     page, ed = cables_page(window, accept=False)
     lx, _rx, col2, _col3 = ed._scene_columns(ed.view.width_px(cable_view.SCENE_MIN))
     assert ed.current.scene.source_rows == []
@@ -1688,7 +1688,7 @@ def test_empty_from_column_shows_hint(window, app):
 
 
 def test_direction_button_flips_and_is_not_an_undo_step(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
+    from remap.core.profile import FORWARD, REVERSE
     page = window.profiles_page
     btn = page.direction_btn
     assert not btn.isEnabled() and btn.toolTip() == ""  # профиля нет
@@ -1713,7 +1713,7 @@ def test_direction_button_flips_and_is_not_an_undo_step(window, app):
 
 
 def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = reverse_page(window, accept=False)
     rp = page.work.reversed()
     key, notes = three_note_articulation(rp)  # артикуляция EZD3, все номера которой есть в SD3
@@ -1747,7 +1747,7 @@ def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
 
 
 def test_reverse_right_click_strike_and_group_drop(window, app):
-    from midiremap.ui.cable_layout import TARGET_PREFIX
+    from remap.ui.cable_layout import TARGET_PREFIX
     page, ed = reverse_page(window)
     w = page.work
     # правый клик по подключённой строке (нота цели) — обратное правило снято, строка приглушена
@@ -1775,7 +1775,7 @@ def test_reverse_right_click_strike_and_group_drop(window, app):
 
 
 def test_reverse_suggestions_bar(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
+    from remap.core.profile import FORWARD, REVERSE
     page = window.profiles_page
     new_profile(page)
     fwd = dict(page._suggest[FORWARD])
@@ -1798,8 +1798,8 @@ def test_reverse_suggestions_bar(window, app):
 
 
 def test_double_click_forward_makes_cable_primary(window, app):
-    from midiremap.core.profile import FORWARD, primary_pairs
-    from midiremap.ui.cable_view import PRIMARY_HINT
+    from remap.core.profile import FORWARD, primary_pairs
+    from remap.ui.cable_view import PRIMARY_HINT
     page, ed = cables_page(window)
     item = secondary_cable(ed)
     primary = next(c for c in ed.cable_items if c.cable.primary)
@@ -1820,7 +1820,7 @@ def test_double_click_forward_makes_cable_primary(window, app):
 
 
 def test_double_click_reverse_sets_forward_rule(window, app):
-    from midiremap.core.profile import REVERSE, primary_pairs
+    from remap.core.profile import REVERSE, primary_pairs
     page, ed = reverse_page(window)
     item = secondary_cable(ed)
     b, a = item.ends  # в ←: нота цели b ведёт назад на исходную a
@@ -1857,7 +1857,7 @@ def test_double_click_forward_keeps_every_other_cable(window, app):
 
 
 def test_double_click_reverse_keeps_every_other_cable(window, app):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = cables_page(window, accept=False)
     page.assign_note([38], 38)              # → 38 «Snare: Center» -> 38; в ← выведено 38 -> 38 (основной)
     page.set_direction(REVERSE)
@@ -1874,7 +1874,7 @@ def test_double_click_reverse_keeps_every_other_cable(window, app):
 
 
 def test_reverse_double_click_undo_restores_exactly(window, app):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, ed = cables_page(window, accept=False)
     page.assign_note([38], 38)
     page.set_direction(REVERSE)
@@ -1890,7 +1890,7 @@ def test_reverse_double_click_undo_restores_exactly(window, app):
 
 
 def test_undo_redo_switch_to_direction_of_the_step(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
+    from remap.core.profile import FORWARD, REVERSE
     page, ed = reverse_page(window)
     note = ed.pool_rows[0].notes[0]
     page.toggle_strike([note])  # шаг в ←
@@ -1933,8 +1933,8 @@ def test_save_dialog_forward_only_in_reverse(window, app, storage):
 
 
 def test_direction_switch_keeps_group_and_own_collapse_state(window, app):
-    from midiremap.core.profile import FORWARD, REVERSE
-    from midiremap.ui.cable_layout import TARGET_PREFIX
+    from remap.core.profile import FORWARD, REVERSE
+    from remap.ui.cable_layout import TARGET_PREFIX
     page, ed = cables_page(window, size=(1300, 600))
     hat = ed.current.header(TARGET_PREFIX + "hi-hat")
     ed.view.verticalScrollBar().setValue(hat.y * cable_view.ROW)
@@ -1983,7 +1983,7 @@ def dbl_pool_row(app, ed, note):
 
 
 def test_primary_row_moves_first_after_double_click(window, app):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     for direction in ("forward", REVERSE):
         page, ed = cables_page(window) if direction == "forward" else reverse_page(window)
         item = secondary_cable(ed)
@@ -2013,8 +2013,8 @@ def test_kick_bundle_primary_first_in_reverse(window, app):
 
 
 def test_double_click_unassigned_free_number_is_primary(window, app):
-    from midiremap.core.profile import primary_pairs
-    from midiremap.ui.cable_view import SAME_NUMBER_HINT
+    from remap.core.profile import primary_pairs
+    from remap.ui.cable_view import SAME_NUMBER_HINT
     page, ed = bare_page(window)
     (t,) = shared_numbers(page.work, 1)
     item = ed.pool_items[t]
@@ -2030,7 +2030,7 @@ def test_double_click_unassigned_free_number_is_primary(window, app):
 
 
 def test_double_click_unassigned_occupied_number_stays_secondary_forward(window, app):
-    from midiremap.core.profile import primary_pairs
+    from remap.core.profile import primary_pairs
     page, ed = bare_page(window)
     t, u = shared_numbers(page.work, 2)
     page.work.rules = {u: Rule.map_to(t)}  # на номер t уже идёт кабель от u — он основной
@@ -2047,7 +2047,7 @@ def test_double_click_unassigned_occupied_number_stays_secondary_forward(window,
 
 
 def test_double_click_unassigned_occupied_number_stays_secondary_reverse(window, app):
-    from midiremap.core.profile import REVERSE, primary_pairs
+    from remap.core.profile import REVERSE, primary_pairs
     page, ed = bare_page(window)
     t, u = shared_numbers(page.work, 2)
     page.work.rules = {t: Rule.map_to(u)}  # прямое t -> u; обратно u -> t — основной кабель на исходную t
@@ -2064,7 +2064,7 @@ def test_double_click_unassigned_occupied_number_stays_secondary_reverse(window,
 
 
 def test_double_click_unassigned_missing_number_and_partial_alias_row(window, app):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     gm = MapRef(TEMPLATE, "General MIDI")  # GM — только 35–81: у EZD3 есть ноты без пары
     page = window.profiles_page
     new_profile(page, "EZD3 to GM", EZD3, gm)
@@ -2095,7 +2095,7 @@ def test_double_click_unassigned_missing_number_and_partial_alias_row(window, ap
 
 
 def test_double_click_struck_row_does_nothing(window, app):
-    from midiremap.ui.cable_view import SAME_NUMBER_HINT
+    from remap.ui.cable_view import SAME_NUMBER_HINT
     page, ed = bare_page(window)
     (t,) = shared_numbers(page.work, 1)
     page.toggle_strike([t])
@@ -2126,7 +2126,7 @@ def test_double_click_unassigned_scrolls_row_into_view(window, app):
 
 
 def test_direction_button_centered_between_map_buttons(window, app):
-    from midiremap.core.profile import REVERSE
+    from remap.core.profile import REVERSE
     page, _ed = cables_page(window)
     for size in ((1300, 900), (1500, 900)):
         window.resize(*size)
@@ -2141,7 +2141,7 @@ def test_direction_button_centered_between_map_buttons(window, app):
     assert page.from_btn.text() == page.work.target_map.name and page.direction_btn.property("dir") == REVERSE
 
 def test_comboboxes_draw_own_arrow_and_style_popup(window, app):
-    from midiremap.ui.combo import ComboBox
+    from remap.ui.combo import ComboBox
     page = window.profiles_page
     assert isinstance(page.combo, ComboBox) and isinstance(window.profile_combo, ComboBox)
     assert "QComboBox::drop-down" in window.styleSheet() and "border: none" in window.styleSheet()
@@ -2168,7 +2168,7 @@ def badge_point(ed, slot):
 
 
 def test_drop_zones_feedback_and_tooltip(window, app):
-    from midiremap.ui.cable_view import NUMBER_DROP_HINT
+    from remap.ui.cable_view import NUMBER_DROP_HINT
     page, ed = cables_page(window, accept=False)
     key, notes = three_note_articulation(page.work)
     slot = "a:" + key
@@ -2189,7 +2189,7 @@ def test_drop_zones_feedback_and_tooltip(window, app):
 
 
 def test_drop_on_number_line_maps_exactly_forward(window, app):
-    from midiremap.core.profile import primary_pairs
+    from remap.core.profile import primary_pairs
     page, ed = cables_page(window, accept=False)
     key, notes = three_note_articulation(page.work)
     slot = "a:" + key
@@ -2362,7 +2362,7 @@ def test_drop_on_single_note_articulation_number(window, app, direction):
 # --- полировка: Match by number, статус, горячие клавиши, прокрутка ---
 
 def test_match_by_number_button_one_undo_step(window, app):
-    from midiremap.core.profile import REVERSE, number_matches, primary_pairs
+    from remap.core.profile import REVERSE, number_matches, primary_pairs
     page, ed = bare_page(window)
     t, u = shared_numbers(page.work, 2)
     page.work.rules = {u: Rule.map_to(t)}  # номер t уже занят кабелем от u
@@ -2395,7 +2395,7 @@ def test_names_differ_tooltip_on_real_maps(window):
     assert page.match_by_number() == 122
     assert page.status.text() == "Matched 122 notes by number"  # без числа разных имён
     # подсказка кабеля — у любого кабеля с разными именами, в обоих направлениях
-    from midiremap.core.profile import REVERSE, names_differ
+    from remap.core.profile import REVERSE, names_differ
     for direction in (None, REVERSE):
         if direction:
             page.set_direction(direction)
@@ -2408,7 +2408,7 @@ def test_names_differ_tooltip_on_real_maps(window):
 
 
 def test_status_fades_after_last_message(window, app):
-    from midiremap.ui.profiles_page import STATUS_MS
+    from remap.ui.profiles_page import STATUS_MS
     page = window.profiles_page
     page.set_status("One")
     assert page.status.text() == "One" and page._status_fx.opacity() == 1.0

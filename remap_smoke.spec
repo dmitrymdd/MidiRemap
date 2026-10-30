@@ -1,14 +1,14 @@
 # PyInstaller spec для пробной сборки PySide6 (этап 5). Сборка папкой (onedir).
-# Запуск: .venv\Scripts\pyinstaller midiremap_smoke.spec --noconfirm
-# Результат: dist\MidiRemapSmoke\MidiRemapSmoke.exe
+# Запуск: .venv\Scripts\pyinstaller remap_smoke.spec --noconfirm
+# Результат: dist\REMAPSmoke\REMAPSmoke.exe
 #
 # При переходе на настоящее приложение (этап 9) в Analysis нужно добавить данные пакета —
-# встроенные шаблоны карт src/midiremap/templates/maps/*.json:
+# встроенные шаблоны карт src/remap/templates/maps/*.json:
 #   from PyInstaller.utils.hooks import collect_data_files
-#   datas=collect_data_files("midiremap.templates")
+#   datas=collect_data_files("remap.templates")
 
 a = Analysis(
-    ["src/midiremap/ui/smoke.py"],
+    ["src/remap/ui/smoke.py"],
     pathex=["src"],
     binaries=[],
     datas=[],
@@ -25,7 +25,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MidiRemapSmoke",
+    name="REMAPSmoke",
     console=False,
     upx=False,
 )
@@ -33,18 +33,18 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    name="MidiRemapSmoke",
+    name="REMAPSmoke",
     upx=False,
 )
 
 # Отладочный вариант с консолью: видны print/traceback и сообщения Qt
-# (например, с QT_DEBUG_PLUGINS=1). Результат: dist\MidiRemapSmoke-debug\MidiRemapSmoke-debug.exe
+# (например, с QT_DEBUG_PLUGINS=1). Результат: dist\REMAPSmoke-debug\REMAPSmoke-debug.exe
 exe_debug = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MidiRemapSmoke-debug",
+    name="REMAPSmoke-debug",
     console=True,
     upx=False,
 )
@@ -52,6 +52,6 @@ coll_debug = COLLECT(
     exe_debug,
     a.binaries,
     a.datas,
-    name="MidiRemapSmoke-debug",
+    name="REMAPSmoke-debug",
     upx=False,
 )

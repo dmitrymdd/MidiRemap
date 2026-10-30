@@ -10,9 +10,9 @@ pytestmark = pytest.mark.ui
 from PySide6.QtCore import QMimeData, QUrl
 from PySide6.QtWidgets import QApplication
 
-from midiremap.core import RemapProfile, Rule, convert, legacy_profile
-from midiremap.storage import Storage
-from midiremap.ui.main_window import (
+from remap.core import RemapProfile, Rule, convert, legacy_profile
+from remap.storage import Storage
+from remap.ui.main_window import (
     MainWindow, batch_summary, format_report, midi_paths_from_mime, report_summary,
 )
 
@@ -28,7 +28,7 @@ def window(app, tmp_path):
 
 
 def test_window_constructs_with_seeded_legacy_profile(window):
-    assert window.windowTitle() == "MidiRemap"
+    assert window.windowTitle() == "REMAP"
     assert window.profile_combo.count() == 1
     assert window.profile_combo.currentText() == legacy_profile().name
     assert window.selected_profile().rules == legacy_profile().rules
@@ -194,8 +194,8 @@ def test_copy_button_says_files_for_several_outputs(window, tmp_path):
 
 
 def test_failed_file_shows_first_error_line_under_its_name(window, tmp_path):
-    from midiremap.core import FileResult
-    from midiremap.ui.main_window import result_details, result_line
+    from remap.core import FileResult
+    from remap.ui.main_window import result_details, result_line
     res = FileResult(tmp_path / "x.mid", tmp_path / "x_remapped.mid", error="Bad header\nat byte 14\nchunk MThd")
     assert result_line(res) == "✗ Bad header" and result_details(res) == res.error
     a, b = _files(tmp_path, "a.mid", "b.mid")

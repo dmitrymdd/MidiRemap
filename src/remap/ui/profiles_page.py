@@ -10,8 +10,8 @@
 пишется назад — карта цели обратного профиля это КОПИЯ ИСХОДНОЙ карты (туда ложится Write to), его правила —
 обратные правила (_put). Подсказки, свёрнутость вида и «скрыть подсказки» — свои у каждого направления.
 
-Логики профилей здесь нет — только вызовы midiremap.core (suggestion_targets, plan_suggestions, apply_suggested,
-assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и midiremap.storage. Диалоги вынесены
+Логики профилей здесь нет — только вызовы remap.core (suggestion_targets, plan_suggestions, apply_suggested,
+assign_plan, assign_to_articulation, connect_same_numbers, with_write_to) и remap.storage. Диалоги вынесены
 в методы ask_*/confirm/show_error, чтобы тесты могли их подменить.
 
 Подсказки: когда пользователь задал обе карты (новый профиль или смена карты), ноты без правила, чьё имя
@@ -424,7 +424,7 @@ class ProfilesPage(QWidget):
         return dlg.to_keep if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "MidiRemap", text)
+        QMessageBox.warning(self, "REMAP", text)
 
     # --- список (комбобокс профилей) ---
 

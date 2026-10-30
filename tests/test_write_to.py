@@ -1,8 +1,8 @@
 """with_write_to(): выбор Write to в копии целевой карты профиля и перенаправление правил map."""
 import pytest
 
-from midiremap.core.notemap import NoteMap, validate_map
-from midiremap.core.profile import RemapProfile, Rule, with_write_to
+from remap.core.notemap import NoteMap, validate_map
+from remap.core.profile import RemapProfile, Rule, with_write_to
 
 SRC = NoteMap("src", {36: "Kick", 38: "Snare", 40: "Rim", 51: "Ride", 53: "Bell", 60: "Snare 2"})
 TGT = NoteMap("tgt", {36: "Kick", 38: "Snare", 39: "snare ", 40: "Snare", 51: "Ride"}, primary={38})

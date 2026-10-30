@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from midiremap.storage import Storage
+from remap.storage import Storage
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

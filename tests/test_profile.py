@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from midiremap.core.notemap import NoteMap
-from midiremap.core.notenames import load_notenames
-from midiremap.core.profile import ProfileFormatError, RemapProfile, Rule, legacy_profile
+from remap.core.notemap import NoteMap
+from remap.core.notenames import load_notenames
+from remap.core.profile import ProfileFormatError, RemapProfile, Rule, legacy_profile
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'reaper_custom_with_order.txt'
@@ -61,8 +61,8 @@ def test_round_trip_with_maps_cyrillic_order_and_extra_lines():
 
 
 def test_template_map_meta_survives_profile_round_trip(tmp_path):
-    from midiremap.storage import Storage
-    from midiremap.templates import load_map_template
+    from remap.storage import Storage
+    from remap.templates import load_map_template
     sd3 = load_map_template('Superior Drummer 3')
     assert sd3.meta.status == 'verified' and sd3.meta.source
     p = RemapProfile('GM → SD3', target_map=sd3, rules={35: Rule.map_to(36)})

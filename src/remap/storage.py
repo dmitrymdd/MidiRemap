@@ -20,7 +20,7 @@ from .core.notemap import NoteMap, map_from_json, map_to_json
 from .core.notenames import ParseIssue, load_notenames
 from .core.profile import RemapProfile
 
-APP_DIR_NAME = "MidiRemap"
+APP_DIR_NAME = "REMAP"
 MAP_EXT = ".json"
 LEGACY_MAP_EXT = ".txt"
 PROFILE_EXT = ".json"
@@ -31,11 +31,11 @@ _RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f
 
 
 def default_root() -> Path:
-    """%APPDATA%\\MidiRemap на Windows, иначе ~/.midiremap."""
+    """%APPDATA%\\REMAP на Windows, иначе ~/.remap."""
     appdata = os.environ.get("APPDATA")
     if sys.platform == "win32" and appdata:
         return Path(appdata) / APP_DIR_NAME
-    return Path.home() / ".midiremap"
+    return Path.home() / ".remap"
 
 
 def sanitize_id(name: str) -> str:

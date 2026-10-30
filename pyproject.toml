@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "midiremap"
+name = "remap"
 version = "0.0.1"
 description = "Convert drum MIDI files from one note layout to another"
 requires-python = ">=3.10"
@@ -18,7 +18,7 @@ addopts = "--strict-markers"
 markers = ["ui: tests of the Qt UI (PySide6, offscreen); quick core-only run: pytest -m \"not ui\""]
 
 [tool.setuptools.package-data]
-"midiremap.templates" = ["maps/*.json"]
+"remap.templates" = ["maps/*.json"]
 
 [tool.ruff]
 line-length = 120

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from midiremap.core import convert_batch, legacy_profile
-from midiremap.core.errors import (
+from remap.core import convert_batch, legacy_profile
+from remap.core.errors import (
     DAMAGED, NO_ACCESS, NOT_FOUND, NOT_MIDI, OUTPUT_FOLDER_MISSING, UNSUPPORTED_TYPE, describe_error,
     technical_details,
 )

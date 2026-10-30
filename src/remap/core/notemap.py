@@ -302,7 +302,7 @@ def map_from_dict(data: Any) -> NoteMap:
     if not isinstance(data, dict):
         raise MapFormatError("a map must be a JSON object")
     if data.get("kind") != MAP_KIND:
-        raise MapFormatError(f"not a MidiRemap note map (kind = {data.get('kind')!r})")
+        raise MapFormatError(f"not a REMAP note map (kind = {data.get('kind')!r})")
     version = data.get("format")
     if version != MAP_FORMAT_VERSION or isinstance(version, bool):
         raise MapFormatError(f"unsupported map format version: {version!r} (supported: {MAP_FORMAT_VERSION})")

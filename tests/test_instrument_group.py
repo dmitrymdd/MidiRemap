@@ -1,5 +1,5 @@
-from midiremap.core.notemap import instrument_group, keyword_group, normalize_name
-from midiremap.templates import load_map_template
+from remap.core.notemap import instrument_group, keyword_group, normalize_name
+from remap.templates import load_map_template
 
 
 def test_colon_form_has_priority():
@@ -73,7 +73,7 @@ def test_grancassa_is_orchestral_percussion_not_kit_kick():
 
 
 def test_group_rank_order_for_display():
-    from midiremap.core.notemap import GROUP_ORDER, group_rank
+    from remap.core.notemap import GROUP_ORDER, group_rank
     assert GROUP_ORDER == ("Kick", "Snare", "Hi-Hat", "Toms", "Ride", "Crash", "Cymbal", "China", "Splash",
                            "Percussion", "Other")
     ranks = [group_rank(g) for g in ("Kick", "Snare", "Hi-Hat", "Racktom 1", "Floortom 2", "Ride", "Crash 2",
@@ -85,7 +85,7 @@ def test_group_rank_order_for_display():
 
 
 def test_display_group_and_sort_key():
-    from midiremap.core.notemap import OTHER_GROUP, display_group, group_sort_key
+    from remap.core.notemap import OTHER_GROUP, display_group, group_sort_key
     assert display_group("Kick: Hit") == ("kick", "Kick")
     assert display_group("Acoustic Snare") == ("snare", "Snare")
     assert display_group("Zzz") == (OTHER_GROUP, "Other")

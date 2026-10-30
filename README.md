@@ -1,4 +1,4 @@
-# MidiRemap
+# REMAP
 
 Convert drum MIDI files from one note layout to another.
 
@@ -9,12 +9,12 @@ exactly as they were.
 ## Download
 
 Get the latest Windows build from the [Releases](https://github.com/dmitrymdd/MidiRemap/releases) page.
-Unzip the folder anywhere and run `MidiRemap.exe`. No installation is needed.
+Unzip the folder anywhere and run `REMAP.exe`. No installation is needed.
 
 ## How to use
 
 1. **Load a MIDI file.** Drag a `.mid` file into the window, click the drop area to browse,
-   or copy the file in Explorer and press **Ctrl+V** in MidiRemap.
+   or copy the file in Explorer and press **Ctrl+V** in REMAP.
 2. **Pick a remap profile** from the list. **Edit** opens it in the **Profiles** tab.
 3. **Convert.** Click **Convert** or press **Enter**. The result is saved next to the source
    file as `<name>_remapped.mid`.
@@ -22,7 +22,7 @@ Unzip the folder anywhere and run `MidiRemap.exe`. No installation is needed.
    paste the file into a folder or any DAW that accepts pasted files.
    Click the output card to show the file in Explorer.
 
-After each conversion MidiRemap shows a report:
+After each conversion REMAP shows a report:
 
 - how many hits were remapped, deleted or kept on their original note;
 - notes that have no rule in the profile;
@@ -58,10 +58,10 @@ same target note at the same tick are merged into one, and the highest velocity 
 Create and edit profiles in the **Profiles** tab: choose a source map and a target map
 (built-in templates or your own maps from the **Maps** tab), click **Accept suggestions** to map
 notes with matching names, then choose targets for the rest. Select several rows to map them to
-one target at once. On first run MidiRemap creates one profile, "GM → SD3 (legacy)", the scheme
+one target at once. On first run REMAP creates one profile, "GM → SD3 (legacy)", the scheme
 of the first version of the program; you can edit or delete it.
 
-Profiles are stored as JSON files in `%APPDATA%\MidiRemap\profiles\`. Example:
+Profiles are stored as JSON files in `%APPDATA%\REMAP\profiles\`. Example:
 
 ```json
 {
@@ -78,7 +78,7 @@ Profiles are stored as JSON files in `%APPDATA%\MidiRemap\profiles\`. Example:
 ```
 
 `source_map` and `target_map` are optional note-name maps (`{"name": ..., "names": {"36": "Kick"}}`).
-When a target map is present, MidiRemap uses it to warn about notes that land on empty or
+When a target map is present, REMAP uses it to warn about notes that land on empty or
 mismatched slots.
 
 ## Running from source
@@ -89,7 +89,7 @@ Requires Python 3.10 or newer on Windows.
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 .venv\Scripts\python -m pip install -e .
-.venv\Scripts\python -m midiremap
+.venv\Scripts\python -m remap
 ```
 
 Run the tests with `.venv\Scripts\python -m pytest`.

@@ -1,8 +1,8 @@
 import pytest
 
-from midiremap.core.notemap import NoteMap
-from midiremap.core.profile import RemapProfile, Rule
-from midiremap.storage import Storage, default_root, id_taken, sanitize_id
+from remap.core.notemap import NoteMap
+from remap.core.profile import RemapProfile, Rule
+from remap.storage import Storage, default_root, id_taken, sanitize_id
 
 
 @pytest.fixture
@@ -11,7 +11,7 @@ def st(tmp_path):
 
 
 def test_default_root_is_app_folder():
-    assert default_root().name in ('MidiRemap', '.midiremap')
+    assert default_root().name in ('REMAP', '.remap')
 
 
 def test_empty_storage_lists_nothing(st):

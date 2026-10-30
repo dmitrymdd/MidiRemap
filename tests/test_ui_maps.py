@@ -9,12 +9,12 @@ pytestmark = pytest.mark.ui
 
 from PySide6.QtCore import Qt
 
-from midiremap.core.notemap import NoteMap
-from midiremap.core.pitch import pitch_name
-from midiremap.core.notenames import parse_notenames
-from midiremap.templates import load_map_template
-from midiremap.ui.main_window import PAGE_MAPS, MainWindow
-from midiremap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef
+from remap.core.notemap import NoteMap
+from remap.core.pitch import pitch_name
+from remap.core.notenames import parse_notenames
+from remap.templates import load_map_template
+from remap.ui.main_window import PAGE_MAPS, MainWindow
+from remap.ui.maps_page import COL_NAME, COL_NOTE, OTHERS_ROLE, REF_ROLE, TEMPLATE, USER, MapRef
 
 FIXTURE = Path(__file__).parent / "fixtures" / "reaper_custom_with_order.txt"
 
@@ -115,7 +115,7 @@ def test_same_name_badge(window, storage, app):
     # дубли без Write to больше не подсвечиваются и не попадают в замечания
     assert m.data(m.note_index(36, COL_NAME), Qt.ItemDataRole.BackgroundRole) is None
     assert "Write to" not in page.issues_label.text()
-    from midiremap.ui.maps_page import NameDelegate
+    from remap.ui.maps_page import NameDelegate
     assert isinstance(page.table.itemDelegateForColumn(COL_NAME), NameDelegate)
     window.resize(1000, 700)
     window.show()
@@ -285,7 +285,7 @@ def test_maps_tab_disables_convert_shortcuts(window):
 
 
 def test_columns_without_write_to(window, storage):
-    from midiremap.ui.maps_page import COLUMNS
+    from remap.ui.maps_page import COLUMNS
     page = window.maps_page
     page.select(MapRef(TEMPLATE, "EZdrummer 3"))
     assert COLUMNS == ("NOTE", "NAME") and page.model.columnCount() == 2  # высоты (C#1) нет — только в подсказке
@@ -300,7 +300,7 @@ def test_columns_without_write_to(window, storage):
 
 
 def test_rows_grouped_by_instrument(window):
-    from midiremap.core.notemap import instrument_group
+    from remap.core.notemap import instrument_group
     page = window.maps_page
     page.select(MapRef(TEMPLATE, "Superior Drummer 3"))
     m = page.model

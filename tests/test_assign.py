@@ -1,8 +1,8 @@
 """Назначение нот на цель: совпадение номеров (assign_plan / assign_to_articulation) и группа (connect_same_numbers)."""
 import pytest
 
-from midiremap.core.notemap import NoteMap
-from midiremap.core.profile import (
+from remap.core.notemap import NoteMap
+from remap.core.profile import (
     RemapProfile, Rule, assign_plan, assign_to_articulation, connect_same_numbers, match_by_number, names_differ,
     number_matches,
 )

@@ -1,9 +1,9 @@
 import copy
 
-from midiremap.core.notemap import NoteMap, articulations, normalize_name
-from midiremap.core.profile import NO_RULE, RemapProfile, Rule, validate_profile
-from midiremap.core.suggest import Suggestion, apply_suggestions, suggest_rules
-from midiremap.templates import load_map_template
+from remap.core.notemap import NoteMap, articulations, normalize_name
+from remap.core.profile import NO_RULE, RemapProfile, Rule, validate_profile
+from remap.core.suggest import Suggestion, apply_suggestions, suggest_rules
+from remap.templates import load_map_template
 
 
 def maps(target_primary=()):
@@ -128,7 +128,7 @@ def test_templates_ezd3_to_sd3_consistent_with_data():
 # --- подсказки в редакторе профиля: логика назначения (assign_plan) ---
 
 def test_plan_and_apply_suggested_follow_assignment_logic():
-    from midiremap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
+    from remap.core.suggest import apply_suggested, plan_suggestions, suggestion_targets
     src, tgt = maps()
     src.names.update({44: 'Hat Closed', 59: 'Ride', 126: 'Ride', 80: 'Ride'})
     p = RemapProfile('p', src, tgt, {51: Rule.delete()})

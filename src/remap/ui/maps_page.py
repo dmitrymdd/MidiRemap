@@ -1,7 +1,7 @@
 """Менеджер и редактор карт нот (PySide6): список шаблонов и карт пользователя, таблица нот 0–127.
 
-Логики карт здесь нет — только вызовы midiremap.core (duplicate_map, finalize_edit, validate_map, экспорт)
-и midiremap.storage. Диалоги вынесены в методы ask_*/choose_*/show_error, чтобы тесты могли их подменить.
+Логики карт здесь нет — только вызовы remap.core (duplicate_map, finalize_edit, validate_map, экспорт)
+и remap.storage. Диалоги вынесены в методы ask_*/choose_*/show_error, чтобы тесты могли их подменить.
 
 Write to (primary) на вкладке Maps не правится: его выбирают в профиле, в копии целевой карты.
 В JSON карты primary остаётся (старые файлы читаются). Имя на нескольких нотах — бейдж «+N» рядом с именем.
@@ -649,7 +649,7 @@ class MapsPage(QWidget):
         return path or None
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "MidiRemap", text)
+        QMessageBox.warning(self, "REMAP", text)
 
     # --- список ---
 

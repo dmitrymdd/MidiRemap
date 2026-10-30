@@ -2,12 +2,12 @@ import json
 
 import pytest
 
-from midiremap.core.notemap import (
+from remap.core.notemap import (
     MapFormatError, MapMeta, NoteMap, articulations, duplicate_map, finalize_edit, map_from_json,
     map_to_dict, map_to_json, primary_note, set_note_name, validate_map,
 )
-from midiremap.core.pitch import OCTAVE_OFFSET, note_tip, pitch_name
-from midiremap.core.profile import RemapProfile, Rule
+from remap.core.pitch import OCTAVE_OFFSET, note_tip, pitch_name
+from remap.core.profile import RemapProfile, Rule
 
 
 def kit(primary=()):
@@ -108,7 +108,7 @@ def test_old_profile_without_primary_and_meta_loads():
 
 
 def test_profile_with_bad_embedded_meta_rejected():
-    from midiremap.core.profile import ProfileFormatError
+    from remap.core.profile import ProfileFormatError
     text = ('{"format": 1, "name": "x", "rules": [],'
             ' "target_map": {"name": "m", "meta": {"status": "maybe"}}}')
     with pytest.raises(ProfileFormatError):

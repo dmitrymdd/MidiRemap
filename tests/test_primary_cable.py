@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from midiremap.core import profile as profile_module
-from midiremap.core.notemap import NoteMap
-from midiremap.core.profile import (
+from remap.core import profile as profile_module
+from remap.core.notemap import NoteMap
+from remap.core.profile import (
     REVERSE, DST_NOT_IN_TARGET, KEEP_DIFFERENT, SRC_NOT_IN_SOURCE, RemapProfile, Rule, derive_reverse,
     keep_old_target_reverse, normalized_reverse, pin_primary, primary_pairs, validate_profile, with_forward_primary, with_primary_cable,
 )
@@ -221,7 +221,7 @@ def test_validate_profile_reverse_names_profile_maps():
 # --- двойной клик по Unassigned: занятый номер — прежний основной остаётся ---
 
 def test_keep_existing_primary_on_occupied_number():
-    from midiremap.core.profile import connect_same_numbers, keep_existing_primary, sync_reverse
+    from remap.core.profile import connect_same_numbers, keep_existing_primary, sync_reverse
     # 70 -> 53 основной (алиасы 60, 61, 62 копируют его); подключаем 53 -> 53 — номер занят
     p = prof({70: M(53)}, RIDE)
     assert primary_pairs(p) == {(70, 53)}

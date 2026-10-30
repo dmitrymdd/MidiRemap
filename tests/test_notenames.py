@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from midiremap.core.notemap import normalize_name
-from midiremap.core.notenames import (
+from remap.core.notemap import normalize_name
+from remap.core.notenames import (
     export_notenames, load_notenames, parse_notenames, save_notenames,
 )
 
@@ -111,13 +111,13 @@ def test_normalize_name():
 # --- экспорт «одна нота на артикуляцию» ---
 
 def _kit():
-    from midiremap.core.notemap import NoteMap
+    from remap.core.notemap import NoteMap
     return NoteMap('kit', {36: 'Kick', 35: 'Kick', 38: 'Snare', 51: 'Ride', 126: 'ride', 42: 'HH', 22: 'HH'},
                    order=[38, 36, 35, 51, 126, 42, 22, 200], extra_lines=['# keep me'], primary={36, 126})
 
 
 def test_primary_only_notes():
-    from midiremap.core.notenames import primary_only_notes
+    from remap.core.notenames import primary_only_notes
     keep, skipped = primary_only_notes(_kit())
     assert keep == {36, 38, 126} and skipped == ['HH']
 
@@ -132,6 +132,6 @@ def test_export_primary_only_keeps_no_lines_consistent():
 
 
 def test_export_primary_only_without_order():
-    from midiremap.core.notemap import NoteMap
+    from remap.core.notemap import NoteMap
     m = NoteMap('x', {36: 'Kick', 38: 'Snare'})
     assert export_notenames(m, primary_only=True) == export_notenames(m)

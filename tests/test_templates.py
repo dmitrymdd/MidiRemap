@@ -3,11 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from midiremap.core.notenames import load_notenames
-from midiremap.templates import list_map_templates, load_map_template
+from remap.core.notenames import load_notenames
+from remap.templates import list_map_templates, load_map_template
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATES_DIR = ROOT / 'src' / 'midiremap' / 'templates' / 'maps'
+TEMPLATES_DIR = ROOT / 'src' / 'remap' / 'templates' / 'maps'
 
 
 def _builder():

@@ -1,9 +1,9 @@
-"""Главное окно MidiRemap на PySide6: вкладки Convert (загрузка файла, выбор профиля, конвертация, отчёт,
+"""Главное окно REMAP на PySide6: вкладки Convert (загрузка файла, выбор профиля, конвертация, отчёт,
 вывод результата), Profiles (редактор профилей, ui/profiles_page.py) и Maps (менеджер и редактор карт нот,
 ui/maps_page.py).
 
-Запуск: python -m midiremap
-Логики конвертации здесь нет — только вызов midiremap.core.convert и показ отчёта.
+Запуск: python -m remap
+Логики конвертации здесь нет — только вызов remap.core.convert и показ отчёта.
 """
 from __future__ import annotations
 
@@ -425,7 +425,7 @@ class MainWindow(QMainWindow):
         except OSError as e:
             self._seed_error = f"Cannot create the profiles folder: {e}"
 
-        self.setWindowTitle("MidiRemap")
+        self.setWindowTitle("REMAP")
         self.setMinimumSize(760, 580)
         self._default_size()
         self.setAcceptDrops(True)
@@ -463,12 +463,12 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(24, 20, 24, 16)
         root.setSpacing(8)
 
-        logo = _label("MR", "logo")
+        logo = _label("R", "logo")
         logo.setFixedSize(44, 44)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        titles.addWidget(_label("MidiRemap", "title"))
+        titles.addWidget(_label("REMAP", "title"))
         titles.addWidget(_label("Drum MIDI note remapper", "subtitle"))
         self.nav_convert = QPushButton("Convert")
         self.nav_profiles = QPushButton("Profiles")
@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
 
     def show_error(self, text: str) -> None:
         """Диалог ошибки (тесты подменяют)."""
-        QMessageBox.critical(self, "MidiRemap: error", text)
+        QMessageBox.critical(self, "REMAP: error", text)
 
     def convert(self) -> None:
         """Конвертация всех исходных файлов выбранным профилем и направлением; ошибка файла не останавливает остальные."""
@@ -897,7 +897,7 @@ class MainWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("MidiRemap")
+    app.setApplicationName("REMAP")
     window = MainWindow()
     window.show()
     return app.exec()

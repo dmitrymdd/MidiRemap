@@ -4,7 +4,7 @@ from pathlib import Path
 
 import mido
 
-from midiremap.core import (
+from remap.core import (
     CategoryCount, ConversionReport, RemapProfile, Rule, analyze, convert, convert_batch, output_path_for,
 )
 

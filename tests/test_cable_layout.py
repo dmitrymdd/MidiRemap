@@ -4,10 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from midiremap.core.notemap import NoteMap, articulations, normalize_name
-from midiremap.core.profile import RemapProfile, Rule
-from midiremap.templates import load_map_template
-from midiremap.ui.cable_layout import (
+from remap.core.notemap import NoteMap, articulations, normalize_name
+from remap.core.profile import RemapProfile, Rule
+from remap.templates import load_map_template
+from remap.ui.cable_layout import (
     DELETE, KEEP, MAPPED, POOL_PREFIX, TARGET_PREFIX, UNASSIGNED, Placement, TargetRow, build_layout,
     initial_show_all, placement, slot_key, target_group_keys,
 )
@@ -217,7 +217,7 @@ def test_slot_keys_compare_names_normalized():
 
 def test_core_storage_and_layout_do_not_import_qt():
     """Ядро, хранилище и раскладка «кабелей» — без Qt (один отдельный процесс на все три)."""
-    code = ("import sys, midiremap.core, midiremap.storage, midiremap.ui.cable_layout; "
+    code = ("import sys, remap.core, remap.storage, remap.ui.cable_layout; "
             "assert not [m for m in sys.modules if m.startswith(('PySide6', 'shiboken6'))], 'Qt imported'")
     src = str(Path(__file__).resolve().parents[1] / "src")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [src, os.environ.get("PYTHONPATH")]))}
@@ -568,7 +568,7 @@ def test_bundle_primary_first_in_reverse_kick_case():
 
 
 def _ranks(headers):
-    from midiremap.core.notemap import group_rank
+    from remap.core.notemap import group_rank
     return [group_rank(None if h.label in ("Other", "Not in the source map", "Not in the target map") else h.label)
             for h in headers]
 
@@ -593,7 +593,7 @@ def test_group_order_same_in_pool_and_target_both_directions():
 
 
 def test_group_order_maps_table_matches():
-    from midiremap.ui.maps_page import group_rows
+    from remap.ui.maps_page import group_rows
     sd3 = load_map_template("Superior Drummer 3")
     heads = [r.label for r in group_rows(sd3.names, list(range(128))) if r.is_header]
     lay = build_layout(RemapProfile("p", None, sd3), no_collapse(), show_all=initial_show_all(RemapProfile("p", None, sd3)))

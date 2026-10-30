@@ -8,8 +8,8 @@ from pathlib import Path
 import mido
 import pytest
 
-from midiremap.core import convert, legacy_profile
-from midiremap.core.legacy_map import NOTE_MAP
+from remap.core import convert, legacy_profile
+from remap.core.legacy_map import NOTE_MAP
 
 ROOT = Path(__file__).resolve().parent.parent
 

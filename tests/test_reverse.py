@@ -7,13 +7,13 @@ from pathlib import Path
 import mido
 import pytest
 
-from midiremap.core import FORWARD, REVERSE, ProfileFormatError, RemapProfile, Rule, analyze, convert, legacy_profile
-from midiremap.core.legacy_map import NOTE_MAP
-from midiremap.core.notemap import NoteMap
-from midiremap.core.profile import derive_reverse, missing_rules, primary_pairs, sync_reverse
-from midiremap.core.suggest import apply_suggested, suggestion_targets
-from midiremap.templates import load_map_template
-from midiremap.ui.cable_layout import build_layout
+from remap.core import FORWARD, REVERSE, ProfileFormatError, RemapProfile, Rule, analyze, convert, legacy_profile
+from remap.core.legacy_map import NOTE_MAP
+from remap.core.notemap import NoteMap
+from remap.core.profile import derive_reverse, missing_rules, primary_pairs, sync_reverse
+from remap.core.suggest import apply_suggested, suggestion_targets
+from remap.templates import load_map_template
+from remap.ui.cable_layout import build_layout
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = sorted(p for p in (ROOT / 'samples' / 'midi').glob('*.mid') if not p.stem.endswith('_remapped'))

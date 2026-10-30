@@ -129,7 +129,7 @@ class RemapProfile:
         if not isinstance(data, dict):
             raise ProfileFormatError("a profile must be a JSON object")
         if "format" not in data:
-            raise ProfileFormatError("no 'format' field: this is not a MidiRemap profile")
+            raise ProfileFormatError("no 'format' field: this is not a REMAP profile")
         version = data["format"]
         if isinstance(version, bool) or version not in READ_VERSIONS:
             supported = ", ".join(map(str, READ_VERSIONS))

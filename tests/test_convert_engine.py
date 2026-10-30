@@ -5,9 +5,9 @@ import mido
 import pytest
 
 from legacy_reference import reference_convert_midi
-from midiremap.core import RemapProfile, Rule, analyze, convert, legacy_profile
-from midiremap.core.legacy_map import NOTE_MAP
-from midiremap.core.notemap import NoteMap
+from remap.core import RemapProfile, Rule, analyze, convert, legacy_profile
+from remap.core.legacy_map import NOTE_MAP
+from remap.core.notemap import NoteMap
 
 ROOT = Path(__file__).resolve().parent.parent
 # результаты работы программы (*_remapped.mid) могут лежать рядом — входами тестов они не являются

@@ -1,6 +1,6 @@
 """Пробное окно PySide6: проверка сборки .exe, тёмной темы и drag-in .mid.
 
-Запуск из исходников: python -m midiremap.ui.smoke
+Запуск из исходников: python -m remap.ui.smoke
 """
 
 import sys
@@ -67,10 +67,10 @@ class DropZone(QLabel):
 class SmokeWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MidiRemap — PySide6 smoke test")
+        self.setWindowTitle("REMAP — PySide6 smoke test")
         self.resize(560, 320)
 
-        title = QLabel("MidiRemap")
+        title = QLabel("REMAP")
         title.setStyleSheet(f"color: {TOKENS['accent']}; font-size: 22px; font-weight: 600;")
 
         central = QWidget()
