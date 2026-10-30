@@ -66,9 +66,23 @@ LABEL_FAMILY = "Barlow Condensed"
 MONO_WIDTH = 75.0  # ось wdth Martian Mono (75–112.5)
 LABEL_SPACING = 0.13  # межбуквенный интервал подписей, в em
 
+# --- Металл: две текстуры поверх любой металлической поверхности (файлы в assets/textures) ---
+METAL_BRUSHED_FILE, METAL_BRUSHED_TILE, METAL_BRUSHED_OPACITY = "metal009_brushed_tile.png", 512, 0.02  # шлифовка
+METAL_SCRATCH_FILE, METAL_SCRATCH_TILE, METAL_SCRATCH_OPACITY = "metal031_scratch_tile.png", 1024, 0.025  # царапины
+# плитка — логический размер в пикселях (картинка 1024² при 512 = DPR 2, 2048² при 1024 = DPR 2)
+
+# --- Утопленный блок: тень внутри и светлая кромка под ним ---
+RECESS_SHADOW_DY, RECESS_SHADOW_BLUR, RECESS_SHADOW_ALPHA = 2, 4, 0.95  # inset 0 2px 4px rgba(0,0,0,.95)
+RECESS_EDGE_LIGHT: RGBA = (255, 255, 255, 0.11)  # 0 1px 0 rgba(255,255,255,.11)
+RECESS_EDGE = 1  # px под блоком под светлую кромку
+RECESS_PAD = 10  # поля содержимого блока по умолчанию
+
+# --- Винты корпуса ---
+SCREW_SIZE, SCREW_INSET = 12, 12  # 12 = левое/правое поле страниц (24) минус размер винта: контролов не касается
+
 # --- Ресурсы ---
 ASSETS = resources.files("remap") / "assets"
-LOGO_SVG = Path(str(ASSETS / "textures" / "logo.svg"))  # кладётся вручную; может отсутствовать
+LOGO_PNG = Path(str(ASSETS / "logo.png"))  # 2170×725 RGBA, используется позже; может отсутствовать
 
 
 # Временный слой: старые ключи → новая палитра, чтобы страницы работали до перестройки. Убирается в шагах 3–5.
@@ -157,7 +171,8 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     key_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_PRESSED_TOP}, stop:1 {KEY_PRESSED_BOTTOM})"
     return f"""
     QWidget {{ background: transparent; color: {t['text']}; font-family: "Segoe UI"; font-size: 10pt; }}
-    QMainWindow, QDialog {{ background: {body}; }}
+    QMainWindow {{ background: {BODY_BOTTOM}; }}  /* металл центрального виджета рисует ui/metal.py */
+    QDialog {{ background: {body}; }}
     QToolTip {{ background: {TOOLTIP_BG}; color: {TOOLTIP_TEXT}; border: 1px solid {TOOLTIP_BORDER};
                 border-radius: {TOOLTIP_RADIUS}px; padding: 4px 6px; font-family: {mono};
                 font-size: {TOOLTIP_PX}px; }}

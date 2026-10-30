@@ -25,6 +25,7 @@ from .maps_page import MapsPage
 from .profiles_page import SWAP_TEXT, SWAP_TIP, ProfilesPage, profile_summary
 from .settings import ui_settings
 from .combo import ComboBox
+from .metal import MetalBody
 from .theme import load_fonts, stylesheet
 from .theme import repolish as _repolish
 
@@ -459,7 +460,7 @@ class MainWindow(QMainWindow):
     # --- построение UI ---
 
     def _build_ui(self) -> None:
-        central = QWidget()
+        central = MetalBody()
         root = QVBoxLayout(central)
         root.setContentsMargins(24, 20, 24, 16)
         root.setSpacing(8)

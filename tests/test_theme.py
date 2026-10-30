@@ -53,7 +53,7 @@ def test_stylesheet_builds():
 
 
 def test_logo_path_constant_does_not_require_file():
-    assert theme.LOGO_SVG.name == "logo.svg" and theme.LOGO_SVG.parent.name == "textures"
+    assert theme.LOGO_PNG.name == "logo.png" and theme.LOGO_PNG.parent.name == "assets"
 
 
 def test_font_files_are_packaged():
