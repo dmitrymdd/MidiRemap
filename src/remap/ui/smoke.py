@@ -9,15 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QVBoxLayout, QWidget
 
-# Цветовые токены (светлая тема — позже).
-TOKENS = {
-    "bg": "#1E1E1E",
-    "surface": "#2A2A2A",
-    "border": "#3A3A3A",
-    "text": "#E6E6E6",
-    "text_muted": "#9A9A9A",
-    "accent": "#E18147",
-}
+from remap.ui.theme import TOKENS
 
 
 class DropZone(QLabel):

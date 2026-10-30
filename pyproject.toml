@@ -19,6 +19,7 @@ markers = ["ui: tests of the Qt UI (PySide6, offscreen); quick core-only run: py
 
 [tool.setuptools.package-data]
 "remap.templates" = ["maps/*.json"]
+remap = ["assets/**/*"]
 
 [tool.ruff]
 line-length = 120

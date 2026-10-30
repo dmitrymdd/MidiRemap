@@ -1,34 +1,170 @@
-"""Цветовые токены и таблица стилей Qt (тёмная тема; светлая — позже)."""
+"""Цвета, шрифты и таблица стилей Qt. Тема одна: тёмный металлический корпус и зелёные «экраны».
 
-TOKENS = {
-    "bg": "#1E1E1E",
-    "surface": "#2A2A2A",
-    "surface_hover": "#333333",
-    "border": "#3A3A3A",
-    "text": "#E6E6E6",
-    "text_muted": "#9A9A9A",
-    "text_faint": "#6E6E6E",
-    "accent": "#E18147",
-    "accent_hover": "#EA9564",
-    "on_accent": "#1E1E1E",
-    "success": "#6CC28A",
-    "error": "#E5636B",
-    "warning": "#D9A84E",
-    "warning_bg": "#3A3224",  # фон строк «кабелей» с замечаниями к правилу (validate_profile)
-    "selection": "#4D3628",
-    "accent_muted": "#6B4632",  # отмеченный, но неактивный флажок
-    "reverse": "#4FB0C6",       # кабели обратного направления (←): холодный оттенок против accent
-    "reverse_hover": "#74C4D6",
+Токены — константы модуля, сгруппированные по областям; цвета — строки `#RRGGBB`, полупрозрачные — кортежи
+`(r, g, b, alpha)` с `qss_rgba()` / `qcolor()` для QSS и рисования. Шрифты лежат в `assets/fonts` и
+регистрируются `load_fonts()`.
+"""
+
+import logging
+from importlib import resources
+from pathlib import Path
+
+from PySide6.QtGui import QColor, QFont, QFontDatabase
+
+log = logging.getLogger(__name__)
+
+RGBA = tuple[int, int, int, float]
+
+# --- Корпус ---
+BODY_TOP, BODY_BOTTOM = "#1E2023", "#141618"  # вертикальный градиент
+# Утопленный блок (под экраны)
+RECESS_TOP, RECESS_BOTTOM, RECESS_RADIUS = "#070808", "#0D0E10", 12
+
+# --- Клавиши ---
+KEY_TOP, KEY_BOTTOM, KEY_BORDER, KEY_RADIUS = "#282B2F", "#1C1E21", "#08090A", 7
+KEY_LABEL = "#C3C9CE"
+KEY_PRESSED_TOP, KEY_PRESSED_BOTTOM = "#131517", "#1A1C1F"
+KEY_HOVER_TOP, KEY_HOVER_BOTTOM = "#30343A", "#22252A"  # наведение; в макете не задано
+
+# --- Винты и шелкография ---
+SCREW_LIGHT, SCREW_MID, SCREW_DARK, SCREW_RIM = "#8A9096", "#3A3E43", "#16181A", "#08090A"
+SILK_TEXT = "#9AA1A8"
+SILK_FAINT = "#6B7278"  # приглушённая шелкография (недоступное, подсказки); в макете не задано
+
+# --- Экран (зелёное стекло) ---
+SCREEN_GLASS_INNER, SCREEN_GLASS_MID, SCREEN_GLASS_OUTER = "#132A1F", "#0D1C15", "#0A1711"  # радиальный
+SCREEN_BORDER, SCREEN_RADIUS = "#21412F", 7
+SCREEN_GRID: RGBA = (127, 181, 150, 0.13)  # крест сетки (#7FB596), шаг SCREEN_GRID_STEP
+SCREEN_GRID_STEP = 32
+CHIP_BORDER, CHIP_RADIUS = "#477A5C", 5
+CHIP_BG: RGBA = (110, 190, 140, 0.07)
+SCREEN_TEXT, SCREEN_TEXT_2, SCREEN_TEXT_3 = "#E6F2EA", "#8FC7A3", "#74A487"
+SCREEN_DIVIDER = "#21412F"
+SCREEN_BTN_BORDER, SCREEN_BTN_TEXT = "#2A4C38", "#CBE3D3"  # вторичная кнопка на экране
+
+# --- Акцент, выбор, кабель ---
+ACCENT = "#62D69A"
+ACCENT_HOVER = "#86E3B3"  # наведение; в макете не задано
+SELECTED = "#FFFFFF"
+CABLE, CABLE_WIDTH = "#82BC98", 1.5
+
+# --- Статусы: светодиод, текст, рамка, фон ---
+OK_LED, OK_TEXT, OK_BORDER = "#62D69A", "#8FC7A3", "#477A5C"
+WARN_LED, WARN_TEXT, WARN_BORDER, WARN_BG = "#E3D36B", "#E6DA8E", "#6F7748", (227, 211, 107, 0.06)
+ERR_LED, ERR_TEXT, ERR_BORDER, ERR_BG = "#F0646E", "#F2939A", "#7C4248", (240, 100, 110, 0.07)
+
+# --- Подсказка ---
+TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_RADIUS, TOOLTIP_TEXT = "#0B0C0E", "#3A3F44", 4, "#D5DADF"
+TOOLTIP_PX = 10
+TOOLTIP_MAX_WIDTH = 290  # QSS не умеет ограничивать ширину подсказки: переносы — на стороне текста
+
+# --- Шрифты ---
+MONO_FILE = "MartianMono.ttf"
+LABEL_FILES = ("BarlowCondensed-Medium.ttf", "BarlowCondensed-SemiBold.ttf")
+MONO_FAMILY = "Martian Mono"  # реальные имена выставляет load_fonts()
+LABEL_FAMILY = "Barlow Condensed"
+MONO_WIDTH = 75.0  # ось wdth Martian Mono (75–112.5)
+LABEL_SPACING = 0.13  # межбуквенный интервал подписей, в em
+
+# --- Ресурсы ---
+ASSETS = resources.files("remap") / "assets"
+LOGO_SVG = Path(str(ASSETS / "textures" / "logo.svg"))  # кладётся вручную; может отсутствовать
+
+
+# Временный слой: старые ключи → новая палитра, чтобы страницы работали до перестройки. Убирается в шагах 3–5.
+# Направления цветом не различаем: обратное (←) рисуется как прямое.
+LEGACY = {
+    "bg": RECESS_BOTTOM,
+    "surface": KEY_TOP,
+    "surface_hover": KEY_HOVER_TOP,
+    "border": TOOLTIP_BORDER,
+    "text": SCREEN_TEXT,
+    "text_muted": SILK_TEXT,
+    "text_faint": SILK_FAINT,
+    "accent": ACCENT,
+    "accent_hover": ACCENT_HOVER,
+    "on_accent": SCREEN_GLASS_OUTER,
+    "success": OK_LED,
+    "error": ERR_LED,
+    "warning": WARN_LED,
+    "warning_bg": "#1A1A16",  # WARN_BG поверх RECESS_BOTTOM (в QColor нужен непрозрачный)
+    "selection": SCREEN_BORDER,
+    "accent_muted": CHIP_BORDER,
+    "reverse": ACCENT,
+    "reverse_hover": ACCENT_HOVER,
 }
+TOKENS = LEGACY
+
+
+def qss_rgba(c: RGBA) -> str:
+    r, g, b, a = c
+    return f"rgba({r}, {g}, {b}, {round(a * 100)}%)"
+
+
+def qcolor(c: str | RGBA) -> QColor:
+    if isinstance(c, str):
+        return QColor(c)
+    r, g, b, a = c
+    out = QColor(r, g, b)
+    out.setAlphaF(a)
+    return out
+
+
+def load_fonts() -> dict[str, str]:
+    """Регистрирует шрифты из assets/fonts; возвращает {"mono": семейство, "label": семейство}.
+    Нет файла — предупреждение в лог, остаётся запасное имя семейства (шрифт подменит система)."""
+    global MONO_FAMILY, LABEL_FAMILY
+    fonts = ASSETS / "fonts"
+    found: dict[str, str] = {}
+    for kind, files in (("mono", (MONO_FILE,)), ("label", LABEL_FILES)):
+        for name in files:
+            path = Path(str(fonts / name))
+            fid = QFontDatabase.addApplicationFont(str(path)) if path.is_file() else -1
+            families = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+            if not families:
+                log.warning("font not loaded: %s", path)
+                continue
+            found[kind] = families[0]
+    MONO_FAMILY = found.get("mono", MONO_FAMILY)
+    LABEL_FAMILY = found.get("label", LABEL_FAMILY)
+    return {"mono": MONO_FAMILY, "label": LABEL_FAMILY}
+
+
+def mono_font(px: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+    """Martian Mono, узкая ширина (wdth 75)."""
+    f = QFont(MONO_FAMILY)
+    f.setPixelSize(px)
+    f.setWeight(weight)
+    f.setVariableAxis(QFont.Tag("wdth"), MONO_WIDTH)
+    return f
+
+
+def label_font(px: int, weight: QFont.Weight = QFont.Weight.DemiBold) -> QFont:
+    """Barlow Condensed, заглавные, разрядка ~0.13 em."""
+    f = QFont(LABEL_FAMILY)
+    f.setPixelSize(px)
+    f.setWeight(weight)
+    f.setCapitalization(QFont.Capitalization.AllUppercase)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, px * LABEL_SPACING)
+    return f
 
 
 def stylesheet(t: dict[str, str] = TOKENS) -> str:
+    mono, label = f'"{MONO_FAMILY}"', f'"{LABEL_FAMILY}"'
+    body = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {BODY_TOP}, stop:1 {BODY_BOTTOM})"
+    key = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_TOP}, stop:1 {KEY_BOTTOM})"
+    key_hover = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_HOVER_TOP}, stop:1 {KEY_HOVER_BOTTOM})"
+    key_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_PRESSED_TOP}, stop:1 {KEY_PRESSED_BOTTOM})"
     return f"""
-    QWidget {{ background: {t['bg']}; color: {t['text']}; font-family: "Segoe UI"; font-size: 10pt; }}
+    QWidget {{ background: transparent; color: {t['text']}; font-family: "Segoe UI"; font-size: 10pt; }}
+    QMainWindow, QDialog {{ background: {body}; }}
+    QToolTip {{ background: {TOOLTIP_BG}; color: {TOOLTIP_TEXT}; border: 1px solid {TOOLTIP_BORDER};
+                border-radius: {TOOLTIP_RADIUS}px; padding: 4px 6px; font-family: {mono};
+                font-size: {TOOLTIP_PX}px; }}
     QLabel#title {{ font-size: 20pt; font-weight: 600; }}
     QLabel#subtitle, QLabel#muted {{ color: {t['text_muted']}; }}
-    QLabel#section {{ color: {t['text_muted']}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }}
-    QLabel#columnTitle {{ color: {t['text_muted']}; font-weight: 600; padding-left: 4px; }}
+    QLabel#section {{ color: {t['text_muted']}; font-family: {label}; font-size: 10pt; font-weight: 600; }}
+    QLabel#columnTitle {{ color: {t['text_muted']}; font-family: {label}; font-weight: 600; padding-left: 4px; }}
     QLabel#hint {{ color: {t['text_faint']}; font-size: 8pt; }}
     QLabel#logo {{ background: {t['accent']}; color: {t['on_accent']}; font-size: 14pt; font-weight: 700;
                    border-radius: 6px; }}
@@ -43,16 +179,17 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QFrame#card[state="off"] QLabel {{ color: {t['text_faint']}; }}
     QLabel#icon {{ color: {t['accent']}; font-size: 16pt; }}
     QLabel#cardName {{ font-weight: 600; }}
-    QPushButton {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
-                   padding: 7px 14px; }}
-    QPushButton:hover {{ background: {t['surface_hover']}; }}
+    QPushButton {{ background: {key}; color: {KEY_LABEL}; border: 1px solid {KEY_BORDER};
+                   border-radius: {KEY_RADIUS}px; padding: 7px 14px; }}
+    QPushButton:hover {{ background: {key_hover}; }}
+    QPushButton:pressed {{ background: {key_down}; }}
     QPushButton:disabled {{ color: {t['text_faint']}; }}
     QPushButton#primary {{ background: {t['accent']}; color: {t['on_accent']}; border: none; font-weight: 600; }}
     QPushButton#primary:hover {{ background: {t['accent_hover']}; }}
-    QPushButton#primary:disabled {{ background: {t['surface']}; color: {t['text_faint']};
-                                    border: 1px solid {t['border']}; font-weight: 400; }}
+    QPushButton#primary:disabled {{ background: {key}; color: {t['text_faint']};
+                                    border: 1px solid {KEY_BORDER}; font-weight: 400; }}
     QComboBox {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
-                 padding: 5px 24px 5px 10px; }}
+                 padding: 5px 24px 5px 10px; font-family: {mono}; font-size: 12px; }}
     QComboBox:hover {{ border-color: {t['accent']}; }}
     /* стрелку рисует ui/combo.py (ComboBox): у ::drop-down своей рамки нет — иначе справа двойная граница */
     QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 20px;
@@ -61,31 +198,32 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['border']};
                                    selection-background-color: {t['accent']};
                                    selection-color: {t['on_accent']}; }}
-    QPlainTextEdit {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
-                      padding: 6px; font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt; }}
+    QPlainTextEdit {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 8px;
+                      padding: 6px; font-family: {mono}; font-size: 12px; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {t['border']}; border-radius: 3px; min-height: 24px; }}
     QScrollBar::handle:vertical:hover {{ background: {t['text_faint']}; }}
     QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{
         background: none; height: 0; }}
     QLabel#status {{ color: {t['text_muted']}; }}
-    QLabel#status[state="ok"] {{ color: {t['success']}; }}
-    QLabel#status[state="error"] {{ color: {t['error']}; }}
+    QLabel#status[state="ok"] {{ color: {OK_TEXT}; }}
+    QLabel#status[state="error"] {{ color: {ERR_TEXT}; }}
 
     QPushButton#navTab {{ background: transparent; border: none; border-bottom: 2px solid transparent;
-                          border-radius: 0; padding: 6px 12px; color: {t['text_muted']}; font-weight: 600; }}
+                          border-radius: 0; padding: 6px 12px; color: {t['text_muted']}; font-family: {label};
+                          font-size: 11pt; font-weight: 600; }}
     QPushButton#navTab:hover {{ color: {t['text']}; }}
     QPushButton#navTab:checked {{ color: {t['accent']}; border-bottom-color: {t['accent']}; }}
-    QListWidget, QTableView, QTreeWidget {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px;
-                               outline: none; }}
+    QListWidget, QTableView, QTreeWidget {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 8px;
+                               outline: none; font-family: {mono}; font-size: 12px; }}
     QTableView {{ gridline-color: {t['border']}; selection-background-color: {t['selection']};
                   selection-color: {t['text']}; }}
     QHeaderView::section {{ background: {t['bg']}; color: {t['text_muted']}; border: none;
-                            border-bottom: 1px solid {t['border']}; padding: 4px 6px; font-size: 8pt;
-                            font-weight: 700; }}
+                            border-bottom: 1px solid {t['border']}; padding: 4px 6px; font-family: {label};
+                            font-size: 10pt; font-weight: 600; }}
     QTableView QLineEdit {{ border-radius: 0; padding: 0 4px; }}
-    QLineEdit {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px;
-                 padding: 5px 8px; selection-background-color: {t['accent']};
+    QLineEdit {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 6px;
+                 padding: 5px 8px; font-family: {mono}; font-size: 12px; selection-background-color: {t['accent']};
                  selection-color: {t['on_accent']}; }}
     QLineEdit:focus {{ border-color: {t['accent']}; }}
     QMenu {{ background: {t['surface']}; border: 1px solid {t['border']}; padding: 4px; }}
@@ -116,13 +254,13 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QPushButton#remove:hover {{ color: {t['accent']}; }}
     QGraphicsView#cables {{ background: {t['bg']}; border: 1px solid {t['border']}; border-radius: 8px; }}
     QLabel#mapTitle {{ font-size: 14pt; font-weight: 600; }}
-    QLabel#chip {{ border: 1px solid {t['border']}; border-radius: 9px; padding: 1px 8px; font-size: 8pt;
+    QLabel#chip {{ border: 1px solid {CHIP_BORDER}; border-radius: 9px; padding: 1px 8px; font-size: 8pt;
                    font-weight: 700; color: {t['text_muted']}; }}
-    QLabel#chip[state="ok"] {{ color: {t['success']}; border-color: {t['success']}; }}
-    QLabel#chip[state="warn"] {{ color: {t['warning']}; border-color: {t['warning']}; }}
+    QLabel#chip[state="ok"] {{ color: {OK_TEXT}; border-color: {OK_BORDER}; }}
+    QLabel#chip[state="warn"] {{ color: {WARN_TEXT}; border-color: {WARN_BORDER}; }}
     QLabel#dirty {{ color: {t['accent']}; font-weight: 600; }}
-    QLabel#issues {{ color: {t['warning']}; }}
-    QLabel#issues[state="error"] {{ color: {t['error']}; }}
+    QLabel#issues {{ color: {WARN_TEXT}; }}
+    QLabel#issues[state="error"] {{ color: {ERR_TEXT}; }}
     """
 
 
