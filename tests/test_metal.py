@@ -4,8 +4,8 @@ import logging
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
-from PySide6.QtWidgets import QLabel
+from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QRegion
+from PySide6.QtWidgets import QLabel, QWidget
 
 from remap.ui import metal, theme
 from remap.ui.metal import MetalBody, RecessedBlock, Screw, paint_metal, texture_tile, window_origin
@@ -158,19 +158,47 @@ def test_recessed_block_lays_out_children_inside_margins(app):
     block.resize(200, 100)
     block.show()
     app.processEvents()
-    pad, edge = theme.RECESS_PAD, theme.RECESS_EDGE
-    inner = QRect(pad, pad, 200 - 2 * pad, 100 - 2 * pad - edge)
-    assert inner.contains(label.geometry()) and label.geometry().bottom() < 100 - edge
+    pad, top, bottom = theme.RECESS_PAD, theme.RECESS_EDGE_TOP, theme.RECESS_EDGE_BOTTOM
+    assert pad == 6
+    inner = QRect(pad, pad + top, 200 - 2 * pad, 100 - 2 * pad - top - bottom)
+    assert inner.contains(label.geometry())
     custom = RecessedBlock(margin=20)
-    assert custom.body.contentsMargins().left() == 20 and custom.body.contentsMargins().bottom() == 20 + edge
+    m = custom.body.contentsMargins()
+    assert (m.left(), m.top(), m.bottom()) == (20, 20 + top, 20 + bottom)
 
 
-def test_recessed_block_paints_shadow_edge_and_corners(app):
+def test_recessed_block_paints_shadow_outer_lines_and_corners(app):
     block = RecessedBlock()
     block.resize(120, 80)
     block.show()
     img = block._backdrop.get(block, block._compose).toImage()  # сам фон блока, без фона родителя
-    assert img.pixelColor(0, 0).alpha() == 0 and img.pixelColor(119, 0).alpha() == 0  # углы за скруглением
-    assert img.pixelColor(60, 0).red() < img.pixelColor(60, 20).red()  # у верхнего края тень темнее, чем глубже
-    edge = img.pixelColor(60, 79)  # последняя строка — светлая кромка (белый, альфа ≈ 0.11)
-    assert edge.red() == 255 and 20 <= edge.alpha() <= 40 and img.pixelColor(60, 78).alpha() == 255
+    assert img.pixelColor(0, 0).alpha() == 0 and img.pixelColor(119, 1).alpha() == 0  # углы за скруглением
+    dark = img.pixelColor(60, 0)  # тёмная линия над блоком (0 -1px 0 rgba(0,0,0,.55))
+    assert dark.red() == 0 and 125 <= dark.alpha() <= 155
+    assert img.pixelColor(60, 1).red() < img.pixelColor(60, 20).red()  # у верхнего края тень темнее, чем глубже
+    light, faint = img.pixelColor(60, 78), img.pixelColor(60, 79)  # светлая .11 и едва заметная .03 под блоком
+    assert light.red() == 255 and 20 <= light.alpha() <= 40
+    assert faint.red() == 255 and 4 <= faint.alpha() <= 12
+    assert img.pixelColor(60, 77).alpha() == 255  # последняя строка самого блока
+
+
+def test_screw_geometry_matches_mockup(app):
+    assert (theme.SCREW_SIZE, theme.SCREW_INSET) == (14, 11)
+    body = MetalBody()
+    body.resize(900, 800)
+    body.show()
+    assert {(sc.x(), sc.y()) for sc in body.screws} == {(11, 11), (875, 11), (11, 775), (875, 775)}
+    img = QImage(14, 14, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(Qt.GlobalColor.transparent)
+    body.screws[0].render(img, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)  # без фона окна
+    assert img.pixelColor(7, 7).alpha() == 255 and img.pixelColor(0, 0).alpha() == 0  # круг в углах прозрачен
+
+
+def test_body_shading_follows_mockup(app):
+    body = MetalBody(screws=False)
+    body.resize(900, 800)
+    img = body._backdrop.get(body, body._compose).toImage()
+    top_centre, mid_left, bottom_right = img.pixelColor(450, 20), img.pixelColor(100, 400), img.pixelColor(850, 780)
+    assert top_centre.red() > mid_left.red() > bottom_right.red()  # верхний свет, затем виньетка к углам
+    assert img.pixelColor(0, 400).red() < 14 and img.pixelColor(450, 799).red() < 14  # рамка #0A0B0C по краю
+    assert img.pixelColor(450, 0).red() > 40  # светлая линия сверху (белый .12 над рамкой)

@@ -16,7 +16,16 @@ log = logging.getLogger(__name__)
 RGBA = tuple[int, int, int, float]
 
 # --- Корпус ---
-BODY_TOP, BODY_BOTTOM = "#1E2023", "#141618"  # вертикальный градиент
+BODY_TOP, BODY_MID, BODY_BOTTOM = "#1E2023", "#191B1D", "#141618"  # вертикальный градиент: 0 %, BODY_MID_AT, 100 %
+BODY_MID_AT = 0.45
+# Виньетка: эллипс rx×ry (доли ширины/высоты) с центром (cx, cy); прозрачна до BODY_VIGNETTE_FROM, затем до alpha
+BODY_VIGNETTE = {"rx": 1.30, "ry": 1.10, "cx": 0.5, "cy": 0.4, "from": 0.55, "alpha": 0.38}
+# Верхний свет: эллипс 85 %×55 % с центром на верхней кромке; белый alpha → прозрачный к BODY_TOPLIGHT_TO
+BODY_TOPLIGHT = {"rx": 0.85, "ry": 0.55, "cx": 0.5, "cy": 0.0, "to": 0.70, "alpha": 0.055}
+# Линии по краю корпуса (inset-тени макета): верхняя светлая, рамка 1 px, нижняя тёмная
+BODY_EDGE_LIGHT: RGBA = (255, 255, 255, 0.12)
+BODY_EDGE_FRAME = "#0A0B0C"
+BODY_EDGE_DARK: RGBA = (0, 0, 0, 0.6)
 # Утопленный блок (под экраны)
 RECESS_TOP, RECESS_BOTTOM, RECESS_RADIUS = "#070808", "#0D0E10", 12
 
@@ -28,6 +37,9 @@ KEY_HOVER_TOP, KEY_HOVER_BOTTOM = "#30343A", "#22252A"  # наведение; в
 
 # --- Винты и шелкография ---
 SCREW_LIGHT, SCREW_MID, SCREW_DARK, SCREW_RIM = "#8A9096", "#3A3E43", "#16181A", "#08090A"
+SCREW_HIGHLIGHT: RGBA = (255, 255, 255, 0.08)  # мягкий блик под ободом
+SCREW_SLOT = "#0A0B0C"
+SCREW_SLOT_LIGHT: RGBA = (255, 255, 255, 0.12)  # светлая копия шлица, сдвинутая на (+0.6, +0.6)
 SILK_TEXT = "#9AA1A8"
 SILK_FAINT = "#6B7278"  # приглушённая шелкография (недоступное, подсказки); в макете не задано
 
@@ -71,14 +83,20 @@ METAL_BRUSHED_FILE, METAL_BRUSHED_TILE, METAL_BRUSHED_OPACITY = "metal009_brushe
 METAL_SCRATCH_FILE, METAL_SCRATCH_TILE, METAL_SCRATCH_OPACITY = "metal031_scratch_tile.png", 1024, 0.025  # царапины
 # плитка — логический размер в пикселях (картинка 1024² при 512 = DPR 2, 2048² при 1024 = DPR 2)
 
-# --- Утопленный блок: тень внутри и светлая кромка под ним ---
+# --- Утопленный блок: тень внутри и три внешние линии ---
 RECESS_SHADOW_DY, RECESS_SHADOW_BLUR, RECESS_SHADOW_ALPHA = 2, 4, 0.95  # inset 0 2px 4px rgba(0,0,0,.95)
-RECESS_EDGE_LIGHT: RGBA = (255, 255, 255, 0.11)  # 0 1px 0 rgba(255,255,255,.11)
-RECESS_EDGE = 1  # px под блоком под светлую кромку
-RECESS_PAD = 10  # поля содержимого блока по умолчанию
+RECESS_EDGE_DARK: RGBA = (0, 0, 0, 0.55)  # 0 -1px 0: тёмная линия над блоком
+RECESS_EDGE_LIGHT: RGBA = (255, 255, 255, 0.11)  # 0 1px 0: светлая под блоком
+RECESS_EDGE_FAINT: RGBA = (255, 255, 255, 0.03)  # 0 2px 0: вторая, едва заметная
+RECESS_EDGE_TOP, RECESS_EDGE_BOTTOM = 1, 2  # px, которые виджет блока резервирует над и под рамкой блока
+RECESS_PAD = 6  # поля содержимого блока по умолчанию
 
-# --- Винты корпуса ---
-SCREW_SIZE, SCREW_INSET = 12, 12  # 12 = левое/правое поле страниц (24) минус размер винта: контролов не касается
+# --- Панель внутри блока («верхняя полоса»): градиент, радиус 7, светлая линия сверху ---
+PANEL_TOP, PANEL_BOTTOM, PANEL_RADIUS = "#1C1E21", "#17191B", 7
+PANEL_EDGE_LIGHT: RGBA = (255, 255, 255, 0.06)
+
+# --- Винты корпуса: квадрат 14 px, левый верхний угол в 11 px от углов окна ---
+SCREW_SIZE, SCREW_INSET = 14, 11
 
 # --- Ресурсы ---
 ASSETS = resources.files("remap") / "assets"
@@ -165,7 +183,8 @@ def label_font(px: int, weight: QFont.Weight = QFont.Weight.DemiBold) -> QFont:
 
 def stylesheet(t: dict[str, str] = TOKENS) -> str:
     mono, label = f'"{MONO_FAMILY}"', f'"{LABEL_FAMILY}"'
-    body = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {BODY_TOP}, stop:1 {BODY_BOTTOM})"
+    body = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {BODY_TOP}, stop:{BODY_MID_AT} {BODY_MID}, "
+            f"stop:1 {BODY_BOTTOM})")
     key = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_TOP}, stop:1 {KEY_BOTTOM})"
     key_hover = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_HOVER_TOP}, stop:1 {KEY_HOVER_BOTTOM})"
     key_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_PRESSED_TOP}, stop:1 {KEY_PRESSED_BOTTOM})"

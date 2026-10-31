@@ -10,7 +10,7 @@ from math import ceil, erfc, sqrt
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient,
+    QBrush, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform,
 )
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
@@ -100,15 +100,25 @@ class _Backdrop:
         return self._pixmap
 
 
-def _vertical(top: str, bottom: str, height: float) -> QBrush:
-    g = QLinearGradient(0, 0, 0, height)
+def _vertical(top: str, bottom: str, height: float, y0: float = 0) -> QBrush:
+    g = QLinearGradient(0, y0, 0, y0 + height)
     g.setColorAt(0, qcolor(top))
     g.setColorAt(1, qcolor(bottom))
     return QBrush(g)
 
 
+def _elliptical(w: float, h: float, spec: dict, stops: list[tuple[float, theme.RGBA]]) -> QBrush:
+    """Радиальный градиент CSS `ellipse rx ry at cx cy`: проценты — от ширины/высоты коробки (w×h)."""
+    g = QRadialGradient(0, 0, 1)  # единичный круг, растягивается матрицей кисти до эллипса
+    for at, color in stops:
+        g.setColorAt(at, qcolor(color))
+    brush = QBrush(g)
+    brush.setTransform(QTransform(spec["rx"] * w, 0, 0, spec["ry"] * h, spec["cx"] * w, spec["cy"] * h))
+    return brush
+
+
 class Screw(QWidget):
-    """Винт: радиальный градиент, обод, прямой крестовой шлиц (не повёрнут). Только рисование."""
+    """Винт 14×14 по SVG макета: блик, обод, грань с радиальным градиентом, прямой крест и его светлая копия."""
 
     def __init__(self, parent: QWidget | None = None, size: int = theme.SCREW_SIZE) -> None:
         super().__init__(parent)
@@ -116,26 +126,30 @@ class Screw(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def paintEvent(self, _event) -> None:
-        s = self.width()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        g = QRadialGradient(QPointF(s * 0.38, s * 0.32), s * 0.8)
+        p.scale(self.width() / 14, self.height() / 14)  # координаты ниже — viewBox 0 0 14 14
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(theme.SCREW_HIGHLIGHT))
+        p.drawEllipse(QPointF(7, 7.6), 6.6, 6.6)
+        p.setBrush(qcolor(theme.SCREW_RIM))
+        p.drawEllipse(QPointF(7, 7), 6.6, 6.6)
+        face = 2 * 5.7  # градиент в долях рамки грани: центр (38 %, 32 %), радиус 75 %
+        g = QRadialGradient(QPointF(1.3 + 0.38 * face, 1.3 + 0.32 * face), 0.75 * face)
         g.setColorAt(0, qcolor(theme.SCREW_LIGHT))
-        g.setColorAt(0.55, qcolor(theme.SCREW_MID))
+        g.setColorAt(0.45, qcolor(theme.SCREW_MID))
         g.setColorAt(1, qcolor(theme.SCREW_DARK))
         p.setBrush(QBrush(g))
-        p.setPen(QPen(qcolor(theme.SCREW_RIM), 1))
-        p.drawEllipse(QRectF(0.5, 0.5, s - 1, s - 1))
-        c, arm = s / 2, s * 0.27
-        slot = qcolor(theme.SCREW_RIM)
-        slot.setAlphaF(0.9)
-        p.setPen(QPen(slot, 1.3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
-        p.drawLine(QPointF(c - arm, c), QPointF(c + arm, c))
-        p.drawLine(QPointF(c, c - arm), QPointF(c, c + arm))
+        p.drawEllipse(QPointF(7, 7), 5.7, 5.7)
+        for color, width, dx in ((qcolor(theme.SCREW_SLOT), 1.4, 0.0), (qcolor(theme.SCREW_SLOT_LIGHT), 0.6, 0.6)):
+            p.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+            p.drawLine(QPointF(4.3, 7 + dx), QPointF(9.7, 7 + dx))
+            p.drawLine(QPointF(7 + dx, 4.3), QPointF(7 + dx, 9.7))
 
 
 class MetalBody(QWidget):
-    """Корпус: вертикальный градиент и текстура металла, винты по углам. Фон кэшируется по размеру и DPR."""
+    """Корпус: градиент, виньетка, верхний свет, линии кромки и текстура металла, винты по углам. Фон кэшируется по
+    размеру и DPR."""
 
     def __init__(self, parent: QWidget | None = None, screws: bool = True) -> None:
         super().__init__(parent)
@@ -143,8 +157,21 @@ class MetalBody(QWidget):
         self.screws = [Screw(self) for _ in range(4 if screws else 0)]
 
     def _compose(self, p: QPainter, rect: QRect, origin: QPoint) -> None:
-        p.fillRect(rect, _vertical(theme.BODY_TOP, theme.BODY_BOTTOM, rect.height()))
-        paint_metal(p, rect, 0, origin)
+        w, h = rect.width(), rect.height()
+        g = QLinearGradient(0, 0, 0, h)
+        for at, color in ((0, theme.BODY_TOP), (theme.BODY_MID_AT, theme.BODY_MID), (1, theme.BODY_BOTTOM)):
+            g.setColorAt(at, qcolor(color))
+        p.fillRect(rect, QBrush(g))  # слои как в CSS макета, снизу вверх: градиент, виньетка, верхний свет
+        v, t = theme.BODY_VIGNETTE, theme.BODY_TOPLIGHT
+        p.fillRect(rect, _elliptical(w, h, v, [(0, (0, 0, 0, 0)), (v["from"], (0, 0, 0, 0)), (1, (0, 0, 0, v["alpha"]))]))
+        white = (255, 255, 255, t["alpha"])
+        p.fillRect(rect, _elliptical(w, h, t, [(0, white), (t["to"], (255, 255, 255, 0)), (1, (255, 255, 255, 0))]))
+        p.fillRect(QRect(0, h - 1, w, 1), qcolor(theme.BODY_EDGE_DARK))  # inset-линии: нижняя, рамка, верхняя
+        frame = qcolor(theme.BODY_EDGE_FRAME)
+        for line in (QRect(0, 0, w, 1), QRect(0, h - 1, w, 1), QRect(0, 0, 1, h), QRect(w - 1, 0, 1, h)):
+            p.fillRect(line, frame)
+        p.fillRect(QRect(0, 0, w, 1), qcolor(theme.BODY_EDGE_LIGHT))
+        paint_metal(p, rect, 0, origin)  # текстура — над всем, как ::before/::after макета
 
     def place_screws(self) -> None:
         far_x = self.width() - theme.SCREW_INSET - theme.SCREW_SIZE
@@ -187,7 +214,7 @@ def _inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float) -> None
             continue
         region = QPainterPath()
         region.setFillRule(Qt.FillRule.OddEvenFill)
-        region.addRect(QRectF(-4, -4, shape.width() + 8, shape.height() + 8))
+        region.addRect(shape.adjusted(-4, -4, 4, 4))
         region.addRoundedRect(inner, max(radius - x, 0), max(radius - x, 0))
         color = qcolor((0, 0, 0, theme.RECESS_SHADOW_ALPHA * 0.5 * erfc((x - step / 2) / (sigma * sqrt(2)))))
         q.setBrush(color)
@@ -200,28 +227,30 @@ def _inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float) -> None
 
 
 class RecessedBlock(QFrame):
-    """Утопленный блок: градиент, текстура, внутренняя тень и светлая кромка под нижним краем (1 px зарезервирован).
-    Контейнер: `body` — его вертикальный layout с полями по умолчанию; дети лежат внутри."""
+    """Утопленный блок: градиент, внутренняя тень, текстура и три внешние линии (тёмная над блоком, светлая и едва
+    заметная под ним). Виджет резервирует под линии 1 px сверху и 2 px снизу. Контейнер: `body` — его вертикальный
+    layout с полями по умолчанию; дети лежат внутри."""
 
     def __init__(self, parent: QWidget | None = None, margin: int = theme.RECESS_PAD) -> None:
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self._backdrop = _Backdrop()
         self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(margin, margin, margin, margin + theme.RECESS_EDGE)
+        self.body.setContentsMargins(margin, margin + theme.RECESS_EDGE_TOP, margin, margin + theme.RECESS_EDGE_BOTTOM)
         self.body.setSpacing(8)
 
     def _compose(self, p: QPainter, rect: QRect, origin: QPoint) -> None:
-        r = theme.RECESS_RADIUS
-        shape = QRectF(0, 0, rect.width(), rect.height() - theme.RECESS_EDGE)
+        r, top = theme.RECESS_RADIUS, theme.RECESS_EDGE_TOP
+        shape = QRectF(0, top, rect.width(), rect.height() - top - theme.RECESS_EDGE_BOTTOM)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(qcolor(theme.RECESS_EDGE_LIGHT))
-        p.drawRoundedRect(shape.translated(0, theme.RECESS_EDGE), r, r)  # светлая кромка видна полоской снизу
-        p.setBrush(_vertical(theme.RECESS_TOP, theme.RECESS_BOTTOM, shape.height()))
+        for dy, color in ((2, theme.RECESS_EDGE_FAINT), (1, theme.RECESS_EDGE_LIGHT), (-1, theme.RECESS_EDGE_DARK)):
+            p.setBrush(qcolor(color))  # box-shadow без размытия: та же форма, сдвинутая; сам блок закроет лишнее
+            p.drawRoundedRect(shape.translated(0, dy), r, r)
+        p.setBrush(_vertical(theme.RECESS_TOP, theme.RECESS_BOTTOM, shape.height(), shape.top()))
         p.drawRoundedRect(shape, r, r)
-        paint_metal(p, shape, r, origin)
         _inner_shadow(p, shape, r, p.device().devicePixelRatioF())
+        paint_metal(p, shape, r, origin)  # текстура поверх тени, как в макете
 
     def paintEvent(self, _event) -> None:
         QPainter(self).drawPixmap(0, 0, self._backdrop.get(self, self._compose))
