@@ -75,6 +75,14 @@ SCREEN_GLASS_INNER, SCREEN_GLASS_MID, SCREEN_GLASS_OUTER = "#132A1F", "#0D1C15",
 SCREEN_BORDER, SCREEN_RADIUS = "#21412F", 7
 SCREEN_GRID: RGBA = (127, 181, 150, 0.13)  # крест сетки (#7FB596), шаг SCREEN_GRID_STEP
 SCREEN_GRID_STEP = 32
+SCREEN_GLOW = {"rx": 1.2, "ry": 0.70, "cx": 0.5, "cy": 0.0}  # radial-gradient(ellipse 120% 70% at 50% 0%); About — ry 0.80
+SCREEN_GLOW_MID_AT = 0.6  # стоп SCREEN_GLASS_MID
+SCREEN_SHADOW = {"dy": 0, "blur": 18, "alpha": 0.55}  # inset 0 0 18px rgba(0,0,0,.55)
+SCREEN_PAD = 14  # поля содержимого экрана (в гутер справа ложится полоса прокрутки)
+# Полоса прокрутки на экране: 3 px, в 5 px от внутреннего правого края; ниже — наведение (в макете не задано)
+SCROLL_WIDTH, SCROLL_RIGHT, SCROLL_RADIUS, SCROLL_HIT, SCROLL_MIN_HANDLE = 3, 5, 2, 3, 20
+SCROLL_TRACK: RGBA = (110, 190, 140, 0.1)
+SCROLL_HANDLE, SCROLL_HANDLE_HOVER = "#3A6B4F", "#4C8A66"
 CHIP_BORDER, CHIP_RADIUS = "#477A5C", 5
 CHIP_BG: RGBA = (110, 190, 140, 0.07)
 SCREEN_TEXT, SCREEN_TEXT_2, SCREEN_TEXT_3 = "#E6F2EA", "#8FC7A3", "#74A487"
@@ -92,6 +100,38 @@ OK_LED, OK_TEXT, OK_BORDER = "#62D69A", "#8FC7A3", "#477A5C"
 WARN_LED, WARN_TEXT, WARN_BORDER, WARN_BG = "#E3D36B", "#E6DA8E", "#6F7748", (227, 211, 107, 0.06)
 ERR_LED, ERR_TEXT, ERR_BORDER, ERR_BG = "#F0646E", "#F2939A", "#7C4248", (240, 100, 110, 0.07)
 
+# --- Поля ввода: «рамка» (зелёное поле, вставленное в металл, с чёрным ободом) и плоское на экране ---
+FIELD_TOP, FIELD_BOTTOM, FIELD_BORDER, FIELD_RADIUS = "#11251B", "#0D1C15", "#2A4C38", 6
+FIELD_HEIGHT, FIELD_PAD_X, FIELD_GAP = 38, 10, 8  # высота лица, поля по бокам, зазор текст–стрелка
+FIELD_RIM, FIELD_RIM_W = "#07080A", 3  # сплошной обод вокруг лица (box-shadow 0 0 0 3px)
+FIELD_RIM_LIGHT: RGBA = (255, 255, 255, 0.09)  # светлая линия под ободом (0 1px 0 3px)
+FIELD_INSET = {"dy": 1, "blur": 3, "alpha": 0.7}  # inset 0 1px 3px rgba(0,0,0,.7)
+FIELD_CAPTION, FIELD_TEXT, FIELD_PLACEHOLDER = "#7DB394", SCREEN_TEXT, SCREEN_TEXT_3
+FIELD_HOVER_BORDER = "#477A5C"  # наведение; в макете не задано
+FIELD_FOCUS_BORDER = ACCENT  # фокус и открытый список; в макете не задано
+FIELD_FOCUS_GLOW: RGBA = (98, 214, 154, 0.25)  # inset 0 0 0 1px
+FIELD_DISABLED_OPACITY = 0.45
+# Подписи двухстрочного поля и значения: px, вес, интервал (в em); зазор между строками 1 px
+FIELD_CAPTION_FONT, FIELD_CAPTION_SPACING = 8.5, 0.16
+FIELD_VALUE_FONT = 12  # одна строка; у двухстрочного поля — FIELD_VALUE2_FONT / вес Medium
+FIELD_VALUE2_FONT = 12.5
+# Плоское поле на экране (поиск на Maps)
+FIELD_SCREEN_BG: RGBA = (0, 0, 0, 0.28)
+FIELD_SCREEN_HEIGHT = 34
+FIELD_SCREEN_INSET = {"dy": 1, "blur": 3, "alpha": 0.6}
+# Флажок на экране: 15 px, рамка, подпись Martian 10/600/.1em
+CHECK_SIZE, CHECK_RADIUS, CHECK_GAP, CHECK_PAD = 15, 3, 8, 2  # CHECK_PAD — запас вокруг квадрата под кольцо фокуса
+CHECK_BORDER, CHECK_HOVER_BORDER = "#477A5C", "#8FC7A3"
+CHECK_TEXT = SCREEN_BTN_TEXT
+CHECK_FONT, CHECK_SPACING = 10, 0.1
+# Список комбо: стеклянный, строки 28 px, не больше POPUP_MAX_ROWS строк (дальше — полоса прокрутки)
+POPUP_ROW, POPUP_PAD, POPUP_PAD_X, POPUP_MAX_ROWS = 28, 4, 6, 10  # текст строки встаёт на 11 px, как в поле
+POPUP_TEXT = "#E0EDE5"
+POPUP_HOVER_BG: RGBA = (110, 190, 140, 0.12)
+POPUP_HOVER_BORDER = "#5E9B7A"
+# Скруглённый прозрачный список (рамка и фон контейнера Qt снимаются). False — запасной квадратный и непрозрачный
+POPUP_ROUNDED = True
+
 # --- Подсказка: у Qt она квадратная, с системной тенью (скругление и тень макета в QSS недоступны) ---
 TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT = "#0B0C0E", "#3A3F44", "#D5DADF"
 TOOLTIP_PX = 10
@@ -108,7 +148,10 @@ MONO_FILE = "MartianMono.ttf"
 LABEL_FILES = ("BarlowCondensed-Medium.ttf", "BarlowCondensed-SemiBold.ttf")
 MONO_FAMILY = "Martian Mono"  # реальные имена выставляет load_fonts()
 LABEL_FAMILY = "Barlow Condensed"
-MONO_WIDTH = 75.0  # ось wdth Martian Mono (75–112.5)
+# Ось wdth Martian Mono (75–112.5). В макете корень — `font-stretch: 75%`, но UA-стиль `<button>`/`<input>` сбрасывает
+# её в 100 %: текст внутри кнопок и полей ввода шире, текст в span/div — уже (таблица — в отчёте шага 3b)
+WDTH_TEXT = 75.0
+WDTH_BUTTON = 100.0
 LABEL_SPACING = 0.13  # межбуквенный интервал подписей по умолчанию, в em
 APP_FONT_PX = 12  # шрифт приложения по умолчанию: Martian Mono 12 px, wdth 75
 PX_TO_PT = 0.75  # 96 dpi: размер в px × 0.75 = размер в pt (дробные px, например 13.5, — только так)
@@ -207,10 +250,10 @@ def _sized(font: QFont, px: float, weight: QFont.Weight) -> QFont:
     return font
 
 
-def mono_font(px: float, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    """Martian Mono, узкая ширина (wdth 75)."""
+def mono_font(px: float, weight: QFont.Weight = QFont.Weight.Normal, wdth: float = WDTH_TEXT) -> QFont:
+    """Martian Mono; ширина — ось wdth (`WDTH_TEXT` 75 по умолчанию, `WDTH_BUTTON` 100 для текста кнопок и полей)."""
     f = _sized(QFont(MONO_FAMILY), px, weight)
-    f.setVariableAxis(QFont.Tag("wdth"), MONO_WIDTH)
+    f.setVariableAxis(QFont.Tag("wdth"), wdth)
     return f
 
 

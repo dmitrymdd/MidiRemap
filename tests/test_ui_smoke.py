@@ -115,7 +115,7 @@ def test_window_default_size_fits_screen(window):
     area = window.screen().availableGeometry()
     assert window.width() == max(min(1280, int(area.width() * 0.9)), window.minimumWidth())
     assert window.height() == max(min(800, int(area.height() * 0.9)), window.minimumHeight())
-    assert (window.minimumWidth(), window.minimumHeight()) == (760, 580)
+    assert (window.minimumWidth(), window.minimumHeight()) == (900, 580)
 
 
 # --- пакетная конвертация на вкладке Convert ---

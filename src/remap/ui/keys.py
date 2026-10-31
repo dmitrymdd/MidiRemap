@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from math import ceil
 
 from PySide6.QtCore import QEvent, QMargins, QPoint, QPointF, QRect, QRectF, QSize, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
-from . import theme
+from . import text, theme
 from .icons import ICONS, draw_icon
 from .metal import _Backdrop, inner_shadow, outer_shadow, paint_metal
 from .theme import qcolor
@@ -190,13 +190,13 @@ class Key(QAbstractButton):
         return sum(b.rebuilds for b in self._faces.values())
 
     # --- размеры ---
-    def _label_font(self) -> QFont | None:
+    def _text_spec(self) -> text.TextSpec | None:
         s = self.spec
-        return theme.label_font(s.font_px, spacing=s.spacing) if s.font_px else None
+        return text.label(s.font_px, spacing=s.spacing) if s.font_px else None
 
     def _text_width(self) -> float:
-        font = self._label_font()
-        return QFontMetricsF(font).horizontalAdvance(self.text()) if font and self.text() else 0.0
+        spec = self._text_spec()
+        return text.text_width(self.text(), spec) if spec and self.text() else 0.0
 
     def _content_width(self) -> float:
         icon = ICONS[self._icon].w if self._icon else 0
@@ -267,13 +267,9 @@ class Key(QAbstractButton):
             fixed = icon.fixed is not None and self.isEnabled()
             draw_icon(p, self._icon, QRectF(ix, iy, icon.w, icon.h), None if fixed else color, self._icon_stroke)
             x += icon.w + (self.spec.gap if self.text() else 0)
-        font = self._label_font()
-        if font and self.text():
-            p.setFont(font)
-            p.setPen(QColor(color))
-            fm = QFontMetricsF(font)
-            baseline = face.center().y() + (fm.ascent() - fm.descent()) / 2
-            p.drawText(QPointF(x, baseline), self.text())
+        spec = self._text_spec()
+        if spec and self.text():
+            text.draw_text(p, QRectF(x, face.top(), self._text_width(), face.height()), self.text(), spec, color)
 
     def _paint_focus(self, p: QPainter) -> None:
         """Контур как у кнопки логотипа в макете (1 px, `KEY_FOCUS_RING`), но вплотную к лицу: поля вокруг клавиши

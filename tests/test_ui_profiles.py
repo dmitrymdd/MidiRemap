@@ -909,7 +909,7 @@ def test_pool_items_never_move_during_drag_and_keep_place_after_drop(window, app
     (ни прокрутки, ни перестройки); после drop пул держит прокрутку (строка ушла — соседние на месте)."""
     from PySide6.QtCore import QEvent
     from PySide6.QtGui import QMouseEvent
-    page, ed = cables_page(window, accept=False, size=(1200, 600))
+    page, ed = cables_page(window, accept=False, size=(1200, 650))
     bar = ed.pool.verticalScrollBar()
     bar.setValue(bar.maximum() // 2)
     vp = ed.pool.viewport()

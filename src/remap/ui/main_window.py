@@ -428,7 +428,7 @@ class MainWindow(QMainWindow):
             self._seed_error = f"Cannot create the profiles folder: {e}"
 
         self.setWindowTitle("REMAP")
-        self.setMinimumSize(760, 580)
+        self.setMinimumSize(900, 580)
         self._default_size()
         self.setAcceptDrops(True)
         self.setStyleSheet(stylesheet())

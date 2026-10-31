@@ -78,15 +78,17 @@ def paint_metal(painter: QPainter, shape: QRect | QRectF | QPainterPath, radius:
 
 
 class _Backdrop:
-    """Кэш готового фона виджета: пересобирается только при смене размера, DPR или положения в окне."""
+    """Кэш готового фона виджета: пересобирается только при смене размера, DPR или положения в окне. Положение важно
+    лишь тексту металла (`textured`); у стекла и полей без текстуры сдвиг виджета фон не трогает."""
 
-    def __init__(self) -> None:
+    def __init__(self, textured: bool = True) -> None:
         self._key: tuple | None = None
         self._pixmap: QPixmap | None = None
+        self._textured = textured
         self.rebuilds = 0
 
     def get(self, w: QWidget, compose) -> QPixmap:
-        dpr, origin = w.devicePixelRatioF(), window_origin(w)
+        dpr, origin = w.devicePixelRatioF(), window_origin(w) if self._textured else QPoint(0, 0)
         key = (w.width(), w.height(), dpr, origin.x(), origin.y())
         if key != self._key or self._pixmap is None:
             pm = QPixmap(ceil(w.width() * dpr), ceil(w.height() * dpr))

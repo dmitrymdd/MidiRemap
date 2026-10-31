@@ -99,7 +99,7 @@ def test_px_sizes_go_through_pt(app, px):
     if px == int(px):
         pixel = QFont("Martian Mono")
         pixel.setPixelSize(int(px))
-        pixel.setVariableAxis(QFont.Tag("wdth"), theme.MONO_WIDTH)
+        pixel.setVariableAxis(QFont.Tag("wdth"), theme.WDTH_TEXT)
         pixel.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         assert QFontMetricsF(font).horizontalAdvance("M" * 10) == pytest.approx(
             QFontMetricsF(pixel).horizontalAdvance("M" * 10), abs=0.5)
