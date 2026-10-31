@@ -43,9 +43,6 @@ KEY_PRESSED_SHADOW = {"dy": 2, "blur": 4, "alpha": 0.8}  # inset 0 2px 4px rgba(
 KEY_PRESSED_EDGE: RGBA = (255, 255, 255, 0.06)  # outer 0 1px 0: светлая линия под нажатой
 KEY_HOVER_TOP, KEY_HOVER_BOTTOM = "#30343A", "#22252A"  # наведение; в макете не задано
 KEY_FOCUS_RING, KEY_FOCUS_GAP = "#8FC7A3", 1  # контур 1 px (как у кнопки логотипа), зазор от лица: поля клавиши малы
-KEY_BADGE, KEY_BADGE_SIZE, KEY_BADGE_INSET = "#FFFFFF", 5, 5  # точка «не сохранено» у правого верхнего угла
-KEY_BADGE_GLOW: RGBA = (255, 255, 255, 0.7)  # свечение 0 0 4px
-KEY_BADGE_GLOW_BLUR = 4
 # Большая клавиша CONVERT: другой градиент и тени
 KEY_GO_TOP, KEY_GO_BOTTOM, KEY_GO_RADIUS = "#2A2D31", "#1C1E21", 10
 KEY_GO_INSET_LIGHT: RGBA = (255, 255, 255, 0.13)  # inset 0 1px 0
@@ -132,6 +129,23 @@ POPUP_HOVER_BORDER = "#5E9B7A"
 # Скруглённый прозрачный список (рамка и фон контейнера Qt снимаются). False — запасной квадратный и непрозрачный
 POPUP_ROUNDED = True
 
+# --- Плашки: строки пула и сцены, заголовки групп, бейдж «+N», строки нот и карт (ui/plates.py) ---
+PLATE_RADIUS, PLATE_PAD_X, PLATE_GAP, PLATE_NUM_W = 5, 10, 10, 28  # номер — столбец 28 px, по правому краю
+PLATE_NUM, PLATE_NAME = SCREEN_TEXT_2, POPUP_TEXT  # обычная плашка: фон CHIP_BG, рамка CHIP_BORDER
+PLATE_NUM_FONT, PLATE_NAME_FONT = 11.5, 12
+PLATE_SELECTED_BG: RGBA = (255, 255, 255, 0.09)  # выбрана: рамка, номер и имя белые
+PLATE_DELETED_BORDER, PLATE_DELETED_NUM, PLATE_DELETED_NAME = "#21412F", "#587D67", "#688C76"  # зачёркнутая в пуле
+PLATE_HOVER_BG, PLATE_HOVER_BORDER = POPUP_HOVER_BG, POPUP_HOVER_BORDER  # наведение; в макете не задано
+PLATE_SUGGESTED_OPACITY = 0.7  # подсказка: обычная плашка с пунктирной рамкой
+HEADER_FONT, HEADER_SPACING, HEADER_COUNT_FONT = 11, 0.12, 10.5  # заголовок группы: метка акцентом, число приглушено
+BADGE_HEIGHT, BADGE_RADIUS, BADGE_FONT, BADGE_PAD = 17, 3, 10, 5  # «+N»
+NOTE_ROW_H, NOTE_NUM_COL, NOTE_NUM_PAD = 28, 64, 18  # строка ноты Maps: столбец номера 64 px, правый отступ 18
+NOTE_ROW_LINE: RGBA = (110, 190, 140, 0.08)  # линия под строкой
+NOTE_EDIT_BG: RGBA = (255, 255, 255, 0.07)  # строка в правке: заливка и белая рамка 1 px внутри
+NOTE_EDIT_FIELD, NOTE_EDIT_RADIUS = "#07120C", 3  # поле имени в правке (рамка — CHIP_BORDER)
+MAP_ENTRY_H, MAP_NAME_FONT, MAP_SUB_FONT, MAP_ENTRY_GAP = 46, 12, 9.5, 2  # запись в списке карт: имя 12/500 и строка источника
+MAP_SUB_SELECTED = "#D8E6DD"  # подпись выбранной записи (обычная — SCREEN_TEXT_3)
+
 # --- Подсказка: у Qt она квадратная, с системной тенью (скругление и тень макета в QSS недоступны) ---
 TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT = "#0B0C0E", "#3A3F44", "#D5DADF"
 TOOLTIP_PX = 10
@@ -195,13 +209,8 @@ LEGACY = {
     "accent_hover": ACCENT_HOVER,
     "on_accent": SCREEN_GLASS_OUTER,
     "success": OK_LED,
-    "error": ERR_LED,
-    "warning": WARN_LED,
-    "warning_bg": "#1A1A16",  # WARN_BG поверх RECESS_BOTTOM (в QColor нужен непрозрачный)
     "selection": SCREEN_BORDER,
     "accent_muted": CHIP_BORDER,
-    "reverse": ACCENT,
-    "reverse_hover": ACCENT_HOVER,
 }
 TOKENS = LEGACY
 
@@ -211,12 +220,16 @@ def qss_rgba(c: RGBA) -> str:
     return f"rgba({r}, {g}, {b}, {round(a * 100)}%)"
 
 
-def qcolor(c: str | RGBA) -> QColor:
+def qcolor(c: str | RGBA, alpha: float | None = None) -> QColor:
+    """QColor из `#RRGGBB` или `(r, g, b, alpha)`; `alpha` (0–1) заменяет прозрачность."""
     if isinstance(c, str):
-        return QColor(c)
-    r, g, b, a = c
-    out = QColor(r, g, b)
-    out.setAlphaF(a)
+        out = QColor(c)
+    else:
+        r, g, b, a = c
+        out = QColor(r, g, b)
+        out.setAlphaF(a)
+    if alpha is not None:
+        out.setAlphaF(alpha)
     return out
 
 
@@ -364,7 +377,6 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     QCheckBox::indicator:checked:disabled, QTableView::indicator:checked:disabled {{
         background: {t['accent_muted']}; border-color: {t['accent_muted']}; }}
     QPushButton#direction {{ color: {t['accent']}; font-size: 13pt; padding: 0 6px; }}
-    QPushButton#direction[dir="reverse"] {{ color: {t['reverse']}; }}
     QPushButton#direction:disabled {{ color: {t['text_faint']}; }}
     QPushButton#iconButton {{ font-size: 14pt; padding: 1px 12px; color: {t['text_muted']}; }}
     QPushButton#iconButton:hover {{ color: {t['text']}; }}

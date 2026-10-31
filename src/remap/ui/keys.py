@@ -80,10 +80,9 @@ def _gradient(top: str, bottom: str, rect: QRectF) -> QBrush:
     return QBrush(g)
 
 
-def paint_key(p: QPainter, face: QRectF, spec: KeySpec, state: str, dpr: float, origin: QPoint,
-              badge: bool = False) -> None:
+def paint_key(p: QPainter, face: QRectF, spec: KeySpec, state: str, dpr: float, origin: QPoint) -> None:
     """Лицо клавиши в прямоугольнике `face` (с рамкой): внешняя тень, рамка 1 px, градиент, inset-линии (или тень
-    внутрь у нажатой), текстура металла от `origin`, точка-значок. Без подписи и значка — их рисует виджет.
+    внутрь у нажатой), текстура металла от `origin`. Без подписи и значка — их рисует виджет.
     Состояния: normal, hover (светлее; в макете не задано), pressed (нажата и включена — один вид)."""
     if state not in STATES:
         raise ValueError(state)
@@ -120,20 +119,12 @@ def paint_key(p: QPainter, face: QRectF, spec: KeySpec, state: str, dpr: float, 
         inner_shadow(p, inner, r_in, dpr, 1, 0, light[3], rgb=light[:3])
         inner_shadow(p, inner, r_in, dpr, dark_dy, 0, dark[3], rgb=dark[:3])
     paint_metal(p, inner, r_in, origin)  # текстура над фоном и inset-тенями, под подписью — как `.tx` в макете
-    if badge:
-        size = theme.KEY_BADGE_SIZE
-        dot = QRectF(inner.right() - theme.KEY_BADGE_INSET - size, inner.top() + theme.KEY_BADGE_INSET, size, size)
-        glow = theme.KEY_BADGE_GLOW
-        outer_shadow(p, dot, size / 2, dpr, 0, theme.KEY_BADGE_GLOW_BLUR, glow[3], rgb=glow[:3])
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(qcolor(theme.KEY_BADGE))
-        p.drawEllipse(dot)
     p.restore()
 
 
 class Key(QAbstractButton):
     """Клавиша корпуса. Состояния: обычная, наведение, нажатая/включённая (`checkable`), недоступная, фокус с клавиатуры.
-    `lit` — подпись акцентом без включения (NEXT, CONVERT); `badge` — белая точка у угла (карта не сохранена)."""
+    `lit` — подпись акцентом без включения (NEXT, CONVERT)."""
 
     def __init__(self, text: str = "", icon: str | None = None, *, spec: KeySpec = TAB, checkable: bool = False,
                  icon_stroke: float | None = None, parent: QWidget | None = None) -> None:
@@ -144,9 +135,8 @@ class Key(QAbstractButton):
         self._icon = icon
         self._icon_stroke = icon_stroke
         self._lit = False
-        self._badge = False
         self._focus_visible = False
-        self._faces = {(state, badge): _Backdrop() for state in STATES for badge in (False, True)}
+        self._faces = {state: _Backdrop() for state in STATES}
         self.setText(text)
         self.setCheckable(checkable)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -162,15 +152,6 @@ class Key(QAbstractButton):
     @lit.setter
     def lit(self, value: bool) -> None:
         self._lit = value
-        self.update()
-
-    @property
-    def badge(self) -> bool:
-        return self._badge
-
-    @badge.setter
-    def badge(self, value: bool) -> None:
-        self._badge = value
         self.update()
 
     def set_icon(self, name: str | None) -> None:
@@ -239,13 +220,13 @@ class Key(QAbstractButton):
         return theme.KEY_LABEL_HOVER if self._state() == "hover" else theme.KEY_LABEL
 
     def _face_pixmap(self) -> QPixmap:
-        state, badge = self._state(), self._badge
+        state = self._state()
         face = self.face_rect()
 
         def compose(p: QPainter, _rect: QRect, origin: QPoint) -> None:
-            paint_key(p, face, self.spec, state, p.device().devicePixelRatioF(), origin, badge)
+            paint_key(p, face, self.spec, state, p.device().devicePixelRatioF(), origin)
 
-        return self._faces[(state, badge)].get(self, compose)
+        return self._faces[state].get(self, compose)
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)

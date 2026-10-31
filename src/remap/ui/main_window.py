@@ -670,7 +670,7 @@ class MainWindow(QMainWindow):
     def _show_direction(self) -> None:
         self.direction_btn.setText(SWAP_TEXT)  # как на Profiles; карты направления — в строке под профилем
         self.direction_btn.setToolTip(SWAP_TIP)
-        _repolish(self.direction_btn, "dir", self.direction)  # в ← — цвет reverse
+        _repolish(self.direction_btn, "dir", self.direction)  # в ← — тот же вид
 
     def toggle_direction(self) -> None:
         """«⇄»: прямое или обратное направление конвертации (запоминается в ui.ini)."""

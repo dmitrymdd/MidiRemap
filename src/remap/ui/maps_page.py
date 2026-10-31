@@ -13,8 +13,8 @@ import html
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QRect, QSize, QSortFilterProxyModel, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPen
+from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QRectF, QSize, QSortFilterProxyModel, Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QStyledItemDelegate,
@@ -29,7 +29,8 @@ from ..core.notenames import ParseIssue, load_notenames, save_notenames
 from ..core.pitch import note_tip, pitch_name
 from ..storage import Storage, id_taken, sanitize_id
 from ..templates import list_map_templates, load_map_template
-from .theme import TOKENS, repolish
+from . import plates, theme
+from .theme import repolish
 
 TEMPLATE, USER = "template", "user"
 
@@ -121,9 +122,9 @@ def header_data(row: LayoutRow, col: int, role):
         f.setPointSizeF(8)
         return f
     if role == Qt.ItemDataRole.ForegroundRole:
-        return QColor(TOKENS["text_muted"])
+        return QColor(theme.ACCENT)
     if role == Qt.ItemDataRole.BackgroundRole:
-        return QColor(TOKENS["bg"])
+        return QColor(theme.RECESS_BOTTOM)
     return None
 
 
@@ -257,7 +258,7 @@ class NoteTableModel(QAbstractTableModel):
         if role == OTHERS_ROLE and col == COL_NAME:
             return max(0, len(notes) - 1)
         if role == Qt.ItemDataRole.ForegroundRole and name is None:
-            return QColor(TOKENS["text_faint"])
+            return QColor(theme.PLATE_DELETED_NAME)
         if role == Qt.ItemDataRole.TextAlignmentRole and col != COL_NAME:
             return int(Qt.AlignmentFlag.AlignCenter)
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -303,8 +304,6 @@ class NoteTableModel(QAbstractTableModel):
 class NameDelegate(QStyledItemDelegate):
     """Имя и бейдж «+N» (имя ещё на N нотах карты) — как в виде «кабелями». Правка имени — как обычно."""
 
-    BADGE_PAD = 12
-
     def paint(self, p, option, index) -> None:
         others = index.data(OTHERS_ROLE)
         if not others:
@@ -316,25 +315,15 @@ class NameDelegate(QStyledItemDelegate):
         rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, opt.widget)
         margin = style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin, opt, opt.widget) + 1
         badge = f"+{others}"
-        small = QFont(opt.font)
-        small.setPointSizeF(max(6.0, small.pointSizeF() - 1.5))
-        small.setBold(True)
         p.save()
-        p.setFont(small)
-        bw = p.fontMetrics().horizontalAdvance(badge) + self.BADGE_PAD
+        bw = plates.badge_width(badge)
         # имя рисует сам стиль (тот же отступ, что у строк без бейджа); место под бейдж — заранее
         opt.text = opt.fontMetrics.elidedText(opt.text, Qt.TextElideMode.ElideRight,
                                               max(0, rect.width() - 2 * margin - bw - 8))
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, p, opt.widget)
         x = rect.left() + margin + opt.fontMetrics.horizontalAdvance(opt.text) + 8
-        h = min(rect.height() - 8, 16)
-        pill = QRect(x, rect.center().y() - h // 2 + 1, bw, h)
-        p.setPen(QPen(QColor(TOKENS["border"]), 1))
-        p.setBrush(QColor(TOKENS["bg"]))
-        p.drawRoundedRect(pill, h / 2, h / 2)
-        p.setFont(small)
-        p.setPen(QColor(TOKENS["text_muted"]))
-        p.drawText(pill, Qt.AlignmentFlag.AlignCenter, badge)
+        h = theme.BADGE_HEIGHT
+        plates.paint_badge(p, QRectF(x, rect.center().y() - h / 2 + 1, bw, h), badge)
         p.restore()
 
 
@@ -393,40 +382,14 @@ class MapListDelegate(QStyledItemDelegate):
         return QSize(200, 30 if index.data(HEADER_ROLE) else 46)
 
     def paint(self, p, option, index) -> None:
-        p.save()
-        r: QRect = option.rect
-        font = QFont(option.font)
+        r = QRectF(option.rect)
         if index.data(HEADER_ROLE):
-            font.setPointSizeF(8)
-            font.setBold(True)
-            p.setFont(font)
-            p.setPen(QColor(TOKENS["text_muted"]))
-            p.drawText(r.adjusted(10, 0, -10, -4), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
-                       index.data())
-            p.restore()
+            plates.paint_group_header(p, r.adjusted(4, 0, -4, 0), index.data() or "", variant="scene", caret=False)
             return
         enabled = bool(index.flags() & Qt.ItemFlag.ItemIsEnabled)
-        if option.state & QStyle.StateFlag.State_Selected:
-            p.fillRect(r, QColor(TOKENS["selection"]))
-            p.fillRect(QRect(r.left(), r.top(), 3, r.height()), QColor(TOKENS["accent"]))
-        elif option.state & QStyle.StateFlag.State_MouseOver and enabled:
-            p.fillRect(r, QColor(TOKENS["surface_hover"]))
-        text = r.adjusted(12, 4, -8, -4)
-        half = text.height() // 2
-        font.setBold(enabled)
-        p.setFont(font)
-        p.setPen(QColor(TOKENS["text"] if enabled else TOKENS["text_faint"]))
-        title = p.fontMetrics().elidedText(index.data() or "", Qt.TextElideMode.ElideRight, text.width())
-        p.drawText(QRect(text.left(), text.top(), text.width(), half),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, title)
-        font.setBold(False)
-        font.setPointSizeF(max(font.pointSizeF() - 1, 7))
-        p.setFont(font)
-        p.setPen(QColor(TOKENS["text_muted"]))
-        sub = p.fontMetrics().elidedText(index.data(SUBTITLE_ROLE) or "", Qt.TextElideMode.ElideRight, text.width())
-        p.drawText(QRect(text.left(), text.top() + half, text.width(), text.height() - half),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
-        p.restore()
+        plates.paint_map_entry(p, r.adjusted(0, 2, 0, -2), index.data() or "", index.data(SUBTITLE_ROLE) or "",
+                               selected=bool(option.state & QStyle.StateFlag.State_Selected),
+                               hover=bool(option.state & QStyle.StateFlag.State_MouseOver), enabled=enabled)
 
 
 def _subtitle(m: NoteMap, legacy: bool = False) -> str:

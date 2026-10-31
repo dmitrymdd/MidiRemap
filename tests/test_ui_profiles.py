@@ -15,7 +15,7 @@ from remap.core.notemap import NoteMap, articulations, normalize_name
 from remap.core.profile import RemapProfile, Rule, legacy_profile
 from remap.storage import sanitize_id
 from remap.templates import load_map_template
-from remap.ui import cable_view
+from remap.ui import cable_view, plates, theme
 from remap.ui.main_window import PAGE_CONVERT, PAGE_PROFILES, MainWindow
 from remap.ui.maps_page import TEMPLATE, USER, MapRef
 from remap.ui.profiles_page import ID_ROLE
@@ -1009,7 +1009,7 @@ def test_swipe_marks_crossed_cables_and_deletes_them_in_one_undo_step(window, ap
         _right(ed.view, "MouseMove", QPointF(x + (k % 2) * 3, y0 + (y1 - y0) * k / 8))
     marked = {c.ends for c in ed.swiped_cables()}
     assert marked == expected  # отмечено ровно то, что пересёк путь
-    assert all(c.pen().color().name() == cable_view.TOKENS["error"].lower() for c in ed.swiped_cables())
+    assert all(c.pen().color().name().upper() == theme.ERR_LED for c in ed.swiped_cables())
     # во время росчерка — ни перестройки, ни правки
     assert ed.cable_items == before_items and page.work.to_dict() == before_rules
     _right(ed.view, "MouseButtonRelease", QPointF(x, y1))
@@ -1464,11 +1464,8 @@ def test_truncated_names_in_tooltips(window, app):
     _page, ed = cables_page(window, size=(900, 700))
     ed.columns = (0.2, 0.6, 0.2)  # узкие колонки — длинные имена обрезаются
     ed.refresh()
-    from remap.ui.cable_view import _font
-    from PySide6.QtGui import QFontMetrics
-    fm = QFontMetrics(_font(ed.view.font()))
-    cut = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) > i.name_room()]
-    fits = [i for i in ed.target_items.values() if fm.horizontalAdvance(i.name) <= i.name_room()]
+    cut = [i for i in ed.target_items.values() if plates.name_width(i.name, i.italic) > i.name_room()]
+    fits = [i for i in ed.target_items.values() if plates.name_width(i.name, i.italic) <= i.name_room()]
     assert cut and all(i.toolTip().startswith(i.name) for i in cut)
     assert all(not i.toolTip().startswith(i.name) for i in fits if i.toolTip())
 
@@ -1622,7 +1619,7 @@ def test_reverse_uses_forward_layout(window, app):
     page, ed = cables_page(window)
     w = page.work
     c = geometry(ed)
-    assert c.pen().color().name().upper() == cable_view.TOKENS["accent"].upper()
+    assert c.pen().color().name().upper() == theme.CABLE.upper()  # обычный кабель — CABLE (#82BC98)
     assert ed.from_head.indexOf(page.from_btn) >= 0 and page.from_btn.text() == w.source_map.name
     assert page.to_btn.text() == w.target_map.name and page.source_btn is page.from_btn
 
@@ -1637,7 +1634,7 @@ def test_reverse_uses_forward_layout(window, app):
     assert set(ed.target_items) <= ezd
     assert {n for i in ed.scene_rows for n in i.notes} <= set(w.target_map.names)
     c = geometry(ed)
-    assert c.pen().color().name().upper() == cable_view.TOKENS["reverse"].upper()
+    assert c.pen().color().name().upper() == theme.CABLE.upper()  # в ← кабели такие же: направления цветом не различаем
     assert "  →  " in c.toolTip()  # подсказка — как на картинке, слева направо
     # кнопки на местах, но выбирают другую карту: над «from» — цель, над «to» — источник
     assert page.from_btn.text() == w.target_map.name and page.to_btn.text() == w.source_map.name
@@ -1713,7 +1710,6 @@ def test_direction_button_flips_and_is_not_an_undo_step(window, app):
 
 
 def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
-    from remap.core.profile import REVERSE
     page, ed = reverse_page(window, accept=False)
     rp = page.work.reversed()
     key, notes = three_note_articulation(rp)  # артикуляция EZD3, все номера которой есть в SD3
@@ -1740,7 +1736,7 @@ def test_reverse_assign_write_to_goes_to_source_copy(window, app, storage):
     slot, dst = single_note_articulation(page.work.source_map)
     show_target_group(ed, "a:" + slot)
     ed.begin_drag({single}, target_point(ed, "a:" + slot))
-    assert ed.overlay.tone == cable_view.TONES[REVERSE] and ed.overlay.preview
+    assert ed.overlay.preview and not hasattr(ed.overlay, "tone")  # превью того же цвета, что в →
     ed.end_drag(drop=True)
     app.processEvents()
     assert page.work.effective_reverse()[single] == Rule.map_to(dst) and single not in page.work.rules
@@ -2466,3 +2462,47 @@ def test_scroll_stays_put_across_relayouts(window, app):
     key, poff = first.notes[0], first.rect.top() - pbar.value()
     page.assign_note([above.notes[0]], above.notes[0])
     assert ed.pool_items[key].rect.top() - pbar.value() == poff
+
+
+# --- плашки и цвета кабелей (шаг редизайна: `plates.py`) ---
+
+def test_row_state_maps_to_plate_states_and_selection_whitens_the_cable(window, app):
+    _page, ed = cables_page(window)
+    cable = ed.cable_items[0]
+    assert cable.pen().color().name().upper() == theme.CABLE.upper()
+    ed.set_selection(set(cable.src.notes))
+    assert cable.src.state() == "selected"
+    assert cable.pen().color().name().upper() == theme.SELECTED.upper()  # кабель выбранной строки — белый
+    ed.set_selection(set())
+    assert cable.pen().color().name().upper() == theme.CABLE.upper() and cable.src.state() in ("normal", "suggested", "deleted")
+    row = ed.pool_rows[0]
+    base = row.state()
+    row.warn = True
+    assert row.state() == "warn"
+    row.warn = False
+    row.highlighted = True
+    assert row.state() == "drop"  # кабель под курсором или цель drop — рамка акцентом
+    row.highlighted = False
+    row._hover = True
+    assert row.state() == "hover"
+    row._hover = False
+    assert row.state() == base
+
+
+def test_group_headers_use_pool_and_scene_variants(window, app):
+    _page, ed = cables_page(window)
+    assert ed.pool_headers and all(h.variant == "pool" for h in ed.pool_headers.values())
+    assert ed.scene_headers and all(h.variant == "scene" for h in ed.scene_headers.values())
+    head = next(iter(ed.pool_headers.values()))
+    assert head.label_x() - head.rect.left() == plates.header_label_x("pool")
+    scene_head = next(iter(ed.scene_headers.values()))
+    assert scene_head.label_x() - scene_head.rect.left() == plates.header_label_x("scene")
+
+
+def test_suggested_cable_is_dashed_cable_colour(window, app):
+    _page, ed = cables_page(window, accept=False)
+    dashed = list(ed.suggestion_items)
+    if dashed:
+        pen = dashed[0].pen()
+        assert pen.style() == Qt.PenStyle.CustomDashLine and pen.color().name().upper() == theme.CABLE.upper()
+        assert pen.color().alphaF() == pytest.approx(cable_view.SUGGESTED, abs=0.01)

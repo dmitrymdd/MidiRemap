@@ -51,7 +51,8 @@ from .cable_view import CableEditor
 from .maps_page import TEMPLATE, USER, MapRef, wrapped_tooltip
 from .combo import ComboBox
 from .settings import ui_settings
-from .theme import TOKENS, repolish
+from . import theme
+from .theme import repolish
 
 SOURCE, TARGET = "source", "target"
 
@@ -166,7 +167,7 @@ class UnassignedDialog(QDialog):
             at = tgt.names.get(note) if tgt is not None else None
             target = QTableWidgetItem(at or "—")
             if at is None:
-                target.setForeground(QColor(TOKENS["text_faint"]))
+                target.setForeground(QColor(theme.PLATE_DELETED_NAME))
             for col, item in enumerate((check, num, name, target)):
                 self.table.setItem(row, col, item)
         header = self.table.horizontalHeader()
@@ -625,7 +626,7 @@ class ProfilesPage(QWidget):
     def _show_direction(self, direction: str) -> None:
         self.direction = direction
         self.direction_btn.setText(SWAP_TEXT)
-        repolish(self.direction_btn, "dir", direction)  # направление видно цветом: в ← — цвет reverse
+        repolish(self.direction_btn, "dir", direction)  # направление цветом не различаем: свойство dir остаётся для тестов и подсказок
 
     @property
     def source_btn(self) -> QPushButton:

@@ -182,7 +182,7 @@ def test_unknown_icon_is_rejected(app):
 
 
 # --- лицо клавиши: пиксели ---
-def _paint(spec, state, dpr=1.0, badge=False):
+def _paint(spec, state, dpr=1.0):
     m = key_margins(spec)
     face = QRectF(m.left(), m.top(), spec.w, spec.h)
     img = QImage(round((spec.w + m.left() + m.right()) * dpr), round((spec.h + m.top() + m.bottom()) * dpr),
@@ -190,7 +190,7 @@ def _paint(spec, state, dpr=1.0, badge=False):
     img.setDevicePixelRatio(dpr)
     img.fill(Qt.GlobalColor.transparent)
     p = QPainter(img)
-    paint_key(p, face, spec, state, dpr, QPoint(0, 0), badge)
+    paint_key(p, face, spec, state, dpr, QPoint(0, 0))
     p.end()
     return img, face
 
@@ -249,16 +249,6 @@ def test_face_paints_at_fractional_dpr(app, dpr):
     assert img.pixelColor(int(face.center().x() * dpr), inner_row).red() > 20  # ниже уже не рамка
 
 
-def test_badge_is_a_white_dot_in_the_upper_right_corner(app):
-    img, face = _paint(SQUARE, "normal", badge=True)
-    plain, _ = _paint(SQUARE, "normal")
-    inner_right, inner_top = face.right() - 1, face.top() + 1
-    dot = (int(inner_right - theme.KEY_BADGE_INSET - theme.KEY_BADGE_SIZE / 2), int(inner_top + theme.KEY_BADGE_INSET + 2))
-    assert img.pixelColor(*dot).red() > 240 and plain.pixelColor(*dot).red() < 80
-    assert img.pixelColor(int(face.center().x()), int(face.center().y())) == plain.pixelColor(
-        int(face.center().x()), int(face.center().y()))  # остальное лицо не тронуто
-
-
 def test_unknown_state_is_rejected(app):
     img = QImage(10, 10, QImage.Format.Format_ARGB32)
     p = QPainter(img)
@@ -283,9 +273,6 @@ def test_faces_are_cached_until_size_or_position_change(app):
     key.move(40, 30)  # текстура привязана к окну: сдвиг — новая сборка
     key.grab()
     assert key.rebuilds == first + 1
-    key.badge = True
-    key.grab()
-    assert key.rebuilds == first + 2
 
 
 def test_widget_paints_label_icon_and_texture(app):
