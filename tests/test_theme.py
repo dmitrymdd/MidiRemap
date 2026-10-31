@@ -77,11 +77,68 @@ def test_font_helpers(app):
     wide = QFont("Martian Mono")
     wide.setPixelSize(20)
     narrow = theme.mono_font(20)
-    assert narrow.family() == "Martian Mono" and narrow.pixelSize() == 20
+    assert narrow.family() == "Martian Mono" and narrow.pointSizeF() == pytest.approx(15.0)  # 20 px = 15 pt
     assert QFontMetrics(narrow).horizontalAdvance("MMMM") < QFontMetrics(wide).horizontalAdvance("MMMM")  # wdth 75
     lab = theme.label_font(12)
     assert lab.family() == "Barlow Condensed" and lab.weight() == QFont.Weight.DemiBold
     assert lab.capitalization() == QFont.Capitalization.AllUppercase and lab.letterSpacing() == pytest.approx(12 * 0.13, abs=0.05)
+    assert theme.label_font(13.5, spacing=0.12).letterSpacing() == pytest.approx(13.5 * 0.12, abs=0.02)
+
+
+@pytest.mark.ui
+@pytest.mark.parametrize("px", [8.5, 9.5, 10.5, 11.5, 12, 12.5, 13.5, 20])
+def test_px_sizes_go_through_pt(app, px):
+    """Размер в px задаётся через pt (px × 0.75): `setPixelSize` целочислен. Целые px совпадают с пиксельным размером;
+    дробные движок шрифтов Qt округляет до целого пикселя устройства (см. отчёт этапа), поэтому проверяется только
+    заданный размер, а не ширина текста."""
+    from PySide6.QtGui import QFontMetricsF
+    theme.load_fonts()
+    font = theme.mono_font(px)
+    assert font.pointSizeF() == pytest.approx(px * 0.75)
+    assert font.hintingPreference() == QFont.HintingPreference.PreferNoHinting
+    if px == int(px):
+        pixel = QFont("Martian Mono")
+        pixel.setPixelSize(int(px))
+        pixel.setVariableAxis(QFont.Tag("wdth"), theme.MONO_WIDTH)
+        pixel.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        assert QFontMetricsF(font).horizontalAdvance("M" * 10) == pytest.approx(
+            QFontMetricsF(pixel).horizontalAdvance("M" * 10), abs=0.5)
+
+
+@pytest.mark.ui
+def test_install_app_font_sets_martian_mono_12_and_wdth_survives_qss(app):
+    """Шрифт приложения — Martian Mono 12 px с wdth 75; QSS `font-size` его ось ширины не сбрасывает."""
+    from PySide6.QtGui import QFontMetricsF
+    from PySide6.QtWidgets import QApplication, QLabel
+    theme.load_fonts()
+    old_font, old_css = QApplication.font(), app.styleSheet()
+    try:
+        font = theme.install_app_font()
+        assert QApplication.font().family() == "Martian Mono" and QApplication.font().pointSizeF() == pytest.approx(9.0)
+        assert font.family() == QApplication.font().family()
+        narrow = QFontMetricsF(theme.mono_font(12)).horizontalAdvance("M" * 10)
+        wide = QFont("Martian Mono")
+        wide.setPixelSize(12)
+        assert narrow < QFontMetricsF(wide).horizontalAdvance("M" * 10) * 0.9  # wdth 75 уже у шрифта приложения
+        app.setStyleSheet(theme.stylesheet() + " QLabel#probe { font-size: 20px; }")
+        label = QLabel("M" * 10)
+        label.setObjectName("probe")
+        label.ensurePolished()
+        got = QFontMetricsF(label.font()).horizontalAdvance("M" * 10)
+        assert got == pytest.approx(QFontMetricsF(theme.mono_font(20)).horizontalAdvance("M" * 10), rel=0.02)
+        plain = QLabel("M" * 10)
+        plain.ensurePolished()
+        assert QFontMetricsF(plain.font()).horizontalAdvance("M" * 10) == pytest.approx(narrow, rel=0.02)  # без своего размера
+    finally:
+        QApplication.setFont(old_font)
+        app.setStyleSheet(old_css)
+
+
+def test_stylesheet_does_not_override_the_app_font():
+    css = theme.stylesheet()
+    assert "Segoe UI" not in css
+    first = css.split("QWidget {")[1].split("}")[0]
+    assert "font" not in first  # иначе перекроет install_app_font()
 
 
 def test_missing_font_file_only_warns(monkeypatch, caplog):

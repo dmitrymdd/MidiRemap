@@ -10,6 +10,7 @@ from importlib import resources
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtWidgets import QApplication
 
 log = logging.getLogger(__name__)
 
@@ -29,11 +30,36 @@ BODY_EDGE_DARK: RGBA = (0, 0, 0, 0.6)
 # Утопленный блок (под экраны)
 RECESS_TOP, RECESS_BOTTOM, RECESS_RADIUS = "#070808", "#0D0E10", 12
 
-# --- Клавиши ---
+# --- Клавиши: лицо — рамка 1 px, градиент, две inset-линии, внешняя тень; поверх — текстура ---
 KEY_TOP, KEY_BOTTOM, KEY_BORDER, KEY_RADIUS = "#282B2F", "#1C1E21", "#08090A", 7
 KEY_LABEL = "#C3C9CE"
-KEY_PRESSED_TOP, KEY_PRESSED_BOTTOM = "#131517", "#1A1C1F"
+KEY_LABEL_HOVER = "#E6EAED"  # наведение; в макете не задано
+KEY_SWAP_ICON = "#F4F6F7"  # стрелки «⇄» не меняют цвет с состоянием клавиши
+KEY_INSET_LIGHT: RGBA = (255, 255, 255, 0.11)  # inset 0 1px 0
+KEY_INSET_DARK: RGBA = (0, 0, 0, 0.4)  # inset 0 -1px 0
+KEY_SHADOW = {"dy": 2, "blur": 4, "alpha": 0.6}  # outer 0 2px 4px rgba(0,0,0,.6)
+KEY_PRESSED_TOP, KEY_PRESSED_BOTTOM = "#131517", "#1A1C1F"  # нажата и включена — один вид
+KEY_PRESSED_SHADOW = {"dy": 2, "blur": 4, "alpha": 0.8}  # inset 0 2px 4px rgba(0,0,0,.8)
+KEY_PRESSED_EDGE: RGBA = (255, 255, 255, 0.06)  # outer 0 1px 0: светлая линия под нажатой
 KEY_HOVER_TOP, KEY_HOVER_BOTTOM = "#30343A", "#22252A"  # наведение; в макете не задано
+KEY_FOCUS_RING, KEY_FOCUS_GAP = "#8FC7A3", 1  # контур 1 px (как у кнопки логотипа), зазор от лица: поля клавиши малы
+KEY_BADGE, KEY_BADGE_SIZE, KEY_BADGE_INSET = "#FFFFFF", 5, 5  # точка «не сохранено» у правого верхнего угла
+KEY_BADGE_GLOW: RGBA = (255, 255, 255, 0.7)  # свечение 0 0 4px
+KEY_BADGE_GLOW_BLUR = 4
+# Большая клавиша CONVERT: другой градиент и тени
+KEY_GO_TOP, KEY_GO_BOTTOM, KEY_GO_RADIUS = "#2A2D31", "#1C1E21", 10
+KEY_GO_INSET_LIGHT: RGBA = (255, 255, 255, 0.13)  # inset 0 1px 0
+KEY_GO_INSET_DARK: RGBA = (0, 0, 0, 0.45)  # inset 0 -2px 0
+KEY_GO_SHADOW = {"dy": 3, "blur": 6, "alpha": 0.65}  # outer 0 3px 6px rgba(0,0,0,.65)
+# Размеры лица клавиш (с рамкой), px; None — по тексту и полям
+KEY_TAB_SIZE, KEY_HELP_SIZE, KEY_SQUARE_SIZE = (118, 36), (36, 36), (38, 38)
+KEY_SWAP_SIZE, KEY_MAP_SIZE, KEY_CLOSE_SIZE, KEY_GO_SIZE = (44, 38), (48, 38), (34, 34), (268, 68)
+KEY_TUT_HEIGHT, KEY_TUT_PAD = 36, 16
+# Подпись клавиш: Barlow Condensed, px / межбуквенный интервал в em / зазор значок–подпись / поле по бокам
+KEY_TAB_FONT, KEY_TAB_SPACING, KEY_TAB_GAP, KEY_TAB_PAD = 13.5, 0.12, 8, 13
+KEY_HELP_FONT = 18
+KEY_TUT_FONT, KEY_TUT_SPACING = 14, 0.14
+KEY_GO_FONT, KEY_GO_SPACING, KEY_GO_GAP = 20, 0.22, 14
 
 # --- Винты и шелкография ---
 SCREW_LIGHT, SCREW_MID, SCREW_DARK, SCREW_RIM = "#8A9096", "#3A3E43", "#16181A", "#08090A"
@@ -42,6 +68,7 @@ SCREW_SLOT = "#0A0B0C"
 SCREW_SLOT_LIGHT: RGBA = (255, 255, 255, 0.12)  # светлая копия шлица, сдвинутая на (+0.6, +0.6)
 SILK_TEXT = "#9AA1A8"
 SILK_FAINT = "#6B7278"  # приглушённая шелкография (недоступное, подсказки); в макете не задано
+KEY_LABEL_DISABLED = SILK_FAINT  # недоступная клавиша; в макете не задано
 
 # --- Экран (зелёное стекло) ---
 SCREEN_GLASS_INNER, SCREEN_GLASS_MID, SCREEN_GLASS_OUTER = "#132A1F", "#0D1C15", "#0A1711"  # радиальный
@@ -65,10 +92,16 @@ OK_LED, OK_TEXT, OK_BORDER = "#62D69A", "#8FC7A3", "#477A5C"
 WARN_LED, WARN_TEXT, WARN_BORDER, WARN_BG = "#E3D36B", "#E6DA8E", "#6F7748", (227, 211, 107, 0.06)
 ERR_LED, ERR_TEXT, ERR_BORDER, ERR_BG = "#F0646E", "#F2939A", "#7C4248", (240, 100, 110, 0.07)
 
-# --- Подсказка ---
-TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_RADIUS, TOOLTIP_TEXT = "#0B0C0E", "#3A3F44", 4, "#D5DADF"
+# --- Подсказка: у Qt она квадратная, с системной тенью (скругление и тень макета в QSS недоступны) ---
+TOOLTIP_BG, TOOLTIP_BORDER, TOOLTIP_TEXT = "#0B0C0E", "#3A3F44", "#D5DADF"
 TOOLTIP_PX = 10
-TOOLTIP_MAX_WIDTH = 290  # QSS не умеет ограничивать ширину подсказки: переносы — на стороне текста
+# Поля задаём в QSS половинными: Qt считает padding и рамку дважды (рамка виджета + `margin` метки QTipLabel =
+# 1 + padding + рамка) и ещё 1 px своего отступа, так что от края до текста выходит 2·(padding + 1) + 2 — по вертикали
+# 10, по горизонтали 12 px (в макете плашка: рамка 1 + поле 8 / 10 = 9 / 11).
+TOOLTIP_PAD_Y, TOOLTIP_PAD_X = 3, 4
+TOOLTIP_MAX_WIDTH = 290  # QSS не умеет ограничивать ширину подсказки: переносы — на стороне текста (`tips.tip()`)
+TOOLTIP_TEXT_WIDTH = TOOLTIP_MAX_WIDTH - 2 * (2 * (TOOLTIP_PAD_X + 1) + 2)  # 266: колонка текста
+TOOLTIP_LINE_HEIGHT = 150  # %
 
 # --- Шрифты ---
 MONO_FILE = "MartianMono.ttf"
@@ -76,7 +109,9 @@ LABEL_FILES = ("BarlowCondensed-Medium.ttf", "BarlowCondensed-SemiBold.ttf")
 MONO_FAMILY = "Martian Mono"  # реальные имена выставляет load_fonts()
 LABEL_FAMILY = "Barlow Condensed"
 MONO_WIDTH = 75.0  # ось wdth Martian Mono (75–112.5)
-LABEL_SPACING = 0.13  # межбуквенный интервал подписей, в em
+LABEL_SPACING = 0.13  # межбуквенный интервал подписей по умолчанию, в em
+APP_FONT_PX = 12  # шрифт приложения по умолчанию: Martian Mono 12 px, wdth 75
+PX_TO_PT = 0.75  # 96 dpi: размер в px × 0.75 = размер в pt (дробные px, например 13.5, — только так)
 
 # --- Металл: две текстуры поверх любой металлической поверхности (файлы в assets/textures) ---
 METAL_BRUSHED_FILE, METAL_BRUSHED_TILE, METAL_BRUSHED_OPACITY = "metal009_brushed_tile.png", 512, 0.02  # шлифовка
@@ -162,23 +197,37 @@ def load_fonts() -> dict[str, str]:
     return {"mono": MONO_FAMILY, "label": LABEL_FAMILY}
 
 
-def mono_font(px: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+def _sized(font: QFont, px: float, weight: QFont.Weight) -> QFont:
+    """Размер в px (допустимы дробные: 13.5, 12.5, 8.5) через pt: `setPixelSize` принимает только целые. Без хинтинга
+    и со сглаживанием — ближе к тексту браузера, по которому нарисован макет."""
+    font.setPointSizeF(px * PX_TO_PT)
+    font.setWeight(weight)
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+    return font
+
+
+def mono_font(px: float, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     """Martian Mono, узкая ширина (wdth 75)."""
-    f = QFont(MONO_FAMILY)
-    f.setPixelSize(px)
-    f.setWeight(weight)
+    f = _sized(QFont(MONO_FAMILY), px, weight)
     f.setVariableAxis(QFont.Tag("wdth"), MONO_WIDTH)
     return f
 
 
-def label_font(px: int, weight: QFont.Weight = QFont.Weight.DemiBold) -> QFont:
-    """Barlow Condensed, заглавные, разрядка ~0.13 em."""
-    f = QFont(LABEL_FAMILY)
-    f.setPixelSize(px)
-    f.setWeight(weight)
+def label_font(px: float, weight: QFont.Weight = QFont.Weight.DemiBold, spacing: float = LABEL_SPACING) -> QFont:
+    """Barlow Condensed, заглавные, разрядка `spacing` em (по умолчанию 0.13)."""
+    f = _sized(QFont(LABEL_FAMILY), px, weight)
     f.setCapitalization(QFont.Capitalization.AllUppercase)
-    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, px * LABEL_SPACING)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, px * spacing)
     return f
+
+
+def install_app_font() -> QFont:
+    """Шрифт приложения по умолчанию — Martian Mono 12 px (wdth 75), как корень макета. Вызывается после
+    `load_fonts()` и до стилей; в QSS шрифт `QWidget` не задаётся, иначе он перекроет этот."""
+    font = mono_font(APP_FONT_PX)
+    QApplication.setFont(font)
+    return font
 
 
 def stylesheet(t: dict[str, str] = TOKENS) -> str:
@@ -189,12 +238,11 @@ def stylesheet(t: dict[str, str] = TOKENS) -> str:
     key_hover = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_HOVER_TOP}, stop:1 {KEY_HOVER_BOTTOM})"
     key_down = f"qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {KEY_PRESSED_TOP}, stop:1 {KEY_PRESSED_BOTTOM})"
     return f"""
-    QWidget {{ background: transparent; color: {t['text']}; font-family: "Segoe UI"; font-size: 10pt; }}
+    QWidget {{ background: transparent; color: {t['text']}; }}  /* шрифт — приложения (install_app_font) */
     QMainWindow {{ background: {BODY_BOTTOM}; }}  /* металл центрального виджета рисует ui/metal.py */
     QDialog {{ background: {body}; }}
     QToolTip {{ background: {TOOLTIP_BG}; color: {TOOLTIP_TEXT}; border: 1px solid {TOOLTIP_BORDER};
-                border-radius: {TOOLTIP_RADIUS}px; padding: 4px 6px; font-family: {mono};
-                font-size: {TOOLTIP_PX}px; }}
+                padding: {TOOLTIP_PAD_Y}px {TOOLTIP_PAD_X}px; font-family: {mono}; font-size: {TOOLTIP_PX}px; }}
     QLabel#title {{ font-size: 20pt; font-weight: 600; }}
     QLabel#subtitle, QLabel#muted {{ color: {t['text_muted']}; }}
     QLabel#section {{ color: {t['text_muted']}; font-family: {label}; font-size: 10pt; font-weight: 600; }}

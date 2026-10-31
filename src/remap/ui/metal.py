@@ -6,11 +6,11 @@
 """
 
 import logging
-from math import ceil, erfc, sqrt
+from math import ceil, erfc, floor, sqrt
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform,
+    QBrush, QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QRadialGradient, QTransform,
 )
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
@@ -174,6 +174,8 @@ class MetalBody(QWidget):
         paint_metal(p, rect, 0, origin)  # текстура — над всем, как ::before/::after макета
 
     def place_screws(self) -> None:
+        if not self.screws:
+            return  # `screws=False` (диалоги): zip(strict) с пустым списком упал бы
         far_x = self.width() - theme.SCREW_INSET - theme.SCREW_SIZE
         far_y = self.height() - theme.SCREW_INSET - theme.SCREW_SIZE
         for screw, (x, y) in zip(self.screws, ((theme.SCREW_INSET, theme.SCREW_INSET), (far_x, theme.SCREW_INSET),
@@ -193,13 +195,15 @@ class MetalBody(QWidget):
         QPainter(self).drawPixmap(0, 0, self._backdrop.get(self, self._compose))
 
 
-def _inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float) -> None:
-    """Тень внутри фигуры, эквивалент `inset 0 DYpx BLURpx rgba(0,0,0,A)`: размытый гауссом край «окна», сдвинутого
-    вниз на DY. Альфа в точке — A·½·erfc(x / σ√2), x — расстояние внутрь от сдвинутого края (σ = BLUR/2). Считается
-    вложенными областями с режимом Source (без швов антиалиасинга) во временном изображении."""
-    sigma, step = theme.RECESS_SHADOW_BLUR / 2, 0.5
-    edge = shape.translated(0, theme.RECESS_SHADOW_DY)
-    img = QImage(ceil(shape.right() * dpr) + 1, ceil(shape.bottom() * dpr) + 1,
+def _gauss_alpha(distance: float, sigma: float, alpha: float) -> float:
+    """Альфа размытого гауссом края в точке на расстоянии `distance` от края (положительное — в «тень»)."""
+    return alpha * 0.5 * erfc(distance / (sigma * sqrt(2)))
+
+
+def _stacked_levels(p: QPainter, bounds: QRectF, dpr: float, levels: list[tuple[QPainterPath, QColor]]) -> QImage:
+    """Рисует вложенные области `levels` (от большей к меньшей) в временное изображение с режимом Source: каждая меньшая
+    заменяет, а не накладывается, поэтому швов антиалиасинга нет. Изображение — на `bounds` в координатах painter."""
+    img = QImage(ceil(bounds.width() * dpr) + 1, ceil(bounds.height() * dpr) + 1,
                  QImage.Format.Format_ARGB32_Premultiplied)
     img.setDevicePixelRatio(dpr)
     img.fill(Qt.GlobalColor.transparent)
@@ -207,8 +211,43 @@ def _inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float) -> None
     q.setRenderHint(QPainter.RenderHint.Antialiasing)
     q.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
     q.setPen(Qt.PenStyle.NoPen)
-    levels = [-theme.RECESS_SHADOW_DY - 1 + i * step for i in range(int((theme.RECESS_SHADOW_BLUR * 2 + 4) / step))]
-    for x in reversed(levels):  # от большей области к меньшей: Source заменяет, а не накладывает
+    q.translate(-bounds.topLeft())
+    for path, color in levels:
+        q.setBrush(color)
+        q.drawPath(path)
+    q.end()
+    return img
+
+
+def _hard_shadow(p: QPainter, shape: QRectF, radius: float, dy: float, color: QColor, inside: bool) -> None:
+    """Тень без размытия (`0 DYpx 0 цвет`): та же фигура, сдвинутая на DY. Внутри — часть фигуры, не закрытая сдвинутой
+    копией; снаружи — часть копии за пределами фигуры."""
+    body, moved = _shape_path(shape, radius), _shape_path(shape.translated(0, dy), radius)
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    if inside:
+        p.setClipPath(body, Qt.ClipOperation.IntersectClip)
+        p.drawPath(body.subtracted(moved))
+    else:
+        p.drawPath(moved.subtracted(body))
+    p.restore()
+
+
+def inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float, dy: float, blur: float, alpha: float,
+                 rgb: tuple[int, int, int] = (0, 0, 0)) -> None:
+    """Тень внутри фигуры, эквивалент `inset 0 DYpx BLURpx rgba(rgb, alpha)`: размытый гауссом край «окна», сдвинутого
+    на DY (вниз при DY > 0). Альфа в точке — A·½·erfc(x / σ√2), x — расстояние внутрь от сдвинутого края (σ = BLUR/2).
+    Считается вложенными областями во временном изображении. BLUR = 0 — резкая линия."""
+    if blur <= 0:
+        _hard_shadow(p, shape, radius, dy, qcolor((*rgb, alpha)), inside=True)
+        return
+    sigma, step = blur / 2, 0.5
+    edge = shape.translated(0, dy)
+    levels = []
+    for i in reversed(range(int((blur * 2 + 4) / step))):  # от большей области к меньшей
+        x = -abs(dy) - 1 + i * step
         inner = edge.adjusted(x, x, -x, -x)
         if inner.width() <= 0 or inner.height() <= 0:
             continue
@@ -216,13 +255,46 @@ def _inner_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float) -> None
         region.setFillRule(Qt.FillRule.OddEvenFill)
         region.addRect(shape.adjusted(-4, -4, 4, 4))
         region.addRoundedRect(inner, max(radius - x, 0), max(radius - x, 0))
-        color = qcolor((0, 0, 0, theme.RECESS_SHADOW_ALPHA * 0.5 * erfc((x - step / 2) / (sigma * sqrt(2)))))
-        q.setBrush(color)
-        q.drawPath(region)
-    q.end()
+        levels.append((region, qcolor((*rgb, _gauss_alpha(x - step / 2, sigma, alpha)))))
+    img = _stacked_levels(p, QRectF(0, 0, shape.right(), shape.bottom()), dpr, levels)
     p.save()
     p.setClipPath(_shape_path(shape, radius), Qt.ClipOperation.IntersectClip)
     p.drawImage(0, 0, img)
+    p.restore()
+
+
+def outer_shadow(p: QPainter, shape: QRectF, radius: float, dpr: float, dy: float, blur: float, alpha: float,
+                 rgb: tuple[int, int, int] = (0, 0, 0)) -> None:
+    """Тень снаружи фигуры, эквивалент `0 DYpx BLURpx rgba(rgb, alpha)`; под самой фигурой тени нет (как у box-shadow).
+    Тот же метод, что у `inner_shadow`: альфа — A·½·erfc(d / σ√2), d — расстояние наружу от сдвинутого края. Тень
+    выходит за фигуру на BLUR (вбок), BLUR − DY (вверх) и BLUR + DY (вниз): так считаются поля виджетов-клавиш."""
+    if blur <= 0:
+        _hard_shadow(p, shape, radius, dy, qcolor((*rgb, alpha)), inside=False)
+        return
+    sigma, step = blur / 2, 0.5
+    edge = shape.translated(0, dy)
+    reach = blur + 1
+    lo = floor(-reach / step)
+    levels = []
+    for i in range(int(2 * reach / step), -1, -1):  # от большей области к меньшей
+        d = (lo + i) * step
+        grown = edge.adjusted(-d, -d, d, d)
+        if grown.width() <= 0 or grown.height() <= 0:
+            continue
+        path = QPainterPath()
+        path.addRoundedRect(grown, max(radius + d, 0), max(radius + d, 0))
+        levels.append((path, qcolor((*rgb, _gauss_alpha(d - step / 2, sigma, alpha)))))
+    pad = reach + abs(dy) + 1
+    bounds = shape.adjusted(-pad, -pad, pad, pad)
+    bounds = QRectF(floor(bounds.left() * dpr) / dpr, floor(bounds.top() * dpr) / dpr, bounds.width(), bounds.height())
+    img = _stacked_levels(p, bounds, dpr, levels)
+    outside = QPainterPath()
+    outside.setFillRule(Qt.FillRule.OddEvenFill)
+    outside.addRect(bounds)
+    outside.addPath(_shape_path(shape, radius))
+    p.save()
+    p.setClipPath(outside, Qt.ClipOperation.IntersectClip)
+    p.drawImage(bounds.topLeft(), img)
     p.restore()
 
 
@@ -249,7 +321,8 @@ class RecessedBlock(QFrame):
             p.drawRoundedRect(shape.translated(0, dy), r, r)
         p.setBrush(_vertical(theme.RECESS_TOP, theme.RECESS_BOTTOM, shape.height(), shape.top()))
         p.drawRoundedRect(shape, r, r)
-        _inner_shadow(p, shape, r, p.device().devicePixelRatioF())
+        inner_shadow(p, shape, r, p.device().devicePixelRatioF(), theme.RECESS_SHADOW_DY, theme.RECESS_SHADOW_BLUR,
+                     theme.RECESS_SHADOW_ALPHA)
         paint_metal(p, shape, r, origin)  # текстура поверх тени, как в макете
 
     def paintEvent(self, _event) -> None:

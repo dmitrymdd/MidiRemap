@@ -26,7 +26,7 @@ from .profiles_page import SWAP_TEXT, SWAP_TIP, ProfilesPage, profile_summary
 from .settings import ui_settings
 from .combo import ComboBox
 from .metal import MetalBody
-from .theme import load_fonts, stylesheet
+from .theme import install_app_font, load_fonts, stylesheet
 from .theme import repolish as _repolish
 
 MIDI_EXTS = {".mid", ".midi"}
@@ -901,6 +901,7 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("REMAP")
     load_fonts()  # до стилей: они берут имена семейств
+    install_app_font()
     window = MainWindow()
     window.show()
     return app.exec()

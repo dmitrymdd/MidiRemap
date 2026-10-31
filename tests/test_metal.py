@@ -1,14 +1,17 @@
 """Металл корпуса: плитки текстур, paint_metal, MetalBody (винты), RecessedBlock (поля, тени)."""
 import itertools
 import logging
+from math import erfc, sqrt
 
 import pytest
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import QLabel, QWidget
 
 from remap.ui import metal, theme
-from remap.ui.metal import MetalBody, RecessedBlock, Screw, paint_metal, texture_tile, window_origin
+from remap.ui.metal import (
+    MetalBody, RecessedBlock, Screw, inner_shadow, outer_shadow, paint_metal, texture_tile, window_origin,
+)
 
 pytestmark = pytest.mark.ui
 
@@ -202,3 +205,80 @@ def test_body_shading_follows_mockup(app):
     assert top_centre.red() > mid_left.red() > bottom_right.red()  # верхний свет, затем виньетка к углам
     assert img.pixelColor(0, 400).red() < 14 and img.pixelColor(450, 799).red() < 14  # рамка #0A0B0C по краю
     assert img.pixelColor(450, 0).red() > 40  # светлая линия сверху (белый .12 над рамкой)
+
+
+def _transparent(w, h, dpr=1.0):
+    img = QImage(round(w * dpr), round(h * dpr), QImage.Format.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(Qt.GlobalColor.transparent)
+    return img
+
+
+def _expected(distance, blur, alpha):
+    """Альфа размытого гауссом края (σ = blur/2) на расстоянии `distance` внутрь тени."""
+    return alpha * 0.5 * erfc(distance / (blur / 2 * sqrt(2))) * 255
+
+
+@pytest.mark.parametrize("dpr", [1.0, 2.0])
+def test_outer_shadow_follows_gaussian_profile(app, dpr):
+    """`0 3px 6px rgba(0,0,0,.65)` под широким прямоугольником: на оси x посередине профиль по вертикали — erfc."""
+    img = _transparent(120, 80, dpr)
+    p = QPainter(img)
+    outer_shadow(p, QRectF(10, 10, 100, 40), 0, dpr, 3, 6, 0.65)
+    p.end()
+    for d in (-2, 0, 1, 3, 5):  # d — расстояние вниз от сдвинутого края (нижний край фигуры 50, сдвинутый 53)
+        y = 53 + d
+        got = img.pixelColor(round(60 * dpr), round(y * dpr)).alpha()
+        assert got == pytest.approx(_expected(d + 0.5 / dpr, 6, 0.65), abs=4), d
+    assert img.pixelColor(round(60 * dpr), round(70 * dpr)).alpha() == 0  # дальше BLUR + DY тени нет
+    assert img.pixelColor(round(60 * dpr), round(30 * dpr)).alpha() == 0  # под самой фигурой тени нет (как у box-shadow)
+
+
+def test_outer_shadow_margins_match_blur_and_offset(app):
+    """Тень выходит за фигуру на BLUR вбок, BLUR − DY вверх и BLUR + DY вниз: из этого считаются поля клавиши."""
+    img = _transparent(60, 50)
+    p = QPainter(img)
+    outer_shadow(p, QRectF(10, 10, 40, 20), 0, 1.0, 2, 4, 0.6)  # 0 2px 4px
+    p.end()
+    visible = {(x, y) for x in range(60) for y in range(50) if img.pixelColor(x, y).alpha() > 4}
+    xs, ys = [x for x, _ in visible], [y for _, y in visible]
+    assert min(xs) >= 10 - 4 and max(xs) <= 50 + 4  # вбок не дальше BLUR
+    assert min(ys) >= 10 - 2 and max(ys) <= 30 + 6  # вверх BLUR − DY, вниз BLUR + DY
+    assert min(ys) < 10 and max(ys) > 30  # и действительно выходит
+
+
+def test_outer_shadow_without_blur_is_a_hard_line(app):
+    img = _transparent(40, 30)
+    p = QPainter(img)
+    outer_shadow(p, QRectF(5, 5, 30, 15), 4, 1.0, 1, 0, 0.06, rgb=(255, 255, 255))  # 0 1px 0 rgba(255,255,255,.06)
+    p.end()
+    line, below, inside = img.pixelColor(20, 20), img.pixelColor(20, 22), img.pixelColor(20, 12)
+    assert line.red() == 255 and line.alpha() == pytest.approx(0.06 * 255, abs=2)
+    assert below.alpha() == 0 and inside.alpha() == 0
+
+
+@pytest.mark.parametrize("dy", [2, -1])
+def test_inner_shadow_general_offset_and_blur(app, dy):
+    img = _transparent(120, 80)
+    p = QPainter(img)
+    p.fillRect(QRect(10, 10, 100, 60), Qt.GlobalColor.white)
+    inner_shadow(p, QRectF(10, 10, 100, 60), 0, 1.0, dy, 4, 0.8)
+    p.end()
+    edge = 10 + dy if dy > 0 else 70 + dy  # сдвинутый край окна: у верхней стороны (dy > 0) или у нижней (dy < 0)
+    inward = 1 if dy > 0 else -1
+    for depth in (0, 2, 4):
+        y = round(edge + inward * (depth + 0.5))
+        shade = 255 - img.pixelColor(60, y).red()  # чёрная тень на белом: чем темнее, тем сильнее
+        assert shade == pytest.approx(_expected(depth + 0.5, 4, 0.8), abs=9), (dy, depth)
+    assert img.pixelColor(60, 40).red() == 255  # в глубине фигуры тени нет
+
+
+def test_inner_shadow_without_blur_is_a_hard_line_clipped_to_shape(app):
+    img = _transparent(40, 30)
+    p = QPainter(img)
+    p.fillRect(QRect(5, 5, 30, 20), Qt.GlobalColor.black)
+    inner_shadow(p, QRectF(5, 5, 30, 20), 0, 1.0, 1, 0, 0.11, rgb=(255, 255, 255))  # inset 0 1px 0 rgba(255,255,255,.11)
+    p.end()
+    assert img.pixelColor(20, 5).red() == pytest.approx(0.11 * 255, abs=2)  # верхняя строка внутри фигуры
+    assert img.pixelColor(20, 6).red() == 0
+    assert img.pixelColor(20, 4).alpha() == 0  # снаружи не рисуется

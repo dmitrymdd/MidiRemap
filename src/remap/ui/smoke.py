@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QVBoxLayout, QWidget
 
-from remap.ui.theme import TOKENS
+from remap.ui import theme
 
 
 class DropZone(QLabel):
@@ -26,10 +26,10 @@ class DropZone(QLabel):
         self._set_style(active=False)
 
     def _set_style(self, active: bool) -> None:
-        border = TOKENS["accent"] if active else TOKENS["border"]
+        border = theme.ACCENT if active else theme.SCREEN_BORDER
         self.setStyleSheet(
-            f"background: {TOKENS['surface']}; color: {TOKENS['text_muted']};"
-            f"border: 2px dashed {border}; border-radius: 8px; padding: 16px;"
+            f"background: {theme.SCREEN_GLASS_MID}; color: {theme.SCREEN_TEXT_2};"
+            f"border: 2px dashed {border}; border-radius: {theme.SCREEN_RADIUS}px; padding: 16px;"
         )
 
     @staticmethod
@@ -63,10 +63,10 @@ class SmokeWindow(QMainWindow):
         self.resize(560, 320)
 
         title = QLabel("REMAP")
-        title.setStyleSheet(f"color: {TOKENS['accent']}; font-size: 22px; font-weight: 600;")
+        title.setStyleSheet(f"color: {theme.ACCENT}; font-size: 22px; font-weight: 600;")
 
         central = QWidget()
-        central.setStyleSheet(f"background: {TOKENS['bg']}; color: {TOKENS['text']};")
+        central.setStyleSheet(f"background: {theme.RECESS_BOTTOM}; color: {theme.SCREEN_TEXT};")
         layout = QVBoxLayout(central)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.addWidget(title)
@@ -76,6 +76,8 @@ class SmokeWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    theme.load_fonts()  # проверка сборки: шрифты из assets/fonts должны найтись и в .exe
+    theme.install_app_font()
     window = SmokeWindow()
     window.show()
     return app.exec()
